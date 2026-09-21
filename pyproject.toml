@@ -1,10 +1,24 @@
 [project]
 name = "rgc-sdr"
-version = "0.1.0"
+version = "0.2.0"
+description = "Incremental SDR receiver for macOS: live spectrum and waterfall over SoapySDR."
 requires-python = ">=3.11"
-dependencies = ["numpy"]
+# The GUI is the application, so Qt is a core dependency, not an extra.
+# SoapySDR is intentionally absent: it is installed via Homebrew, not pip.
+dependencies = ["numpy", "PyQt6", "pyqtgraph"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-ui = ["PyQt6", "pyqtgraph"]
-dsp = ["scipy"]
+dsp = ["scipy"]        # P3: filter design
+audio = ["sounddevice"] # P3: audio output
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "hardware: needs a real SDR attached; skipped automatically when absent",
+]
+filterwarnings = [
+    # SoapySDR's SWIG bindings are noisy on Python 3.14.
+    "ignore:builtin type Swig.*has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]

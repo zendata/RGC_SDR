@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # Set up the Python environment for RGC_SDR.
+#
+# Requires the SoapySDR native libraries and the Airspy HF+ driver module, which come
+# from Homebrew rather than pip:
+#     brew install soapysdr soapyairspyhf
+#
 # Usage:
-#   ./setup.sh           # core deps (numpy) + pytest
-#   ./setup.sh --all     # also install UI (PyQt6, pyqtgraph) and DSP (scipy)
+#   ./setup.sh           # app + test deps
+#   ./setup.sh --all     # also install P3 extras (scipy, sounddevice)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -21,14 +26,32 @@ source "$VENV_DIR/bin/activate"
 echo "Upgrading pip ..."
 pip install -q --upgrade pip
 
-echo "Installing dependencies ..."
-pip install -q numpy pytest
+echo "Installing app + test dependencies ..."
+pip install -q numpy PyQt6 pyqtgraph pytest
 
 if [ "${1:-}" = "--all" ]; then
-  echo "Installing UI + DSP extras ..."
-  pip install -q PyQt6 pyqtgraph scipy
+  echo "Installing P3 extras (scipy, sounddevice) ..."
+  pip install -q scipy sounddevice
+fi
+
+echo
+echo "Checking for the SoapySDR bindings ..."
+if python -c "import SoapySDR" 2>/dev/null; then
+  python - <<'PY'
+import SoapySDR
+found = SoapySDR.Device.enumerate()
+print(f"  SoapySDR OK - {len(found)} device(s) attached")
+for d in found:
+    print("   ", dict(d).get("label", dict(d)))
+PY
+else
+  echo "  SoapySDR bindings NOT found."
+  echo "  Install the native side with:  brew install soapysdr soapyairspyhf"
+  echo "  The venv must also see them; if brew's python differs, create the venv with"
+  echo "  --system-site-packages or add the Soapy python path to PYTHONPATH."
 fi
 
 echo
 echo "Done. Activate with:  source $VENV_DIR/bin/activate"
-echo "Then run the spike:   python -m src.rgc_sdr.device.spike --simulate"
+echo "List devices:         python -m src.rgc_sdr --list"
+echo "Run the waterfall:    python -m src.rgc_sdr --freq 7.1e6"

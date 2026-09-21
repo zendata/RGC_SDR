@@ -1,0 +1,64 @@
+"""Live spectrum curve with optional peak hold."""
+
+from __future__ import annotations
+
+import numpy as np
+import pyqtgraph as pg
+from PyQt6 import QtCore
+
+
+class SpectrumView(pg.PlotWidget):
+    """Instantaneous spectrum, lightly smoothed, with a decaying peak-hold trace.
+
+    Smoothing is applied here and *not* to the waterfall: the curve benefits from a
+    steadier noise floor, while the waterfall must keep transients intact.
+    """
+
+    def __init__(self, alpha: float = 0.3, peak_decay_db: float = 0.5, parent=None) -> None:
+        super().__init__(parent=parent)
+        self.alpha = float(alpha)
+        self.peak_decay_db = float(peak_decay_db)
+        self._smoothed: np.ndarray | None = None
+        self._peak: np.ndarray | None = None
+
+        self.setLabel("left", "power", units="dBFS")
+        self.setLabel("bottom", "frequency", units="Hz")
+        self.showGrid(x=True, y=True, alpha=0.3)
+        self.setMenuEnabled(False)
+        self.getViewBox().setMouseEnabled(x=True, y=False)
+        self.getViewBox().setDefaultPadding(0.0)
+
+        self._peak_curve = self.plot(
+            pen=pg.mkPen("#ff8a65", width=1, style=QtCore.Qt.PenStyle.DashLine)
+        )
+        self._curve = self.plot(pen=pg.mkPen("#4fc3f7", width=1))
+        self._peak_enabled = True
+
+    def set_levels(self, low: float, high: float) -> None:
+        self.setYRange(float(low), float(high), padding=0.02)
+
+    def set_peak_hold(self, enabled: bool) -> None:
+        self._peak_enabled = bool(enabled)
+        self._peak_curve.setVisible(self._peak_enabled)
+        if not enabled:
+            self._peak = None
+
+    def reset(self) -> None:
+        self._smoothed = None
+        self._peak = None
+
+    def update_spectrum(self, freqs: np.ndarray, dbfs: np.ndarray) -> None:
+        if self._smoothed is None or self._smoothed.shape != dbfs.shape:
+            self._smoothed = dbfs.astype(np.float32).copy()
+        else:
+            a = self.alpha
+            self._smoothed = (a * dbfs + (1.0 - a) * self._smoothed).astype(np.float32)
+        self._curve.setData(freqs, self._smoothed)
+
+        if not self._peak_enabled:
+            return
+        if self._peak is None or self._peak.shape != dbfs.shape:
+            self._peak = dbfs.astype(np.float32).copy()
+        else:
+            self._peak = np.maximum(self._peak - self.peak_decay_db, dbfs).astype(np.float32)
+        self._peak_curve.setData(freqs, self._peak)
