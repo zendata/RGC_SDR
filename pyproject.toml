@@ -1,0 +1,10 @@
+[project]
+name = "rgc-sdr"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["numpy"]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+ui = ["PyQt6", "pyqtgraph"]
+dsp = ["scipy"]
