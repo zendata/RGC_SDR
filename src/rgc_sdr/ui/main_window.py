@@ -17,7 +17,7 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from ..audio import AudioSink, audio_available
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
-from ..dsp.demod import BANDWIDTH_PRESETS, MODE_SPECS, MODES
+from ..dsp.demod import BANDWIDTH_PRESETS, CW_PITCHES, MODE_SPECS, MODES
 from ..recorder import DEFAULT_DIR, AudioRecorder, IQRecorder, timestamp_name
 from ..scanner import ScanAction, ScanConfig, Scanner
 from ..dsp.spectrum import SpectrumAnalyzer
@@ -62,6 +62,7 @@ class MainWindow(QtWidgets.QMainWindow):
         bandwidth_hz: float | None = None,
         step_hz: float = 10e3,
         snap: bool = False,
+        pitch_hz: float = 500.0,
         enable_audio: bool = True,
         recordings_dir=None,
         settings: Settings | None = None,
@@ -91,6 +92,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_squelch = squelch_dbfs
         self._initial_step_hz = float(step_hz)
         self._initial_snap = bool(snap)
+        self._initial_pitch = float(pitch_hz)
         self._initial_bandwidth = bandwidth_hz
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
@@ -146,6 +148,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
+        self._sync_pitch_visible()
         self._update_passband()
 
         self._zerobeat_timer = QtCore.QTimer(self)
@@ -386,6 +389,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bw_audio_combo.currentIndexChanged.connect(self._on_audio_bandwidth_changed)
         row.addWidget(self._bw_audio_combo)
 
+        self._pitch_label = QtWidgets.QLabel("Pitch")
+        row.addWidget(self._pitch_label)
+        self._pitch_combo = QtWidgets.QComboBox()
+        for pitch in CW_PITCHES:
+            self._pitch_combo.addItem(f"{pitch:.0f} Hz", pitch)
+        index = self._pitch_combo.findData(self._initial_pitch)
+        self._pitch_combo.setCurrentIndex(index if index >= 0 else
+                                          self._pitch_combo.findData(500.0))
+        self._pitch_combo.setToolTip("CW beat-note pitch, and what Zero beat tunes to")
+        self._pitch_combo.currentIndexChanged.connect(self._on_pitch_changed)
+        row.addWidget(self._pitch_combo)
+
         row.addWidget(QtWidgets.QLabel("Vol"))
         self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._volume_slider.setRange(0, 100)
@@ -618,7 +633,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._zerobeat_button = QtWidgets.QPushButton("Zero beat")
         self._zerobeat_button.setToolTip(
-            "Hold to tune a nearby CW carrier onto the 700 Hz beat note.\n"
+            "Hold to tune a nearby CW carrier onto the selected beat-note pitch.\n"
             f"Searches {ZEROBEAT_SEARCH_HZ:.0f} Hz either side. CW mode only."
         )
         self._zerobeat_button.pressed.connect(self._start_zerobeat)
@@ -831,7 +846,7 @@ class MainWindow(QtWidgets.QMainWindow):
         centre = self.source.center_freq + self._offset_spin.value() * 1e3
         if mode == "cw":
             # Narrow, and sitting at the BFO pitch above where you are listening.
-            self.spectrum.set_passband(centre + MODE_SPECS[mode].pitch_hz, width)
+            self.spectrum.set_passband(centre + self.pitch_hz, width)
             return
         if mode in ("usb", "lsb"):
             # One-sided: shade only the sideband actually being demodulated.
@@ -859,6 +874,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 offset_hz=self._offset_spin.value() * 1e3,
                 volume=self._volume_slider.value() / 100.0,
                 squelch_dbfs=self._squelch_value(),
+                bandwidth_hz=self.bandwidth_hz(),
+                pitch_hz=self.pitch_hz,
             )
             try:
                 sink.start()
@@ -875,10 +892,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_squelch_enabled()
         self._refresh_bandwidths()
         self._sync_zerobeat_enabled()
+        self._sync_pitch_visible()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
         self.set_mode(self.mode)
+        self._schedule_save()
+
+    @property
+    def pitch_hz(self) -> float:
+        return float(self._pitch_combo.currentData() or 500.0)
+
+    def _sync_pitch_visible(self) -> None:
+        """Only CW has a beat note, so only CW shows the control."""
+        show = self.mode == "cw"
+        self._pitch_label.setVisible(show)
+        self._pitch_combo.setVisible(show)
+
+    def _on_pitch_changed(self) -> None:
+        if self.audio is not None:
+            self.audio.set_pitch(self.pitch_hz)
+        self._update_passband()
         self._schedule_save()
 
     @property
@@ -1177,6 +1211,7 @@ class MainWindow(QtWidgets.QMainWindow):
             bandwidth_hz=self.bandwidth_hz(),
             step_hz=self.step_hz,
             snap=self.snap_enabled,
+            pitch_hz=self.pitch_hz,
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -1240,6 +1275,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._snap_check.blockSignals(True)
         self._snap_check.setChecked(snap.snap)
         self._snap_check.blockSignals(False)
+        pitch_index = self._pitch_combo.findData(snap.pitch_hz)
+        if pitch_index >= 0:
+            self._pitch_combo.blockSignals(True)
+            self._pitch_combo.setCurrentIndex(pitch_index)
+            self._pitch_combo.blockSignals(False)
         index = self._step_combo.findData(snap.step_hz)
         if index >= 0:
             self._step_combo.blockSignals(True)

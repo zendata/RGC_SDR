@@ -66,6 +66,8 @@ class Snapshot:
     step_hz: float = 10e3
     #: Round tuning to a multiple of the step, for channelised bands.
     snap: bool = False
+    #: CW beat-note pitch.
+    pitch_hz: float = 500.0
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -33,6 +33,10 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "cw": (100.0, 250.0, 500.0, 800.0, 1.5e3),
 }
 
+#: Beat-note pitches offered for CW, in Hz. Operator preference varies a lot, and a
+#: pitch that suits one pair of ears is fatiguing to another.
+CW_PITCHES: tuple[float, ...] = (400.0, 450.0, 500.0, 550.0, 600.0, 700.0, 800.0)
+
 
 @dataclass(frozen=True)
 class ModeSpec:
@@ -67,7 +71,9 @@ MODE_SPECS: dict[str, ModeSpec] = {
     ),
     "usb": ModeSpec(bandwidth_hz=2.7e3, if_target_hz=48e3),
     "lsb": ModeSpec(bandwidth_hz=2.7e3, if_target_hz=48e3),
-    "cw": ModeSpec(bandwidth_hz=500.0, if_target_hz=48e3, pitch_hz=700.0),
+    # 500 Hz rather than the traditional 700: lower notes are markedly less tiring
+    # over a long session, and it is selectable anyway.
+    "cw": ModeSpec(bandwidth_hz=500.0, if_target_hz=48e3, pitch_hz=500.0),
 }
 
 
@@ -317,6 +323,7 @@ class DemodChain:
         squelch_dbfs: float | None = None,
         agc: bool = True,
         bandwidth_hz: float | None = None,
+        pitch_hz: float | None = None,
     ) -> None:
         if mode not in MODE_SPECS:
             raise ValueError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -332,6 +339,7 @@ class DemodChain:
         self.if_decim = self._pick_factor(self.sample_rate, self.spec.if_target_hz)
         self.if_rate = self.sample_rate / self.if_decim
 
+        self.pitch_hz = float(pitch_hz if pitch_hz is not None else self.spec.pitch_hz)
         self._user_offset = float(offset_hz)
         # The BFO is folded into the mixer, so the UI's offset keeps meaning "where I am
         # listening" rather than having to know about CW's pitch.
@@ -376,12 +384,12 @@ class DemodChain:
 
     def _mix_offset(self) -> float:
         """Mixer shift, which for CW puts the carrier at the wanted audio pitch."""
-        return self._user_offset - self.spec.pitch_hz
+        return self._user_offset - self.pitch_hz
 
     def _channel_taps(self) -> np.ndarray:
         if self.mode == "cw":
             # Centred on the pitch, so the keyed carrier lands inside the passband.
-            return bandpass_taps(self.spec.pitch_hz, self.bandwidth_hz, self.if_rate)
+            return bandpass_taps(self.pitch_hz, self.bandwidth_hz, self.if_rate)
         if self.mode in ("usb", "lsb"):
             return sideband_taps(self.bandwidth_hz, self.if_rate, upper=(self.mode == "usb"))
         return channel_taps(self.bandwidth_hz, self.if_rate)
@@ -411,9 +419,19 @@ class DemodChain:
         """Where the user is listening, with any CW pitch already accounted for."""
         return self._user_offset
 
-    @property
-    def pitch_hz(self) -> float:
-        return self.spec.pitch_hz
+    def set_pitch(self, pitch_hz: float) -> None:
+        """Move the beat note. Rebuilds the filter and re-aims the mixer together.
+
+        Both have to change: the mixer decides where the carrier lands and the filter
+        decides what is passed, so changing one alone would put the tone outside its own
+        passband.
+        """
+        pitch_hz = float(pitch_hz)
+        if pitch_hz == self.pitch_hz:
+            return
+        self.pitch_hz = pitch_hz
+        self._mixer.set_offset(self._mix_offset())
+        self._channel = Fir(self._channel_taps())
 
     def set_offset(self, offset_hz: float) -> None:
         self._user_offset = float(offset_hz)

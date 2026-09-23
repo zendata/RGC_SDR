@@ -406,8 +406,12 @@ genuinely needed. A fine nudge also no longer stops an IQ capture.
 ## 7g. CW, mute and snap
 
 **CW needs a BFO.** A keyed carrier tuned exactly sits at 0 Hz, which is silent. The chain
-mixes it to an audio pitch (700 Hz) so it is audible, which is the job a beat-frequency
-oscillator does in a conventional receiver. The filter is a *complex band-pass centred on
+mixes it to an audio pitch so it is audible, which is the job a beat-frequency oscillator
+does in a conventional receiver. The pitch is **selectable (400-800 Hz, default 500)**,
+because it is a matter of ears rather than engineering — 700 Hz was the first default and
+proved tiring. Moving it retunes the mixer *and* rebuilds the channel filter together,
+since one decides where the carrier lands and the other what is passed; changing either
+alone would put the tone outside its own passband. The filter is a *complex band-pass centred on
 the pitch* rather than a low-pass — 500 Hz wide by default, down to 100 Hz — so it passes
 the tone and rejects its mirror image. Measured: a tuned carrier produces 700.4 Hz, key-up
 is silence, mistuning by 200 Hz moves the tone by 200 Hz (which is how you zero-beat), and
@@ -471,6 +475,20 @@ all four cases converge in one or two steps:
 | +250 Hz | 443 Hz | 700 Hz | 0 Hz |
 | −420 Hz | 915 Hz | 701 Hz | +1 Hz |
 | +420 Hz | 768 Hz | 699 Hz | −1 Hz |
+
+**Checked for a compounding error, and there is none.** The question came up naturally —
+a beat note plus a tuning offset sounds like it could add twice. Two measurements say it
+does not. Harmonic content in the CW audio is at **-105 dB** and below (-163 dB with AGC
+off), so nothing is being generated. And run against identical data, `measure_carrier` and
+the demodulator agree to within **1.6 Hz** across the whole +/-300 Hz range, with the
+measurement itself accurate to 0.35 Hz — so the tuner and the chain share one idea of
+where the carrier is.
+
+An on-air run did once finish 79 Hz low, which is worth recording as a usage note rather
+than a defect: only a single correction had been applied before the station stopped
+keying, so no verifying measurement followed. Holding the button re-measures every 150 ms
+and converges, which is what produced the sub-hertz residuals above. One press is not the
+intended use.
 
 Worth recording, because it shaped the tests: a carrier at amplitude 2e-4 in 1e-3 of
 noise is **negative** SNR in the time domain yet over 25 dB in the spectrum. A

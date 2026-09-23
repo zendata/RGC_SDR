@@ -491,3 +491,52 @@ def test_bandpass_taps_are_centred_where_asked():
     assert response(700.0) > 10 * response(0.0)        # rejects DC
     assert response(700.0) > 10 * response(-700.0)     # asymmetric, as it must be
     assert response(700.0) > 10 * response(2000.0)     # and narrow
+
+
+def test_cw_pitch_defaults_lower_than_the_traditional_700():
+    """Lower beat notes are less tiring over a long session."""
+    assert DemodChain(FS, "cw").pitch_hz == pytest.approx(500.0)
+
+
+@pytest.mark.parametrize("pitch", [400.0, 500.0, 600.0, 700.0, 800.0])
+def test_cw_tone_lands_on_whatever_pitch_is_asked_for(pitch):
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False, pitch_hz=pitch)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.5)), block=16384)
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(pitch, abs=25.0)
+
+
+def test_changing_pitch_moves_the_tone_and_keeps_it_audible():
+    """The filter and the mixer must move together, or the tone falls outside its own
+    passband and goes silent."""
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False, pitch_hz=700.0)
+    run_blocks(chain, keyed_carrier(int(FS * 0.2)), block=16384)
+    chain.set_pitch(400.0)
+    chain.reset()
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.5)), block=16384)
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(400.0, abs=25.0)
+    assert np.std(audio[2000:]) > 0.1, "tone went quiet after moving the pitch"
+
+
+def test_setting_the_same_pitch_is_a_no_op():
+    chain = DemodChain(FS, "cw", pitch_hz=500.0)
+    before = chain._channel
+    chain.set_pitch(500.0)
+    assert chain._channel is before
+
+
+def test_cw_audio_has_no_significant_harmonics():
+    """Answers 'is something additive happening?': measured -100 dB and below."""
+    chain = DemodChain(FS, "cw", volume=0.4, pitch_hz=500.0)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.6)), block=16384)[4000:]
+    window = np.hanning(audio.size)
+    spectrum = np.abs(np.fft.rfft(audio * window))
+    freqs = np.fft.rfftfreq(audio.size, 1.0 / chain.audio_rate)
+    spectrum = spectrum / spectrum.max()
+
+    def level_at(hz, tol=40.0):
+        mask = np.abs(freqs - hz) < tol
+        return 20 * np.log10(spectrum[mask].max() + 1e-20) if mask.any() else -200.0
+
+    assert freqs[int(np.argmax(spectrum))] == pytest.approx(500.0, abs=25.0)
+    assert level_at(1000.0) < -40.0, "second harmonic present"
+    assert level_at(1500.0) < -40.0, "third harmonic present"

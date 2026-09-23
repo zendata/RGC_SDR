@@ -1766,3 +1766,57 @@ def test_zero_beat_stops_on_close(qapp):
     win._zerobeat_button.pressed.emit()
     win.close()
     assert not win._zerobeat_timer.isActive()
+
+
+def test_pitch_selector_only_shows_in_cw(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win.show()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    assert not win._pitch_combo.isVisible()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win._pitch_combo.isVisible()
+    win.close()
+
+
+def test_pitch_defaults_to_500(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win.pitch_hz == pytest.approx(500.0)
+    win.close()
+
+
+def test_pitch_moves_the_passband(qapp):
+    """The shaded band must follow the pitch, since that is where the tone appears."""
+    win = window_for(StubSource(_caps(), center=7.015e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._pitch_combo.setCurrentText("400 Hz")
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (lo + hi) / 2 == pytest.approx(7.015e6 + 400.0, abs=1.0)
+    win._pitch_combo.setCurrentText("800 Hz")
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (lo + hi) / 2 == pytest.approx(7.015e6 + 800.0, abs=1.0)
+    win.close()
+
+
+def test_pitch_is_remembered(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    first = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    first._mode_combo.setCurrentIndex(first._mode_combo.findData("cw"))
+    first._pitch_combo.setCurrentText("600 Hz")
+    first.close()
+    assert Settings.load(path).last.pitch_hz == pytest.approx(600.0)
+
+    second = window_for(StubSource(_caps()), fft_size=1024, pitch_hz=600.0)
+    assert second.pitch_hz == pytest.approx(600.0)
+    second.close()
+
+
+def test_zero_beat_targets_whatever_pitch_is_selected(qapp):
+    """Zero beat centres the carrier; the chain then renders it at the chosen pitch, so
+    changing the pitch must not change what zero beat does."""
+    for pitch in ("400 Hz", "700 Hz"):
+        src = AbsoluteToneSource(_caps(), 7.015e6, 7.015e6 + 160.0)
+        win = window_for(src, fft_size=1024)
+        win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+        win._pitch_combo.setCurrentText(pitch)
+        assert win.zerobeat_once() == pytest.approx(160.0, abs=6.0)
+        win.close()

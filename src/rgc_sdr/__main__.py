@@ -55,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--snap", dest="snap", action="store_true", default=None,
                    help="round tuning to a multiple of the step")
     p.add_argument("--no-snap", dest="snap", action="store_false", help="tune freely")
+    p.add_argument("--pitch", type=float, default=None, metavar="HZ",
+                   help="CW beat-note pitch (default: 500)")
     p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
     p.add_argument("--recordings", default=None, metavar="DIR",
                    help="where to write recordings (default: ~/Documents/RGC_SDR)")
@@ -135,6 +137,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     step = pick(args.step, "step_hz", 10e3)
     snap = pick(args.snap, "snap", False)
+    pitch = pick(args.pitch, "pitch_hz", 500.0)
 
     if args.min_db is not None or args.max_db is not None:
         levels = (args.min_db if args.min_db is not None else -120.0,
@@ -181,6 +184,7 @@ def main(argv: list[str] | None = None) -> int:
         bandwidth_hz=bandwidth,
         step_hz=step,
         snap=snap,
+        pitch_hz=pitch,
         enable_audio=not args.no_audio,
         recordings_dir=args.recordings,
         settings=settings,

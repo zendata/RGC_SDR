@@ -101,13 +101,16 @@ Pick a mode from the **Audio** dropdown — AM, NBFM, WBFM, USB, LSB or CW — a
 band on the spectrum shows exactly what is being demodulated.
 
 **CW** adds a beat-frequency oscillator: a keyed carrier tuned exactly would sit at 0 Hz
-and be silent, so it is mixed up to a 700 Hz tone. Filters are narrow (100 Hz to 1.5 kHz,
-500 Hz by default) and mistuning moves the pitch, so you can zero-beat by ear — which is
-what the 10 Hz and 100 Hz steps are for.
+and be silent, so it is mixed up to an audible tone. **Pitch** selects that tone, 400 to
+800 Hz, defaulting to 500 — lower notes are less tiring over a long session. Filters are
+narrow (100 Hz to 1.5 kHz, 500 Hz by default) and mistuning moves the pitch, so you can
+zero-beat by ear — which is what the 10 Hz and 100 Hz steps are for.
 
 **Zero beat** (next to Peak hold, CW only) does it for you. Hold the button and it finds
-the carrier within 500 Hz, works out which way to go, and tunes it onto exactly 700 Hz —
-accurate to a couple of hertz. It only tunes while held, does nothing if there is no
+the carrier within 500 Hz, works out which way to go, and tunes it onto whatever pitch you
+have selected — accurate to a couple of hertz. Hold it for a second or two rather than
+tapping: it re-measures several times a second and converges, which also rides out the
+gaps between CW elements. It only tunes while held, does nothing if there is no
 signal nearby, and ignores Snap, since a channel grid is the opposite of what
 zero-beating needs. Audio keeps playing while it converges.
 

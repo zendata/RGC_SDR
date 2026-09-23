@@ -115,6 +115,7 @@ class AudioSink:
         volume: float = 0.4,
         squelch_dbfs: float | None = None,
         bandwidth_hz: float | None = None,
+        pitch_hz: float | None = None,
         blocksize: int = 1024,
         buffer_blocks: int = 5,
         device=None,
@@ -130,6 +131,7 @@ class AudioSink:
         self._volume = float(volume)
         self._squelch = squelch_dbfs
         self._bandwidth = bandwidth_hz
+        self._pitch = pitch_hz
         self._muted = False
 
         self._chain: DemodChain | None = None
@@ -173,6 +175,16 @@ class AudioSink:
                 self._chain.set_bandwidth(bandwidth_hz)
 
     @property
+    def pitch_hz(self) -> float:
+        return self._chain.pitch_hz if self._chain else 0.0
+
+    def set_pitch(self, pitch_hz: float) -> None:
+        self._pitch = float(pitch_hz)
+        with self._lock:
+            if self._chain is not None:
+                self._chain.set_pitch(pitch_hz)
+
+    @property
     def offset_hz(self) -> float:
         return self._offset
 
@@ -184,6 +196,7 @@ class AudioSink:
             volume=self._volume,
             squelch_dbfs=self._squelch,
             bandwidth_hz=self._bandwidth,
+            pitch_hz=self._pitch,
         )
 
     @property
