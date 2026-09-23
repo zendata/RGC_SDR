@@ -105,8 +105,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.waterfall.setXLink(self.spectrum)  # one shared frequency axis
         self.spectrum.frequencySelected.connect(self._retune)
         self.waterfall.frequencySelected.connect(self._retune)
+        # Spectrum only: tuning from the waterfall while reading back through history
+        # is more confusing than useful.
         self.spectrum.frequencyNudged.connect(self.nudge_frequency)
-        self.waterfall.frequencyNudged.connect(self.nudge_frequency)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.addWidget(self.spectrum)
@@ -1336,7 +1337,7 @@ class MainWindow(QtWidgets.QMainWindow):
         super().closeEvent(event)
 
 
-def run(source: IQSource, **kwargs) -> int:
+def run(source: IQSource, debug_gestures: bool = False, **kwargs) -> int:
     """Start the Qt app against an already-configured source."""
     pg.setConfigOptions(antialias=False, useOpenGL=False)
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -1349,6 +1350,10 @@ def run(source: IQSource, **kwargs) -> int:
     icon_path = Path(__file__).resolve().parents[3] / "assets" / "icon.png"
     if icon_path.is_file():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
+    if debug_gestures:
+        from .gesture_debug import install
+
+        install(app)
     source.start()
     window = MainWindow(source, **kwargs)
     window.resize(1280, 800)

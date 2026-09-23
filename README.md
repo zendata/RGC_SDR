@@ -50,8 +50,15 @@ saved on exit and restored next launch. Any flag you pass overrides just that on
   where the receiver is actually tuned.
 - **Freq** box takes a frequency directly; **Step** sets the tuning increment, from
   **10 Hz** up to 1 MHz — including 100 Hz for SSB and 9 kHz for MW channel spacing.
-- **Two-finger swipe left or right** tunes gradually by that step, so you can pitch an SSB
-  voice by ear. Swiping up and down still zooms the display.
+- **Two-finger swipe left or right over the FFT display** tunes gradually by that step,
+  so you can pitch an SSB voice by ear. Up and down still zooms.
+- **Shift + two-finger swipe up or down** does the same thing, and is the reliable one:
+  macOS may claim a sideways swipe for its own "Swipe between pages" gesture, in which
+  case the application never sees it. A vertical swipe always arrives.
+
+Tuning by gesture works on the spectrum only, not the waterfall — the waterfall is what
+you read history from. If a sideways swipe does nothing, run with `--debug-gestures` to
+see exactly which events your trackpad delivers.
 - **Rate** selects any of the seven supported sample rates (192 kHz to 912 kHz), which
   changes how much spectrum you see at once.
 

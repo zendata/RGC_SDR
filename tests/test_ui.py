@@ -1196,28 +1196,42 @@ def test_step_choice_is_remembered(qapp, tmp_path):
     second.close()
 
 
-def _wheel(view, dx, dy):
-    """A wheel event of the kind a trackpad swipe produces."""
+def _wheel(view, dx, dy, px=0, py=0, shift=False):
+    """A wheel event of the kind a trackpad or mouse produces."""
     return QtGui.QWheelEvent(
         QtCore.QPointF(view.width() / 2, view.height() / 2),
         QtCore.QPointF(
             view.mapToGlobal(QtCore.QPoint(int(view.width() / 2), int(view.height() / 2)))
         ),
-        QtCore.QPoint(0, 0),
+        QtCore.QPoint(int(px), int(py)),
         QtCore.QPoint(int(dx), int(dy)),
         QtCore.Qt.MouseButton.NoButton,
-        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.KeyboardModifier.ShiftModifier if shift
+        else QtCore.Qt.KeyboardModifier.NoModifier,
         QtCore.Qt.ScrollPhase.ScrollUpdate,
         False,
     )
 
 
-def test_sideways_swipe_tunes_on_the_waterfall(qapp):
+def test_the_waterfall_does_not_tune_on_a_sideways_swipe(qapp):
+    """Tuning lives on the FFT display only; the waterfall is for reading history."""
     src = StubSource(_caps(), center=14.2e6)
     win = window_for(src, fft_size=1024, fps=25)
     win.resize(900, 600)
     win._step_combo.setCurrentText("100 Hz")
+    assert not hasattr(win.waterfall, "frequencyNudged")
     win.waterfall.wheelEvent(_wheel(win.waterfall, 120, 0))
+    assert src.center_freq == pytest.approx(14.2e6)
+    win.close()
+
+
+def test_sideways_swipe_tunes_with_pixel_deltas_only(qapp):
+    """macOS trackpads populate pixelDelta and may leave angleDelta empty."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 0, 0, px=40, py=0))
     assert src.center_freq == pytest.approx(14.2e6 + 100.0)
     win.close()
 
@@ -1238,10 +1252,10 @@ def test_vertical_swipe_still_zooms_and_does_not_tune(qapp):
     win = window_for(src, fft_size=1024, fps=25)
     win.resize(900, 600)
     before = src.center_freq
-    (x0, x1), _ = win.waterfall.getViewBox().viewRange()
-    win.waterfall.wheelEvent(_wheel(win.waterfall, 0, 120))
+    (x0, x1), _ = win.spectrum.getViewBox().viewRange()
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 0, 120))
     assert src.center_freq == pytest.approx(before), "a vertical swipe tuned the radio"
-    (z0, z1), _ = win.waterfall.getViewBox().viewRange()
+    (z0, z1), _ = win.spectrum.getViewBox().viewRange()
     assert (z1 - z0) != pytest.approx(x1 - x0), "a vertical swipe no longer zooms"
     win.close()
 
@@ -1253,9 +1267,9 @@ def test_small_sideways_deltas_tune_gradually(qapp):
     win.resize(900, 600)
     win._step_combo.setCurrentText("100 Hz")
     for _ in range(5):
-        win.waterfall.wheelEvent(_wheel(win.waterfall, 20, 0))
+        win.spectrum.wheelEvent(_wheel(win.spectrum, 20, 0))
     assert src.center_freq == pytest.approx(14.2e6), "tuned before a full step"
-    win.waterfall.wheelEvent(_wheel(win.waterfall, 20, 0))
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 20, 0))
     assert src.center_freq == pytest.approx(14.2e6 + 100.0)
     win.close()
 
@@ -1267,7 +1281,7 @@ def test_swipe_tuning_stops_a_scan(qapp, tmp_path):
     win.resize(900, 600)
     win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
     win.start_scan()
-    win.waterfall.wheelEvent(_wheel(win.waterfall, 120, 0))
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 120, 0))
     assert win.scanner is None
     win.close()
 
@@ -1339,3 +1353,52 @@ def test_a_fine_nudge_does_not_flush_the_buffer(qapp):
     win._step_combo.setCurrentText("10 kHz")
     win.nudge_frequency(1)
     assert src.last_flush is True
+
+
+def test_shift_plus_vertical_swipe_tunes(qapp):
+    """A guaranteed route: macOS may claim horizontal swipes, but never vertical ones."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 0, 120, shift=True))
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0)
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 0, -120, shift=True))
+    assert src.center_freq == pytest.approx(14.2e6)
+    win.close()
+
+
+def test_shift_plus_vertical_does_not_zoom(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    (x0, x1), _ = win.spectrum.getViewBox().viewRange()
+    win.spectrum.wheelEvent(_wheel(win.spectrum, 0, 120, shift=True))
+    (z0, z1), _ = win.spectrum.getViewBox().viewRange()
+    assert (z1 - z0) == pytest.approx(x1 - x0, rel=1e-6), "shift+swipe zoomed as well"
+    win.close()
+
+
+def test_wheel_events_reach_the_handler_through_the_viewport(qapp):
+    """Regression: Qt delivers wheel events to the viewport, not the view.
+
+    Calling wheelEvent() directly passes even when the real delivery path is broken, so
+    this drives it the way Qt actually does.
+    """
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    qapp.sendEvent(win.spectrum.viewport(), _wheel(win.spectrum, 120, 0))
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0), "not reached via the viewport"
+    win.close()
+
+
+def test_shift_vertical_reaches_the_handler_through_the_viewport(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    qapp.sendEvent(win.spectrum.viewport(), _wheel(win.spectrum, 0, 120, shift=True))
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0)
+    win.close()

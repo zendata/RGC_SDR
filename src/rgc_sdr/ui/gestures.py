@@ -59,3 +59,25 @@ class SwipeAccumulator:
 def horizontal_dominates(delta_x: float, delta_y: float) -> bool:
     """True when a wheel event is a sideways swipe rather than an up/down one."""
     return abs(delta_x) > abs(delta_y)
+
+
+#: A trackpad pixel is worth much less than a mouse notch, so pixel deltas are scaled up
+#: to the same units before accumulating. One notch is 120 units and a deliberate swipe
+#: covers on the order of a hundred pixels.
+PIXELS_TO_UNITS = 3.0
+
+
+def wheel_deltas(event) -> tuple[float, float]:
+    """Pull (dx, dy) out of a QWheelEvent in consistent units.
+
+    macOS trackpads populate `pixelDelta` and may leave `angleDelta` empty or coarse,
+    while mice populate `angleDelta` only. Reading just one of them is why a sideways
+    swipe did nothing. Whichever axis pair carries more information is used.
+    """
+    angle = event.angleDelta()
+    pixel = event.pixelDelta()
+    ax, ay = float(angle.x()), float(angle.y())
+    px, py = float(pixel.x()) * PIXELS_TO_UNITS, float(pixel.y()) * PIXELS_TO_UNITS
+    if abs(px) + abs(py) > abs(ax) + abs(ay):
+        return px, py
+    return ax, ay

@@ -360,6 +360,27 @@ through momentum the other way. `TUNE_DIRECTION` in `ui/gestures.py` is the sing
 constant to flip if the gesture feels backwards, since the sign depends on the system's
 natural-scrolling setting.
 
+**Two delivery paths, because one cannot be relied on.** A sideways swipe did nothing on
+the first attempt. Two causes were found by instrumenting it rather than guessing:
+
+* Wheel events are delivered by Qt to the scroll area's **viewport**, not to the view.
+  Sending one to the view reaches nothing. Unit tests that call `wheelEvent()` directly
+  therefore pass even when the real path is broken, so there is now a test that drives it
+  through the viewport as Qt does.
+* macOS trackpads populate `pixelDelta` and may leave `angleDelta` empty, so reading only
+  `angleDelta` misses the gesture entirely. `wheel_deltas` takes whichever pair carries
+  more information.
+
+Beyond that, macOS may claim a two-finger sideways swipe for its own "Swipe between
+pages" and never deliver it at all, which no amount of application code can fix. So
+**shift plus a vertical swipe** tunes as well: a vertical swipe always arrives, since it
+is what already drives the zoom. A native pan gesture is handled too, for trackpad
+configurations that send one. `--debug-gestures` logs every wheel and gesture event with
+its raw numbers, so the question can be settled by observation rather than theory.
+
+**Swipe tuning is on the spectrum only**, not the waterfall: the waterfall is for reading
+history, and retuning while scrolling back through it is more confusing than useful.
+
 **A fine tune is not a retune.** This was the important discovery. `_retune` cleared the
 waterfall, reset the spectrum smoothing, reset the audio chain and -- via
 `set_center_freq` -- flushed the IQ ring and armed a 150 ms settle period. Doing all that

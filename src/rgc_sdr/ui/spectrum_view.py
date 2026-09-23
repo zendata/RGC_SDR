@@ -6,7 +6,16 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtCore
 
-from .gestures import TUNE_DIRECTION, SwipeAccumulator, horizontal_dominates
+from .gestures import (
+    TUNE_DIRECTION,
+    SwipeAccumulator,
+    horizontal_dominates,
+    wheel_deltas,
+)
+
+#: Native pan gestures report a small scalar rather than pixels, so they need their own
+#: scaling to reach the same accumulator units.
+PAN_TO_UNITS = 40.0
 
 
 class SpectrumView(pg.PlotWidget):
@@ -67,16 +76,48 @@ class SpectrumView(pg.PlotWidget):
 
 
     def wheelEvent(self, event) -> None:  # noqa: N802  (Qt naming)
-        """Sideways swipe tunes; up/down keeps pyqtgraph's zoom."""
-        angle = event.angleDelta()
-        if horizontal_dominates(angle.x(), angle.y()):
-            steps = self._swipe.add(float(angle.x()) * TUNE_DIRECTION)
-            if steps:
-                self.frequencyNudged.emit(steps)
-            event.accept()
+        """Tune on a sideways swipe or a shift-held vertical one; otherwise zoom.
+
+        Shift plus vertical exists because macOS may never deliver a horizontal swipe at
+        all: with "Swipe between pages" enabled the system claims the gesture and the
+        application never sees it. A vertical swipe always arrives, so shift gives a
+        route to fine tuning that cannot be intercepted.
+        """
+        dx, dy = wheel_deltas(event)
+        shift = bool(event.modifiers() & QtCore.Qt.KeyboardModifier.ShiftModifier)
+        if shift:
+            delta = dy if abs(dy) >= abs(dx) else dx
+        elif horizontal_dominates(dx, dy):
+            delta = dx
+        else:
+            self._swipe.reset()
+            super().wheelEvent(event)
             return
-        self._swipe.reset()
-        super().wheelEvent(event)
+        steps = self._swipe.add(delta * TUNE_DIRECTION)
+        if steps:
+            self.frequencyNudged.emit(steps)
+        event.accept()
+
+    def event(self, ev):
+        """Catch macOS trackpad pans, which do not arrive as wheel events.
+
+        A sideways two-finger swipe can be delivered as a native pan gesture rather than
+        a horizontal scroll, depending on the trackpad settings. Handling both is why
+        this is here as well as `wheelEvent`.
+        """
+        if ev.type() == QtCore.QEvent.Type.NativeGesture:
+            try:
+                gesture = ev.gestureType()
+                if gesture == QtCore.Qt.NativeGestureType.PanNativeGesture:
+                    delta = ev.value()
+                    steps = self._swipe.add(float(delta) * PAN_TO_UNITS * TUNE_DIRECTION)
+                    if steps:
+                        self.frequencyNudged.emit(steps)
+                    ev.accept()
+                    return True
+            except (AttributeError, TypeError):
+                pass
+        return super().event(ev)
 
     def set_center_marker(self, hz: float) -> None:
         """Show where the receiver is actually tuned."""

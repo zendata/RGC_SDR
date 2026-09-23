@@ -55,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
     p.add_argument("--recordings", default=None, metavar="DIR",
                    help="where to write recordings (default: ~/Documents/RGC_SDR)")
+    p.add_argument("--debug-gestures", action="store_true",
+                   help="log trackpad wheel and gesture events, to diagnose swipe tuning")
     p.add_argument("--no-restore", action="store_true", help="ignore saved settings this run")
     p.add_argument("--forget", action="store_true",
                    help="delete saved settings and memories, then exit")
@@ -159,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     from .ui.main_window import run
 
     return run(
+        debug_gestures=args.debug_gestures,
         source,
         fft_size=fft,
         fps=args.fps,
