@@ -114,6 +114,7 @@ class AudioSink:
         offset_hz: float = 0.0,
         volume: float = 0.4,
         squelch_dbfs: float | None = None,
+        bandwidth_hz: float | None = None,
         blocksize: int = 1024,
         buffer_blocks: int = 5,
         device=None,
@@ -128,6 +129,7 @@ class AudioSink:
         self._offset = float(offset_hz)
         self._volume = float(volume)
         self._squelch = squelch_dbfs
+        self._bandwidth = bandwidth_hz
 
         self._chain: DemodChain | None = None
         self._reader = None
@@ -138,6 +140,9 @@ class AudioSink:
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._chain_errors = 0
+        #: Optional tap, called on the worker thread with every produced audio block.
+        #: Used for recording; must not block, or it becomes a dropout.
+        self.on_audio = None
 
     # -- configuration -----------------------------------------------------
 
@@ -154,6 +159,19 @@ class AudioSink:
         return self._chain.audio_rate if self._chain else 0.0
 
     @property
+    def channel_dbfs(self) -> float | None:
+        return self._chain.channel_dbfs if self._chain else None
+
+    @property
+    def bandwidth_hz(self) -> float:
+        return self._chain.bandwidth_hz if self._chain else 0.0
+
+    def set_bandwidth(self, bandwidth_hz: float) -> None:
+        with self._lock:
+            if self._chain is not None:
+                self._chain.set_bandwidth(bandwidth_hz)
+
+    @property
     def offset_hz(self) -> float:
         return self._offset
 
@@ -164,6 +182,7 @@ class AudioSink:
             offset_hz=self._offset,
             volume=self._volume,
             squelch_dbfs=self._squelch,
+            bandwidth_hz=self._bandwidth,
         )
 
     def set_volume(self, volume: float) -> None:
@@ -191,6 +210,8 @@ class AudioSink:
         if mode == self._mode and self.running:
             return
         self._mode = mode
+        # A width chosen for the old mode is meaningless for the new one.
+        self._bandwidth = None
         if self.running:
             self.restart()
 
@@ -299,6 +320,12 @@ class AudioSink:
                 self._chain_errors += 1
                 continue
             self._fifo.push(audio)
+            tap = self.on_audio
+            if tap is not None and audio.size:
+                try:
+                    tap(audio)
+                except Exception:
+                    self._chain_errors += 1
 
     # -- reporting ---------------------------------------------------------
 
@@ -313,5 +340,6 @@ class AudioSink:
             "lost_iq": getattr(self._reader, "lost", 0),
             "muted_blocks": chain.muted_blocks if chain else 0,
             "agc_gain": chain.agc_gain if chain else 1.0,
+            "channel_dbfs": chain.channel_dbfs if chain else -200.0,
             "chain_errors": self._chain_errors,
         }

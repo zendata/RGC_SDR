@@ -21,6 +21,16 @@ from .decimate import StreamDecimator, lowpass_taps
 MODES = ("am", "nbfm", "wbfm", "usb", "lsb")
 
 
+#: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
+BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
+    "am": (3e3, 4.5e3, 6e3, 9e3, 12e3, 16e3),
+    "nbfm": (6e3, 8e3, 12.5e3, 16e3, 25e3),
+    "wbfm": (100e3, 150e3, 200e3),
+    "usb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
+    "lsb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
+}
+
+
 @dataclass(frozen=True)
 class ModeSpec:
     """Per-mode plan: how wide the channel is and what rates the chain needs."""
@@ -288,6 +298,7 @@ class DemodChain:
         volume: float = 0.4,
         squelch_dbfs: float | None = None,
         agc: bool = True,
+        bandwidth_hz: float | None = None,
     ) -> None:
         if mode not in MODE_SPECS:
             raise ValueError(f"unknown mode {mode!r}; expected one of {MODES}")
@@ -296,6 +307,9 @@ class DemodChain:
         self.spec = MODE_SPECS[mode]
         self.volume = float(volume)
         self.squelch_dbfs = squelch_dbfs
+        #: In-channel power of the most recent block, for the S-meter. dBFS, so it is
+        #: relative to full scale and not calibrated to dBm -- see PLANNING.md 7d.
+        self.channel_dbfs = -200.0
 
         self.if_decim = self._pick_factor(self.sample_rate, self.spec.if_target_hz)
         self.if_rate = self.sample_rate / self.if_decim
@@ -303,11 +317,10 @@ class DemodChain:
         self._mixer = Mixer(self.sample_rate, offset_hz)
         self._decimator = StreamDecimator(self.if_decim)
 
-        if mode in ("usb", "lsb"):
-            taps = sideband_taps(self.spec.bandwidth_hz, self.if_rate, upper=(mode == "usb"))
-        else:
-            taps = channel_taps(self.spec.bandwidth_hz, self.if_rate)
-        self._channel = Fir(taps)
+        self.bandwidth_hz = float(
+            bandwidth_hz if bandwidth_hz is not None else self.spec.bandwidth_hz
+        )
+        self._channel = Fir(self._channel_taps())
 
         if mode == "am":
             self._detector = AmDetector()
@@ -337,6 +350,23 @@ class DemodChain:
             self._audio_fir = Fir(lowpass_taps(c, fir_length_for(c)))
 
         self.muted_blocks = 0
+
+    def _channel_taps(self) -> np.ndarray:
+        if self.mode in ("usb", "lsb"):
+            return sideband_taps(self.bandwidth_hz, self.if_rate, upper=(self.mode == "usb"))
+        return channel_taps(self.bandwidth_hz, self.if_rate)
+
+    def set_bandwidth(self, bandwidth_hz: float) -> None:
+        """Retune the channel filter in place.
+
+        Only the filter is rebuilt, not the chain: the decimators and detector hold state
+        that is still valid, and tearing them down would click.
+        """
+        bandwidth_hz = float(bandwidth_hz)
+        if bandwidth_hz == self.bandwidth_hz:
+            return
+        self.bandwidth_hz = bandwidth_hz
+        self._channel = Fir(self._channel_taps())
 
     @staticmethod
     def _pick_factor(rate: float, target: float) -> int:
@@ -384,11 +414,16 @@ class DemodChain:
         if channel.size == 0:
             return np.zeros(0, dtype=np.float32)
 
-        squelched = False
-        if self.squelch_dbfs is not None and self.spec.squelch_capable:
-            power = float(np.mean(np.abs(channel) ** 2))
-            level = 10.0 * np.log10(power + 1e-30)
-            squelched = level < self.squelch_dbfs
+        # Measured after the channel filter, so it is the level of the signal actually
+        # being listened to rather than of everything in the span.
+        power = float(np.mean(np.abs(channel) ** 2))
+        self.channel_dbfs = 10.0 * np.log10(power + 1e-30)
+
+        squelched = (
+            self.squelch_dbfs is not None
+            and self.spec.squelch_capable
+            and self.channel_dbfs < self.squelch_dbfs
+        )
 
         if self._detector is not None:
             audio = self._detector.process(channel)

@@ -7,18 +7,21 @@ its AGC toggle. See PLANNING.md sections 3 and 4.
 
 from __future__ import annotations
 
-import pathlib
 import time
+from pathlib import Path
 
+import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..audio import AudioSink, audio_available
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
-from ..dsp.demod import MODE_SPECS, MODES
+from ..dsp.demod import BANDWIDTH_PRESETS, MODE_SPECS, MODES
+from ..recorder import DEFAULT_DIR, AudioRecorder, IQRecorder, timestamp_name
 from ..dsp.spectrum import SpectrumAnalyzer
 from ..settings import Settings, Snapshot
+from .smeter import SMeter
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
 
@@ -45,7 +48,9 @@ class MainWindow(QtWidgets.QMainWindow):
         volume: float = 0.4,
         offset_hz: float = 0.0,
         squelch_dbfs: float | None = None,
+        bandwidth_hz: float | None = None,
         enable_audio: bool = True,
+        recordings_dir=None,
         settings: Settings | None = None,
         parent=None,
     ) -> None:
@@ -71,6 +76,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_volume = float(volume)
         self._initial_offset = float(offset_hz)
         self._initial_squelch = squelch_dbfs
+        self._initial_bandwidth = bandwidth_hz
+        self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
+        self.audio_recorder: AudioRecorder | None = None
+        self.iq_recorder: IQRecorder | None = None
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
         self.audio: AudioSink | None = None
@@ -152,6 +161,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
         row.addWidget(self._mode_combo)
 
+        row.addWidget(QtWidgets.QLabel("BW"))
+        self._bw_audio_combo = QtWidgets.QComboBox()
+        self._bw_audio_combo.setToolTip("Channel filter width")
+        self._bw_audio_combo.currentIndexChanged.connect(self._on_audio_bandwidth_changed)
+        row.addWidget(self._bw_audio_combo)
+
         row.addWidget(QtWidgets.QLabel("Vol"))
         self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._volume_slider.setRange(0, 100)
@@ -193,9 +208,14 @@ class MainWindow(QtWidgets.QMainWindow):
             note.setEnabled(False)
             row.addWidget(note)
 
+        row.addSpacing(16)
+        self.smeter = SMeter()
+        row.addWidget(self.smeter)
+
         row.addStretch(1)
         self._update_offset_range()
         self._sync_squelch_enabled()
+        self._refresh_bandwidths()
         return box
 
     def _build_tuning_row(self) -> QtWidgets.QWidget:
@@ -295,6 +315,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._delete_button = QtWidgets.QPushButton("Delete")
         self._delete_button.clicked.connect(self._on_delete_memory)
         row.addWidget(self._delete_button)
+
+        row.addSpacing(20)
+        row.addWidget(QtWidgets.QLabel("Record"))
+        self._rec_audio_button = QtWidgets.QPushButton("Audio")
+        self._rec_audio_button.setCheckable(True)
+        self._rec_audio_button.setToolTip("Record demodulated audio to a WAV file")
+        self._rec_audio_button.clicked.connect(self._on_record_audio)
+        row.addWidget(self._rec_audio_button)
+
+        self._rec_iq_button = QtWidgets.QPushButton("IQ")
+        self._rec_iq_button.setCheckable(True)
+        self._rec_iq_button.setToolTip("Record raw IQ (about 6 MB/s at 768 kS/s)")
+        self._rec_iq_button.clicked.connect(self._on_record_iq)
+        row.addWidget(self._rec_iq_button)
+
+        self._rec_label = QtWidgets.QLabel("")
+        self._rec_label.setMinimumWidth(260)
+        row.addWidget(self._rec_label)
 
         row.addStretch(1)
         self._refresh_memories()
@@ -403,6 +441,11 @@ class MainWindow(QtWidgets.QMainWindow):
         describe the previous tuning; keeping any of them smears stale signal across the
         new span.
         """
+        if self.iq_recorder is not None:
+            # The sidecar records one centre frequency, so a retune would make the file
+            # a lie about itself.
+            self.stop_iq_recording("frequency changed")
+            self._rec_iq_button.setChecked(False)
         actual = self.source.set_center_freq(hz)
         self.spectrum.reset()
         self.spectrum.set_center_marker(actual)
@@ -478,15 +521,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if mode == "off" or mode not in MODE_SPECS:
             self.spectrum.clear_passband()
             return
-        spec = MODE_SPECS[mode]
+        width = self._channel_bandwidth()
         centre = self.source.center_freq + self._offset_spin.value() * 1e3
         if mode in ("usb", "lsb"):
             # One-sided: shade only the sideband actually being demodulated.
-            half = spec.bandwidth_hz
-            lower = centre if mode == "usb" else centre - half
-            self.spectrum.set_passband(lower + half / 2.0, half)
+            lower = centre if mode == "usb" else centre - width
+            self.spectrum.set_passband(lower + width / 2.0, width)
         else:
-            self.spectrum.set_passband(centre, spec.bandwidth_hz)
+            self.spectrum.set_passband(centre, width)
 
     def set_mode(self, mode: str) -> None:
         """Start, stop or switch demodulation.
@@ -520,6 +562,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._status.showMessage(f"could not switch mode: {exc}", 6000)
 
         self._sync_squelch_enabled()
+        self._refresh_bandwidths()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
@@ -544,6 +587,168 @@ class MainWindow(QtWidgets.QMainWindow):
             self.audio.set_squelch(self._squelch_value())
         self._schedule_save()
 
+    def _refresh_bandwidths(self) -> None:
+        """Offer the widths that make sense for the current mode."""
+        mode = self.mode
+        self._bw_audio_combo.blockSignals(True)
+        self._bw_audio_combo.clear()
+        presets = BANDWIDTH_PRESETS.get(mode, ())
+        for width in presets:
+            label = f"{width / 1e3:g} kHz"
+            self._bw_audio_combo.addItem(label, width)
+        if presets:
+            wanted = self._initial_bandwidth
+            if wanted is None or wanted not in presets:
+                wanted = MODE_SPECS[mode].bandwidth_hz if mode in MODE_SPECS else presets[0]
+            index = self._bw_audio_combo.findData(wanted)
+            self._bw_audio_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._bw_audio_combo.blockSignals(False)
+        self._bw_audio_combo.setEnabled(bool(presets))
+
+    def bandwidth_hz(self) -> float | None:
+        data = self._bw_audio_combo.currentData()
+        return float(data) if data is not None else None
+
+    def _on_audio_bandwidth_changed(self) -> None:
+        width = self.bandwidth_hz()
+        if width is None:
+            return
+        if self.audio is not None:
+            self.audio.set_bandwidth(width)
+        self._update_passband()
+        self._schedule_save()
+
+    # -- S-meter -----------------------------------------------------------
+
+    def _channel_bandwidth(self) -> float:
+        width = self.bandwidth_hz()
+        if width is not None:
+            return width
+        mode = self.mode
+        return MODE_SPECS[mode].bandwidth_hz if mode in MODE_SPECS else 9e3
+
+    def _update_smeter(self, dbfs, freqs) -> None:
+        """Signal level in the channel, plus an SNR estimate.
+
+        When audio is running the level comes from the demodulator, measured after the
+        channel filter, which is exactly the signal being listened to. With audio off it
+        is integrated from the displayed spectrum over the same width, so the meter still
+        works as a tuning aid.
+        """
+        linear = np.power(10.0, dbfs / 10.0)
+        noise_per_bin = float(np.median(linear))
+        centre = self.source.center_freq + self._offset_spin.value() * 1e3
+        half = self._channel_bandwidth() / 2.0
+        mask = np.abs(freqs - centre) <= half
+        bins = int(np.count_nonzero(mask))
+        if bins == 0:
+            self.smeter.set_level(None)
+            return
+
+        noise_in_channel = noise_per_bin * bins
+        spectrum_power = float(linear[mask].sum())
+        if self.audio is not None and self.audio.channel_dbfs is not None:
+            level_db = float(self.audio.channel_dbfs)
+            total = 10.0 ** (level_db / 10.0)
+        else:
+            total = spectrum_power
+            level_db = 10.0 * np.log10(total + 1e-30)
+        excess = max(total - noise_in_channel, 1e-30)
+        snr_db = 10.0 * np.log10(excess / max(noise_in_channel, 1e-30))
+        self.smeter.set_level(level_db, snr_db)
+
+    # -- recording ---------------------------------------------------------
+
+    def _recording_active(self) -> bool:
+        return (self.audio_recorder is not None) or (self.iq_recorder is not None)
+
+    def start_audio_recording(self) -> Path | None:
+        """Record demodulated audio. Needs a running demodulator to record."""
+        if self.audio_recorder is not None:
+            return self.audio_recorder.path
+        if self.audio is None:
+            self._status.showMessage("choose an audio mode before recording audio", 4000)
+            return None
+        name = timestamp_name(self.source.center_freq, ".wav", self.mode)
+        recorder = AudioRecorder(self.recordings_dir / name, self.audio.audio_rate)
+        try:
+            recorder.start()
+        except OSError as exc:
+            self._status.showMessage(f"could not start recording: {exc}", 6000)
+            return None
+        self.audio.on_audio = recorder.submit
+        self.audio_recorder = recorder
+        self._status.showMessage(f"recording audio to {recorder.path}", 5000)
+        return recorder.path
+
+    def stop_audio_recording(self, reason: str | None = None) -> None:
+        """Stop and report. `reason` is folded into the same message as the file path, so
+        neither fact is lost to the other overwriting the status bar."""
+        if self.audio_recorder is None:
+            return
+        if self.audio is not None:
+            self.audio.on_audio = None
+        self.audio_recorder.stop()
+        prefix = f"{reason} - " if reason else ""
+        self._status.showMessage(f"{prefix}saved {self.audio_recorder.path}", 8000)
+        self.audio_recorder = None
+
+    def start_iq_recording(self) -> Path | None:
+        if self.iq_recorder is not None:
+            return self.iq_recorder.path
+        name = timestamp_name(self.source.center_freq, ".cf32")
+        recorder = IQRecorder(self.recordings_dir / name, self.source)
+        try:
+            recorder.start()
+        except OSError as exc:
+            self._status.showMessage(f"could not start recording: {exc}", 6000)
+            return None
+        self.iq_recorder = recorder
+        self._status.showMessage(f"recording IQ to {recorder.path}", 5000)
+        return recorder.path
+
+    def stop_iq_recording(self, reason: str | None = None) -> None:
+        if self.iq_recorder is None:
+            return
+        self.iq_recorder.stop()
+        prefix = f"{reason} - " if reason else ""
+        self._status.showMessage(f"{prefix}saved {self.iq_recorder.path}", 8000)
+        self.iq_recorder = None
+
+    def _on_record_audio(self, checked: bool) -> None:
+        if checked:
+            if self.start_audio_recording() is None:
+                self._rec_audio_button.setChecked(False)
+        else:
+            self.stop_audio_recording()
+
+    def _on_record_iq(self, checked: bool) -> None:
+        if checked:
+            if self.start_iq_recording() is None:
+                self._rec_iq_button.setChecked(False)
+        else:
+            self.stop_iq_recording()
+
+    def _update_recording_label(self) -> None:
+        parts = []
+        for tag, rec in (("audio", self.audio_recorder), ("IQ", self.iq_recorder)):
+            if rec is None:
+                continue
+            parts.append(
+                f"{tag} {rec.seconds_recorded:.0f}s "
+                f"{rec.bytes_written / 1024**2:.1f} MB"
+                + (f" drop {rec.dropped_blocks}" if rec.dropped_blocks else "")
+            )
+            if not rec.running and rec.stopped_reason:
+                # Stopped itself: hit the size limit, or the disk complained.
+                if tag == "audio":
+                    self.stop_audio_recording(rec.stopped_reason)
+                    self._rec_audio_button.setChecked(False)
+                else:
+                    self.stop_iq_recording(rec.stopped_reason)
+                    self._rec_iq_button.setChecked(False)
+        self._rec_label.setText("   ".join(parts))
+
     # -- memories ----------------------------------------------------------
 
     def current_snapshot(self) -> Snapshot:
@@ -563,6 +768,7 @@ class MainWindow(QtWidgets.QMainWindow):
             volume=self._volume_slider.value() / 100.0,
             offset_hz=self._offset_spin.value() * 1e3,
             squelch_dbfs=self._squelch_value(),
+            bandwidth_hz=self.bandwidth_hz(),
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -622,6 +828,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._retune(snap.freq_hz)
 
+        self._initial_bandwidth = snap.bandwidth_hz
         wanted = snap.mode if snap.mode in MODES else "off"
         self._mode_combo.blockSignals(True)
         self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(wanted)))
@@ -791,6 +998,7 @@ class MainWindow(QtWidgets.QMainWindow):
         freqs = self.analyzer.freq_axis(self.source.center_freq, self.effective_rate)
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
+        self._update_smeter(dbfs, freqs)
         self._rows_pushed += 1
 
         # One-shot auto-range once there is enough history to be representative.
@@ -805,6 +1013,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._frames = 0
             self._fps_mark = now
             self._update_status(dbfs)
+            if self._recording_active():
+                self._update_recording_label()
 
     def _update_status(self, dbfs) -> None:
         stats = getattr(self.source, "stats", {})
@@ -842,6 +1052,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.stop()
         self._save_timer.stop()
         self._save_state()   # immediately, not debounced: there is no later
+        self.stop_audio_recording()
+        self.stop_iq_recording()
         if self.audio is not None:
             self.audio.stop()
             self.audio = None
@@ -859,7 +1071,7 @@ def run(source: IQSource, **kwargs) -> int:
     # bundled inside the .app, which is more than a launcher shortcut warrants.
     app.setApplicationName("RGC SDR")
     app.setApplicationDisplayName("RGC SDR")
-    icon_path = pathlib.Path(__file__).resolve().parents[3] / "assets" / "icon.png"
+    icon_path = Path(__file__).resolve().parents[3] / "assets" / "icon.png"
     if icon_path.is_file():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))
     source.start()

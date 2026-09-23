@@ -2,8 +2,8 @@
 
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
-named memories, and **audio demodulation** (AM, NBFM, WBFM, USB, LSB).
-Next is P4 (S-meter and recording).
+named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter and
+recording. Next is P5 (scanner, IQ playback, networking).
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -90,6 +90,14 @@ on the spectrum shows exactly what is being demodulated.
   station is still audible: without it a −104 dBFS carrier gives an audio level of
   0.00001, which is silence at any volume.
 - **Squelch** mutes below a threshold, and is only enabled for the FM modes.
+- **BW** sets the channel filter width — narrow it to pull one AM station out of a
+  crowded band, or widen it for better fidelity.
+
+The **signal meter** shows in-channel power in dBFS with a peak marker and an SNR
+estimate. It reads dBFS rather than S-units on purpose: S9 means −73 dBm at the antenna,
+which needs the whole gain chain calibrated, and this receiver reports no gain at all — an
+S-reading would be invented. SNR is the number that actually tells you if a signal is
+copyable.
 
 Audio is continuous and independent of the display: the waterfall may drop frames, the
 audio path never skips samples. The status bar reports the audio rate, the AGC gain in
@@ -97,6 +105,29 @@ use, and any underruns.
 
 WBFM is mono. SSB is a proper single-sideband filter, measured at over 30 dB rejection of
 the opposite sideband.
+
+### Recording
+
+**Record → Audio** writes the demodulated audio to a 16-bit WAV. **Record → IQ** writes
+raw complex64 baseband plus a JSON sidecar describing the sample rate, centre frequency
+and driver, so the capture can be replayed or analysed later. Both show elapsed time and
+file size as they run.
+
+Files land in `~/Documents/RGC_SDR` (change with `--recordings DIR`), named by timestamp
+and frequency, e.g. `2026-09-23_143512_0.6840MHz_am.wav`.
+
+IQ is big: about **5.7 MB/s** at 768 kS/s, or 345 MB a minute. Captures stop themselves at
+2 GiB rather than filling the disk. Retuning also stops an IQ capture, since the sidecar
+names one centre frequency and continuing would make the file describe itself wrongly.
+
+Reading a capture back:
+
+```python
+import json, numpy as np
+iq = np.fromfile("2026-09-23_143512_0.6840MHz.cf32", dtype=np.complex64)
+meta = json.load(open("2026-09-23_143512_0.6840MHz.cf32.json"))
+print(meta["sample_rate_hz"], meta["center_freq_hz"], iq.size)
+```
 
 ### Memories
 
@@ -138,6 +169,8 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/decimate.py](src/rgc_sdr/dsp/decimate.py) | Zoom decimation, stateless and streaming |
 | [src/rgc_sdr/dsp/demod.py](src/rgc_sdr/dsp/demod.py) | AM / FM / SSB detectors, channel filters, audio AGC |
 | [src/rgc_sdr/audio.py](src/rgc_sdr/audio.py) | Demod worker thread, FIFO, sound device |
+| [src/rgc_sdr/recorder.py](src/rgc_sdr/recorder.py) | WAV and raw-IQ recording, on their own threads |
+| [src/rgc_sdr/ui/smeter.py](src/rgc_sdr/ui/smeter.py) | Signal meter (dBFS + SNR, no invented S-units) |
 | [src/rgc_sdr/ui/](src/rgc_sdr/ui/) | pyqtgraph spectrum + waterfall, main window |
 
 `dsp/` never imports Qt and `device/` never imports Qt or `dsp`, so both are testable

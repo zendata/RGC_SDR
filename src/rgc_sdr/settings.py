@@ -60,6 +60,8 @@ class Snapshot:
     offset_hz: float = 0.0
     #: None means squelch disabled.
     squelch_dbfs: float | None = None
+    #: None means use the mode's default channel width.
+    bandwidth_hz: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

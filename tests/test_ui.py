@@ -18,6 +18,8 @@ from src.rgc_sdr.device.source import (  # noqa: E402
     FreqRange,
     GainElement,
     IQSource,
+    SequentialReader,
+    _Ring,
 )
 from src.rgc_sdr.dsp.spectrum import SpectrumAnalyzer  # noqa: E402
 from src.rgc_sdr.settings import Settings, Snapshot  # noqa: E402
@@ -36,6 +38,9 @@ class StubSource(IQSource):
         self._caps, self._rate, self._center, self._tone = caps, rate, center, tone_hz
         self._noise = noise
         self._rng = np.random.default_rng(1234)
+        # Generated samples are mirrored into a ring so gapless consumers (audio, IQ
+        # recording) see the same stream the display does, as on a real source.
+        self._ring = _Ring(400_000)
 
     @property
     def caps(self):
@@ -80,11 +85,16 @@ class StubSource(IQSource):
         self.bandwidth_set = hz
         return hz
 
+    def sequential_reader(self):
+        return SequentialReader(self._ring)
+
     def read_latest(self, n):
         t = np.arange(n) / self._rate
         tone = 0.5 * np.exp(2j * np.pi * self._tone * t)
         noise = self._noise * (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n))
-        return (tone + noise).astype(np.complex64)
+        block = (tone + noise).astype(np.complex64)
+        self._ring.write(block)
+        return block
 
 
 def _caps(**kw):
@@ -724,4 +734,160 @@ def test_retune_resets_nothing_when_audio_is_off(qapp):
     _pump(qapp, win, 2)
     win.waterfall.frequencySelected.emit(12e6)        # must not raise
     assert win.source.center_freq == pytest.approx(12e6)
+    win.close()
+
+
+# -- P4: bandwidth, S-meter, recording ---------------------------------------
+
+def test_bandwidth_presets_follow_the_mode(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    assert win.bandwidth_hz() == pytest.approx(9e3)         # the AM default
+    am_widths = [win._bw_audio_combo.itemData(i) for i in range(win._bw_audio_combo.count())]
+
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert win.bandwidth_hz() == pytest.approx(2.7e3)
+    ssb_widths = [win._bw_audio_combo.itemData(i) for i in range(win._bw_audio_combo.count())]
+    assert am_widths != ssb_widths
+    assert max(ssb_widths) < min(am_widths) * 2
+    win.close()
+
+
+def test_bandwidth_choice_narrows_the_passband(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._bw_audio_combo.setCurrentIndex(win._bw_audio_combo.findData(3e3))
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (hi - lo) == pytest.approx(3e3, abs=1.0)
+    win.close()
+
+
+def test_bandwidth_round_trips_through_a_snapshot(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._bw_audio_combo.setCurrentIndex(win._bw_audio_combo.findData(16e3))
+    assert win.current_snapshot().bandwidth_hz == pytest.approx(16e3)
+
+    win.apply_snapshot(Snapshot(freq_hz=7.1e6, mode="am", bandwidth_hz=4.5e3))
+    assert win.bandwidth_hz() == pytest.approx(4.5e3)
+    win.close()
+
+
+def test_smeter_reads_a_signal_above_the_noise(qapp):
+    """A tone inside the channel must give a level well above the noise floor."""
+    src = StubSource(_caps(), rate=768e3, center=7.1e6, tone_hz=1e3, noise=1e-4)
+    win = window_for(src, fft_size=4096, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    _pump(qapp, win, 3)
+    assert win.smeter.level_dbfs is not None
+    assert win.smeter.level_dbfs > -60.0
+    win.close()
+
+
+def test_smeter_level_drops_when_the_signal_leaves_the_channel(qapp):
+    """Tuning away from a signal must be visible on the meter."""
+    src = StubSource(_caps(), rate=768e3, center=7.1e6, tone_hz=1e3, noise=1e-4)
+    win = window_for(src, fft_size=4096, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    _pump(qapp, win, 3)
+    on_signal = win.smeter.level_dbfs
+
+    win._offset_spin.setValue(200.0)      # 200 kHz away from the tone
+    _pump(qapp, win, 3)
+    assert win.smeter.level_dbfs < on_signal - 20.0
+    win.close()
+
+
+def test_smeter_peak_holds_then_decays(qapp):
+    from src.rgc_sdr.ui.smeter import SMeter
+
+    meter = SMeter(peak_decay_db=1.0)
+    meter.set_level(-40.0)
+    assert meter.peak_dbfs == pytest.approx(-40.0)
+    meter.set_level(-90.0)
+    assert meter.peak_dbfs == pytest.approx(-41.0)   # decayed by one step
+    for _ in range(100):
+        meter.set_level(-90.0)
+    assert meter.peak_dbfs == pytest.approx(-90.0)   # settles to the level
+
+
+def test_smeter_reset_clears(qapp):
+    from src.rgc_sdr.ui.smeter import SMeter
+
+    meter = SMeter()
+    meter.set_level(-50.0)
+    meter.reset()
+    assert meter.level_dbfs is None and meter.peak_dbfs is None
+
+
+def test_audio_recording_needs_a_mode(qapp, tmp_path):
+    """Recording audio with no demodulator running is refused, not silently empty."""
+    win = window_for(StubSource(_caps()), fft_size=1024, recordings_dir=tmp_path)
+    assert win.start_audio_recording() is None
+    assert "mode" in win._status.currentMessage().lower()
+    assert list(tmp_path.iterdir()) == []
+    win.close()
+
+
+def test_iq_recording_writes_a_file_and_a_sidecar(qapp, tmp_path):
+    import time
+
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, recordings_dir=tmp_path)
+    path = win.start_iq_recording()
+    assert path is not None and path.suffix == ".cf32"
+    assert win.iq_recorder is not None
+    time.sleep(0.3)
+    win.stop_iq_recording()
+    assert win.iq_recorder is None
+    assert path.is_file()
+    assert path.with_suffix(".cf32.json").is_file()
+    win.close()
+
+
+def test_iq_recording_filename_carries_the_frequency(qapp, tmp_path):
+    src = StubSource(_caps(), center=0.684e6)
+    win = window_for(src, fft_size=1024, recordings_dir=tmp_path)
+    path = win.start_iq_recording()
+    assert "0.6840MHz" in path.name
+    win.stop_iq_recording()
+    win.close()
+
+
+def test_retuning_stops_an_iq_recording(qapp, tmp_path):
+    """The sidecar states one centre frequency, so a retune would make the file a lie."""
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, recordings_dir=tmp_path)
+    win._rec_iq_button.setChecked(True)
+    win.start_iq_recording()
+    assert win.iq_recorder is not None
+
+    win.waterfall.frequencySelected.emit(10e6)
+    assert win.iq_recorder is None, "recording continued across a retune"
+    assert not win._rec_iq_button.isChecked()
+    assert "frequency changed" in win._status.currentMessage()
+    win.close()
+
+
+def test_closing_stops_recordings(qapp, tmp_path):
+    src = StubSource(_caps())
+    win = window_for(src, fft_size=1024, recordings_dir=tmp_path)
+    path = win.start_iq_recording()
+    win.close()
+    assert win.iq_recorder is None
+    assert path.is_file()
+
+
+def test_record_buttons_untoggle_when_refused(qapp, tmp_path):
+    win = window_for(StubSource(_caps()), fft_size=1024, recordings_dir=tmp_path)
+    win._rec_audio_button.setChecked(True)
+    win._on_record_audio(True)               # no audio mode, so refused
+    assert not win._rec_audio_button.isChecked()
+    win.close()
+
+
+def test_recordings_default_under_documents(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win.recordings_dir.name == "RGC_SDR"
+    assert "Documents" in str(win.recordings_dir)
     win.close()

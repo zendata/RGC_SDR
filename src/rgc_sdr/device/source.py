@@ -302,6 +302,14 @@ class IQSource(ABC):
     def set_sample_rate(self, hz: float) -> float:
         raise NotImplementedError
 
+    def sequential_reader(self) -> SequentialReader:
+        """A gapless reader, for consumers that cannot skip samples.
+
+        Part of the contract because both audio and IQ recording need it; `read_latest`
+        is deliberately lossy and is not a substitute.
+        """
+        raise NotImplementedError
+
     def __enter__(self):
         self.start()
         return self

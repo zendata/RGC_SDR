@@ -90,8 +90,9 @@ headless-testable and lets modules be swapped independently.
   reports empty tuples here, so neither control appears. A radio that does offer them, such as
   HackRF, grows the controls with no code change.)*
 - **P3 — Demod.** AM, NBFM, WBFM, USB and LSB with audio out. ✅ See section 7c.
-- **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ← **current**
-- **P5 — Extras.** Scanner, multi-device, network (SpyServer-style), plugins.
+- **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
+- **P5 — Extras.** Scanner, multi-device, network (SpyServer-style), plugins,
+  IQ *playback* (the recorder's sidecar format is designed for it). ← **current**
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
 (originally part of the P3 DSP chain) and named memories with last-state restore
@@ -246,6 +247,48 @@ drives in the UI.
 **Measured on air:** AM on a −103.9 dBFS carrier 225 kHz off centre, 8 seconds of
 continuous playback with zero underruns, zero dropped samples, zero lost IQ and zero chain
 errors, while the display held 25 FPS.
+
+## 7d. P4 design (metering, recording, bandwidth)
+
+**The S-meter reads dBFS, deliberately not S-units.** S9 means −73 dBm at the antenna
+terminals, and converting to it requires the whole gain chain calibrated: antenna factor,
+feedline loss and receiver gain. This driver reports *no gain at all* (section 3), so any
+S-reading would be fabricated. dBFS plus an SNR estimate is honest, and on an uncalibrated
+receiver more useful — SNR is what actually predicts whether a signal is copyable.
+
+The level is measured after the channel filter when audio is running, so it is the signal
+being *listened to* rather than everything in the span. With audio off it is integrated
+from the displayed spectrum over the same width, so the meter still works as a tuning aid.
+SNR subtracts the noise contribution across the channel's bins rather than comparing peak
+to median, which would flatter narrow signals.
+
+**Recording never applies back-pressure to the signal path.** Each recorder owns a bounded
+queue drained by its own thread, and drops with a count rather than blocking: a stalled
+disk write in the audio path is a dropout, and on the Qt thread it is a freeze.
+
+The IQ recorder pulls from its *own* gapless reader rather than being fed, so a capture is
+continuous regardless of what the display or audio path is doing — verified by a test that
+interleaves lossy display reads and asserts the file has no discontinuity.
+
+**The size limit counts submitted bytes, not written bytes.** Checking bytes-on-disk lets
+a full queue overshoot the limit by megabytes, since the feeder runs ahead of the writer.
+IQ is heavy — complex64 at 768 kS/s measured **5.74 MB/s**, about 345 MB a minute — so the
+default 2 GiB ceiling stops a capture rather than filling the disk.
+
+**Retuning stops an IQ capture.** The sidecar names one centre frequency, so continuing
+across a retune would make the file a lie about itself. The stop reason and the file path
+are reported in one message, because two separate status updates meant the first was
+always overwritten by the second.
+
+**Audio bandwidth swaps the channel filter in place** rather than rebuilding the chain:
+the decimators and detector hold state that is still valid, and tearing them down clicks.
+Switching *mode* does reset a chosen width, since a figure picked for AM is meaningless
+for WBFM.
+
+**Measured 2026-09-23:** 5 s of AM to WAV (48 kHz, 16-bit mono, zero dropped blocks, audio
+band 38.6 dB above the 12 kHz+ region) and 3.93 s of IQ (23 MB, zero lost samples) written
+concurrently while the display held 25 FPS and audio reported zero underruns. Replaying
+the IQ file on its own puts the carrier at +0 Hz from the recorded centre.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
