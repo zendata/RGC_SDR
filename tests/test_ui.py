@@ -1603,3 +1603,166 @@ def test_typing_an_exact_frequency_is_left_alone_with_snap_off(qapp):
     assert src.center_freq == pytest.approx(7_100_137.0)
     assert win._freq_spin.value() == pytest.approx(7.100137, abs=1e-6)
     win.close()
+
+
+# -- CW zero beat ------------------------------------------------------------
+
+class AbsoluteToneSource(StubSource):
+    """A carrier at a fixed *absolute* frequency, so retuning really moves it.
+
+    StubSource puts its tone at a constant offset from centre, which can never converge:
+    the signal follows the radio. Zero-beating only means something against a signal
+    that stays put.
+    """
+
+    def __init__(self, caps, centre, carrier_hz, amplitude=0.3, noise=1e-4):
+        super().__init__(caps, center=centre, noise=noise)
+        self.carrier_hz = float(carrier_hz)
+        self._amplitude = amplitude
+
+    def read_latest(self, n):
+        offset = self.carrier_hz - self._center
+        t = np.arange(n) / self._rate
+        signal = self._amplitude * np.exp(2j * np.pi * offset * t)
+        hiss = self._noise * (
+            self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n)
+        )
+        block = (signal + hiss).astype(np.complex64)
+        self._ring.write(block)
+        return block
+
+
+def test_zero_beat_is_only_enabled_in_cw(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert not win._zerobeat_button.isEnabled()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win._zerobeat_button.isEnabled()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert not win._zerobeat_button.isEnabled()
+    win.close()
+
+
+def test_zero_beat_does_nothing_outside_cw(qapp):
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 150.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert win.zerobeat_once() is None
+    assert src.center_freq == pytest.approx(14.05e6)
+    win.close()
+
+
+def test_zero_beat_corrects_upward(qapp):
+    """A carrier above the tuning must pull the radio up, not down."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 180.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    correction = win.zerobeat_once()
+    assert correction == pytest.approx(180.0, abs=6.0)
+    assert src.center_freq == pytest.approx(14.05e6 + 180.0, abs=6.0)
+    win.close()
+
+
+def test_zero_beat_corrects_downward(qapp):
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 - 240.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    correction = win.zerobeat_once()
+    assert correction == pytest.approx(-240.0, abs=6.0)
+    assert src.center_freq == pytest.approx(14.05e6 - 240.0, abs=6.0)
+    win.close()
+
+
+def test_zero_beat_converges_and_then_holds(qapp):
+    """Repeated presses must settle, not oscillate around the target."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 300.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    for _ in range(4):
+        win.zerobeat_once()
+    assert src.center_freq == pytest.approx(14.05e6 + 300.0, abs=5.0)
+    # Already on tune: reports zero rather than jittering.
+    assert win.zerobeat_once() == pytest.approx(0.0)
+    win.close()
+
+
+def test_zero_beat_ignores_a_signal_beyond_the_search_limit(qapp):
+    """Bounded to 500 Hz, so it cannot wander off onto something else."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 2000.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win.zerobeat_once() is None
+    assert src.center_freq == pytest.approx(14.05e6)
+    assert "no signal" in win._status.currentMessage()
+    win.close()
+
+
+def test_zero_beat_finds_a_carrier_at_the_edge_of_the_search(qapp):
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 450.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win.zerobeat_once() == pytest.approx(450.0, abs=8.0)
+    win.close()
+
+
+def test_zero_beat_does_nothing_with_only_noise(qapp):
+    src = StubSource(_caps(), center=14.05e6, tone_hz=96e3, noise=1e-3)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    before = src.center_freq
+    win.zerobeat_once()
+    assert src.center_freq == pytest.approx(before)
+    win.close()
+
+
+def test_zero_beat_follows_the_listening_offset(qapp):
+    """It centres the carrier you are listening to, not whatever is nearest DC."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 20_100.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._offset_spin.setValue(20.0)                # listening 20 kHz up
+    assert win.zerobeat_once() == pytest.approx(100.0, abs=6.0)
+    win.close()
+
+
+def test_zero_beat_ignores_snap(qapp):
+    """A channel grid is exactly what zero-beating has to disregard."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 137.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._step_combo.setCurrentText("1 kHz")
+    win._snap_check.setChecked(True)
+    win.zerobeat_once()
+    assert src.center_freq == pytest.approx(14.05e6 + 137.0, abs=6.0)
+    win.close()
+
+
+def test_zero_beat_only_runs_while_the_button_is_held(qapp):
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 150.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert not win._zerobeat_timer.isActive()
+    win._zerobeat_button.pressed.emit()
+    assert win._zerobeat_timer.isActive()
+    win._zerobeat_button.released.emit()
+    assert not win._zerobeat_timer.isActive()
+    win.close()
+
+
+def test_pressing_zero_beat_acts_immediately(qapp):
+    """Holding it should respond at once, not after the first timer interval."""
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 200.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._zerobeat_button.pressed.emit()
+    assert src.center_freq == pytest.approx(14.05e6 + 200.0, abs=8.0)
+    win._zerobeat_button.released.emit()
+    win.close()
+
+
+def test_zero_beat_stops_on_close(qapp):
+    src = AbsoluteToneSource(_caps(), 14.05e6, 14.05e6 + 150.0)
+    win = window_for(src, fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._zerobeat_button.pressed.emit()
+    win.close()
+    assert not win._zerobeat_timer.isActive()

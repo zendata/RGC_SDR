@@ -21,6 +21,8 @@ from ..dsp.demod import BANDWIDTH_PRESETS, MODE_SPECS, MODES
 from ..recorder import DEFAULT_DIR, AudioRecorder, IQRecorder, timestamp_name
 from ..scanner import ScanAction, ScanConfig, Scanner
 from ..dsp.spectrum import SpectrumAnalyzer
+from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
+from ..dsp.zerobeat import measure_carrier
 from ..settings import Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from .smeter import SMeter
@@ -28,6 +30,13 @@ from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
 
 FFT_SIZES = (1024, 2048, 4096, 8192, 16384)
+#: How far either side of the current tuning zero-beat will look for a carrier.
+ZEROBEAT_SEARCH_HZ = 500.0
+#: How often it re-measures while the button is held.
+ZEROBEAT_INTERVAL_MS = 150
+#: Below this much error it stops nudging: further correction is inaudible and would
+#: only jitter the tuning.
+ZEROBEAT_DEADBAND_HZ = 3.0
 #: Decimation factors offered as a zoom control. Powers of two, matching Decimator.
 ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 #: Fraction of the ring a single frame may consume, so deep zoom cannot starve itself.
@@ -136,7 +145,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
+        self._sync_zerobeat_enabled()
         self._update_passband()
+
+        self._zerobeat_timer = QtCore.QTimer(self)
+        self._zerobeat_timer.timeout.connect(self._zerobeat_step)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
@@ -603,6 +616,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.set_peak_hold(self._initial_peak_hold)
         row.addWidget(self._peak_check)
 
+        self._zerobeat_button = QtWidgets.QPushButton("Zero beat")
+        self._zerobeat_button.setToolTip(
+            "Hold to tune a nearby CW carrier onto the 700 Hz beat note.\n"
+            f"Searches {ZEROBEAT_SEARCH_HZ:.0f} Hz either side. CW mode only."
+        )
+        self._zerobeat_button.pressed.connect(self._start_zerobeat)
+        self._zerobeat_button.released.connect(self._stop_zerobeat)
+        row.addWidget(self._zerobeat_button)
+
         row.addStretch(1)
         return bar
 
@@ -852,6 +874,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._sync_squelch_enabled()
         self._refresh_bandwidths()
+        self._sync_zerobeat_enabled()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
@@ -934,6 +957,62 @@ class MainWindow(QtWidgets.QMainWindow):
             self.audio.set_bandwidth(width)
         self._update_passband()
         self._schedule_save()
+
+    # -- CW zero beat ------------------------------------------------------
+
+    def _sync_zerobeat_enabled(self) -> None:
+        """Only meaningful in CW: every other mode has no beat note to centre."""
+        self._zerobeat_button.setEnabled(self.mode == "cw")
+
+    def _start_zerobeat(self) -> None:
+        if self.mode != "cw":
+            return
+        self._zerobeat_timer.start(ZEROBEAT_INTERVAL_MS)
+        self._zerobeat_step()          # act at once rather than after the first interval
+
+    def _stop_zerobeat(self) -> None:
+        self._zerobeat_timer.stop()
+
+    def zerobeat_once(self) -> float | None:
+        """Measure the nearby carrier and correct the tuning once.
+
+        Returns the correction applied in Hz, or None when there was nothing to tune to.
+        The correction is signed, so the radio moves up or down as needed; it is applied
+        in one go because the measurement is accurate to a couple of hertz, and hunting
+        in fixed steps would only be slower.
+        """
+        if self.mode != "cw":
+            return None
+        listen_hz = self._offset_spin.value() * 1e3
+        iq = self.source.read_latest(ZEROBEAT_FFT)
+        if iq.size < ZEROBEAT_FFT:
+            return None
+        found = measure_carrier(
+            iq,
+            self.source.sample_rate,
+            listen_hz=listen_hz,
+            search_hz=ZEROBEAT_SEARCH_HZ,
+        )
+        if found is None:
+            self._status.showMessage("zero beat: no signal within 500 Hz", 2000)
+            return None
+        if abs(found.error_hz) <= ZEROBEAT_DEADBAND_HZ:
+            self._status.showMessage(
+                f"zero beat: on tune ({found.snr_db:.0f} dB S/N)", 2000
+            )
+            return 0.0
+        # Bounded by the search width, so a bad measurement cannot throw the radio.
+        correction = float(np.clip(found.error_hz, -ZEROBEAT_SEARCH_HZ, ZEROBEAT_SEARCH_HZ))
+        # Snapping is skipped deliberately: a channel grid is exactly what zero-beating
+        # has to ignore.
+        self._retune(self.source.center_freq + correction, allow_snap=False)
+        self._status.showMessage(
+            f"zero beat: {correction:+.0f} Hz ({found.snr_db:.0f} dB S/N)", 2000
+        )
+        return correction
+
+    def _zerobeat_step(self) -> None:
+        self.zerobeat_once()
 
     # -- S-meter -----------------------------------------------------------
 
@@ -1391,6 +1470,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
         self._timer.stop()
+        self._zerobeat_timer.stop()
         self._save_timer.stop()
         self._save_state()   # immediately, not debounced: there is no later
         if self.scanner is not None:

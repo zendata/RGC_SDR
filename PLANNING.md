@@ -433,6 +433,38 @@ rather than waiting for the next tune, and a snapped entry is written back into 
 frequency box — comparing against the requested value rather than the snapped one, or the
 box keeps showing what was typed while the radio sits on the nearest channel.
 
+## 7h. CW zero beat
+
+**Hold the button and it tunes the nearby carrier onto the 700 Hz beat note.** Only in CW
+mode, only while held, and only if there is actually a carrier within 500 Hz.
+
+**The display spectrum is useless for this.** 4096 bins across 768 kHz is 187.5 Hz per
+bin, and the task is to place a carrier on a 700 Hz tone to within a few hertz. So
+`dsp/zerobeat.py` runs its own measurement: a 32768-point transform over the narrow
+region of interest, plus **parabolic interpolation** across the peak and its two
+neighbours. That reaches a couple of hertz from 23.4 Hz bins; without the interpolation
+the best possible tuning would be half a bin, an audible 12 Hz error on a beat note.
+
+The window length is chosen for CW specifically. 32768 samples is 43 ms, short enough to
+sit inside a single dot; a longer window would average across the gaps between elements
+and smear the very carrier it is looking for. When a measurement lands in a gap there is
+no carrier to find, the step reports nothing, and the next one tries again.
+
+**The correction is applied in one move, not hunted.** The measurement is signed and
+accurate, so the radio goes straight to the right place — up or down as needed — rather
+than stepping and re-checking. Each correction is clamped to the search width so a bad
+measurement cannot throw the tuning, there is a 3 Hz deadband to stop it jittering once
+it is right, and snapping is deliberately bypassed: a channel grid is exactly what
+zero-beating must ignore. Corrections are under 500 Hz and therefore *fine* tunes by
+section 7f, so the audio keeps running while it converges.
+
+Worth recording, because it shaped the tests: a carrier at amplitude 2e-4 in 1e-3 of
+noise is **negative** SNR in the time domain yet over 25 dB in the spectrum. A
+32768-point transform concentrates a coherent carrier into one bin while spreading noise
+across all of them, roughly 42 dB of processing gain. "Weak" therefore has to be defined
+spectrally, which is why the threshold test measures the signal's own SNR rather than
+guessing an amplitude.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

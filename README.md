@@ -105,6 +105,12 @@ and be silent, so it is mixed up to a 700 Hz tone. Filters are narrow (100 Hz to
 500 Hz by default) and mistuning moves the pitch, so you can zero-beat by ear — which is
 what the 10 Hz and 100 Hz steps are for.
 
+**Zero beat** (next to Peak hold, CW only) does it for you. Hold the button and it finds
+the carrier within 500 Hz, works out which way to go, and tunes it onto exactly 700 Hz —
+accurate to a couple of hertz. It only tunes while held, does nothing if there is no
+signal nearby, and ignores Snap, since a channel grid is the opposite of what
+zero-beating needs. Audio keeps playing while it converges.
+
 - **Offset** listens that far from the tuned centre without moving the radio, so you can
   watch a wide span and hear one signal inside it. The shaded band follows it.
 - **Vol** is a plain output gain. An automatic gain control runs ahead of it, so a weak
