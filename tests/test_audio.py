@@ -253,3 +253,116 @@ def test_sink_rejects_an_unknown_mode():
 
     with pytest.raises(ValueError):
         AudioSink(Dummy()).set_mode("fmx")
+
+
+# -- mute --------------------------------------------------------------------
+
+def test_fifo_silence_still_counts_as_data():
+    """Muting pushes zeros rather than nothing, so the stream stays fed."""
+    fifo = AudioFifo(100)
+    fifo.push(np.zeros(10, dtype=np.float32))
+    assert len(fifo) == 10
+    assert fifo.underrun_samples == 0
+
+
+@audio_only
+def test_mute_silences_output_but_not_the_recording(tmp_path):
+    """Muting is a choice about the room; a silent recording would be a nasty surprise."""
+    import time
+
+    from src.rgc_sdr.audio import AudioSink
+    from src.rgc_sdr.device.source import DeviceCaps, FreqRange, IQSource
+
+    class ToneSource(IQSource):
+        def __init__(self):
+            self._ring = _Ring(1_200_000)
+            self._n = 0
+
+        @property
+        def caps(self):
+            return DeviceCaps("stub", "stub", "", (768e3,), (FreqRange(1e3, 30e6),),
+                              (), False, ("CF32",))
+
+        @property
+        def sample_rate(self):
+            return 768e3
+
+        @property
+        def center_freq(self):
+            return 7.1e6
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def read_latest(self, n):
+            return self._ring.read_latest(n)
+
+        def sequential_reader(self):
+            return SequentialReader(self._ring)
+
+        def fill(self, count):
+            t = (self._n + np.arange(count)) / 768e3
+            self._n += count
+            env = 1.0 + 0.5 * np.cos(2 * np.pi * 1000.0 * t)
+            self._ring.write(env.astype(np.complex64))
+
+    src = ToneSource()
+    src.fill(300_000)
+    recorded = []
+    sink = AudioSink(src, mode="am", volume=0.5, blocksize=512)
+    sink.on_audio = recorded.append
+    sink.start()
+    try:
+        sink.set_muted(True)
+        assert sink.muted is True
+        deadline = time.time() + 3.0
+        while time.time() < deadline and len(recorded) < 3:
+            src.fill(40_000)
+            time.sleep(0.05)
+        assert recorded, "worker produced nothing"
+        # The tap saw real audio even though the output was muted.
+        assert max(float(np.max(np.abs(b))) for b in recorded) > 1e-4
+        assert sink.stats["muted"] is True
+    finally:
+        sink.stop()
+
+
+@audio_only
+def test_unmute_restores_output():
+    from src.rgc_sdr.audio import AudioSink
+    from src.rgc_sdr.device.source import DeviceCaps, FreqRange, IQSource
+
+    class Quiet(IQSource):
+        @property
+        def caps(self):
+            return DeviceCaps("s", "s", "", (768e3,), (FreqRange(1e3, 30e6),),
+                              (), False, ("CF32",))
+
+        @property
+        def sample_rate(self):
+            return 768e3
+
+        @property
+        def center_freq(self):
+            return 7.1e6
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def read_latest(self, n):
+            return np.zeros(0, dtype=np.complex64)
+
+        def sequential_reader(self):
+            return SequentialReader(_Ring(1000))
+
+    sink = AudioSink(Quiet(), mode="am")
+    sink.set_muted(True)
+    assert sink.muted is True
+    sink.set_muted(False)
+    assert sink.muted is False

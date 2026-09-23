@@ -35,7 +35,7 @@ Probed 2026-09-21 on the actual device — these numbers override vendor-datashe
 | `getStreamMTU` | 65536 |
 | **Actual `readStream` return** | **2048 samples per call, regardless of buffer size** |
 | Gain elements | **none** — `listGains()` empty, `getGainRange()` = 0.0–0.0, `getSettingInfo()` empty |
-| AGC | `hasGainMode()` = true (on/off only) |
+| AGC | **claimed but not honoured** — `hasGainMode()` = true, yet `setGainMode(False)` leaves `getGainMode()` reporting true and the level unchanged to 0.05 dB |
 | Bandwidth control | **none** — `listBandwidths()` = `()`, `getBandwidthRange()` = `[]`; `setBandwidth()` is silently accepted while `getBandwidth()` stays 0.0 |
 | Sustained throughput | 912 kHz: 99.2 % of nominal over 8 s, 0 overflows. 768 kHz: 99.0 %. Both fine |
 | Restart settling | first ~4 frames after a stream restart read ≈8 dB hot broadband (peak −93.5 vs −110 dBFS steady) |
@@ -52,9 +52,13 @@ Probed 2026-09-21 on the actual device — these numbers override vendor-datashe
 Three consequences that shape the design:
 1. **2048-sample reads mean 375 `readStream` calls/sec at 768 kHz.** That cannot run on the GUI
    thread — a reader thread feeding a ring buffer is mandatory, not an optimisation.
-2. **This driver exposes no gain controls at all.** Any "set LNA/VGA gain" UI is unimplementable
-   here; gain control reduces to an AGC toggle. Other drivers (e.g. HackRF) *do* expose elements,
-   so the UI must be built from probed capabilities rather than hardcoded per device.
+2. **This driver exposes no gain controls at all, and its AGC toggle is a lie.** There are no
+   gain elements, and `hasGainMode()` returns true while `setGainMode` is silently ignored
+   (measured 2026-09-23: the mode will not change and the received level moves 0.05 dB, i.e.
+   nothing). Capabilities are therefore **verified, not trusted** — `_probe_caps` tries to change
+   the gain mode and puts it back, and reports `has_agc=False` when the change does not stick. A
+   control that does nothing is worse than no control. Other drivers (HackRF) do honour it, and
+   there the toggle appears.
 3. **Signal levels are very low** (floor ≈ −111 dBFS), so sensible default colour limits and an
    auto-fit control matter more than they would on a strong-signal receiver.
 
@@ -398,6 +402,36 @@ a pixel, so its history is still honest, and the move is small against any chann
 so the demodulator's state remains valid. `set_center_freq` therefore takes a `flush`
 flag; the settle period is kept for stream restarts, where section 3 measured it is
 genuinely needed. A fine nudge also no longer stops an IQ capture.
+
+## 7g. CW, mute and snap
+
+**CW needs a BFO.** A keyed carrier tuned exactly sits at 0 Hz, which is silent. The chain
+mixes it to an audio pitch (700 Hz) so it is audible, which is the job a beat-frequency
+oscillator does in a conventional receiver. The filter is a *complex band-pass centred on
+the pitch* rather than a low-pass — 500 Hz wide by default, down to 100 Hz — so it passes
+the tone and rejects its mirror image. Measured: a tuned carrier produces 700.4 Hz, key-up
+is silence, mistuning by 200 Hz moves the tone by 200 Hz (which is how you zero-beat), and
+a signal 3 kHz away is rejected by over 30 dB.
+
+The BFO is folded into the mixer offset, so the UI's offset keeps meaning "where I am
+listening" and nothing outside the chain needs to know CW is special. The passband overlay
+is drawn at the pitch, since that is where the tone actually appears.
+
+**Mute is not volume zero.** It silences the output while leaving the volume setting and
+the demodulator running, so unmuting is instant and at the right level rather than waiting
+for the AGC to recover. Two deliberate choices: the recorder is fed *before* muting, since
+muting is a decision about the room and a silent recording would be a nasty surprise; and
+mute is **not** persisted, because coming back to a silent radio with no explanation looks
+like a fault.
+
+**Snap rounds tuning to a multiple of the step**, for channelised bands — 25 kHz airband,
+9 kHz medium wave. It applies to the things the user drives directly: clicking the
+spectrum or waterfall, typing in the box, and swipe nudges. It deliberately does *not*
+apply to a recalled memory or a scanner hit: a saved frequency is an exact choice someone
+made, and scanner results are already on their own grid. Enabling it realigns immediately
+rather than waiting for the next tune, and a snapped entry is written back into the
+frequency box — comparing against the requested value rather than the snapped one, or the
+box keeps showing what was typed while the radio sits on the nearest channel.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

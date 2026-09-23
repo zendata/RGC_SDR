@@ -52,6 +52,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tuning increment for arrow keys and sideways swipes")
     p.add_argument("--bandwidth", type=float, default=None, metavar="HZ",
                    help="channel filter width (default: the mode's own)")
+    p.add_argument("--snap", dest="snap", action="store_true", default=None,
+                   help="round tuning to a multiple of the step")
+    p.add_argument("--no-snap", dest="snap", action="store_false", help="tune freely")
     p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
     p.add_argument("--recordings", default=None, metavar="DIR",
                    help="where to write recordings (default: ~/Documents/RGC_SDR)")
@@ -131,6 +134,7 @@ def main(argv: list[str] | None = None) -> int:
         base.bandwidth_hz if base is not None else None
     )
     step = pick(args.step, "step_hz", 10e3)
+    snap = pick(args.snap, "snap", False)
 
     if args.min_db is not None or args.max_db is not None:
         levels = (args.min_db if args.min_db is not None else -120.0,
@@ -176,6 +180,7 @@ def main(argv: list[str] | None = None) -> int:
         squelch_dbfs=squelch,
         bandwidth_hz=bandwidth,
         step_hz=step,
+        snap=snap,
         enable_audio=not args.no_audio,
         recordings_dir=args.recordings,
         settings=settings,

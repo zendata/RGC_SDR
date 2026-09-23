@@ -18,7 +18,7 @@ import numpy as np
 from .decimate import StreamDecimator, lowpass_taps
 
 #: Modes the UI offers, in the order the roadmap introduces them.
-MODES = ("am", "nbfm", "wbfm", "usb", "lsb")
+MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw")
 
 
 #: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
@@ -28,6 +28,9 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "wbfm": (100e3, 150e3, 200e3),
     "usb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
     "lsb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
+    # CW filters are narrow: the signal is an on/off carrier, so bandwidth buys nothing
+    # but noise. 250-500 Hz is typical, and 100 Hz is for digging one signal out of a pile.
+    "cw": (100.0, 250.0, 500.0, 800.0, 1.5e3),
 }
 
 
@@ -42,6 +45,9 @@ class ModeSpec:
     deemphasis_s: float | None = None
     audio_cutoff_hz: float | None = None
     squelch_capable: bool = False
+    #: CW only. A keyed carrier tuned exactly produces DC, which is silent, so the chain
+    #: mixes it to this audio pitch -- the job a BFO does in a conventional receiver.
+    pitch_hz: float = 0.0
 
 
 MODE_SPECS: dict[str, ModeSpec] = {
@@ -61,6 +67,7 @@ MODE_SPECS: dict[str, ModeSpec] = {
     ),
     "usb": ModeSpec(bandwidth_hz=2.7e3, if_target_hz=48e3),
     "lsb": ModeSpec(bandwidth_hz=2.7e3, if_target_hz=48e3),
+    "cw": ModeSpec(bandwidth_hz=500.0, if_target_hz=48e3, pitch_hz=700.0),
 }
 
 
@@ -135,18 +142,29 @@ def channel_taps(bandwidth_hz: float, sample_rate: float) -> np.ndarray:
     return lowpass_taps(cutoff, fir_length_for(cutoff))
 
 
-def sideband_taps(bandwidth_hz: float, sample_rate: float, upper: bool) -> np.ndarray:
-    """Complex band-pass isolating one sideband.
+def bandpass_taps(centre_hz: float, bandwidth_hz: float, sample_rate: float) -> np.ndarray:
+    """Complex band-pass covering centre +/- bandwidth/2.
 
-    With the carrier at 0 Hz the upper sideband occupies 0..+B and the lower -B..0, so a
-    real low-pass cannot separate them -- it is symmetric. Modulating a half-width
-    low-pass up to +/-B/2 gives an asymmetric filter that passes only one side.
+    Complex, and therefore asymmetric: a real low-pass passes mirror-image frequencies
+    either side of zero, which is exactly what must not happen when one sideband or one
+    audio pitch is wanted.
     """
     half = min(bandwidth_hz / 2.0 / sample_rate, 0.24)
     taps = lowpass_taps(half, fir_length_for(half))
     n = np.arange(taps.size) - (taps.size - 1) / 2.0
-    direction = 1.0 if upper else -1.0
-    return taps * np.exp(2j * np.pi * direction * half * n)
+    return taps * np.exp(2j * np.pi * (centre_hz / sample_rate) * n)
+
+
+def sideband_taps(bandwidth_hz: float, sample_rate: float, upper: bool) -> np.ndarray:
+    """Complex band-pass isolating one sideband.
+
+    With the carrier at 0 Hz the upper sideband occupies 0..+B and the lower -B..0, so a
+    real low-pass cannot separate them -- it is symmetric. A band-pass centred on +/-B/2
+    passes only one side.
+    """
+    half = min(bandwidth_hz / 2.0, 0.24 * sample_rate)
+    centre = half if upper else -half
+    return bandpass_taps(centre, bandwidth_hz, sample_rate)
 
 
 class AmDetector:
@@ -314,7 +332,10 @@ class DemodChain:
         self.if_decim = self._pick_factor(self.sample_rate, self.spec.if_target_hz)
         self.if_rate = self.sample_rate / self.if_decim
 
-        self._mixer = Mixer(self.sample_rate, offset_hz)
+        self._user_offset = float(offset_hz)
+        # The BFO is folded into the mixer, so the UI's offset keeps meaning "where I am
+        # listening" rather than having to know about CW's pitch.
+        self._mixer = Mixer(self.sample_rate, self._mix_offset())
         self._decimator = StreamDecimator(self.if_decim)
 
         self.bandwidth_hz = float(
@@ -327,7 +348,9 @@ class DemodChain:
         elif mode in ("nbfm", "wbfm"):
             self._detector = FmDetector(self.if_rate, self.spec.deviation_hz)
         else:
-            self._detector = None  # SSB needs no detector beyond taking the real part
+            # SSB and CW need no detector: the filter did the work and the real part of
+            # the result is the audio.
+            self._detector = None
 
         self._deemph = (
             Deemphasis(self.if_rate, self.spec.deemphasis_s)
@@ -351,7 +374,14 @@ class DemodChain:
 
         self.muted_blocks = 0
 
+    def _mix_offset(self) -> float:
+        """Mixer shift, which for CW puts the carrier at the wanted audio pitch."""
+        return self._user_offset - self.spec.pitch_hz
+
     def _channel_taps(self) -> np.ndarray:
+        if self.mode == "cw":
+            # Centred on the pitch, so the keyed carrier lands inside the passband.
+            return bandpass_taps(self.spec.pitch_hz, self.bandwidth_hz, self.if_rate)
         if self.mode in ("usb", "lsb"):
             return sideband_taps(self.bandwidth_hz, self.if_rate, upper=(self.mode == "usb"))
         return channel_taps(self.bandwidth_hz, self.if_rate)
@@ -378,10 +408,16 @@ class DemodChain:
 
     @property
     def offset_hz(self) -> float:
-        return self._mixer.offset_hz
+        """Where the user is listening, with any CW pitch already accounted for."""
+        return self._user_offset
+
+    @property
+    def pitch_hz(self) -> float:
+        return self.spec.pitch_hz
 
     def set_offset(self, offset_hz: float) -> None:
-        self._mixer.set_offset(offset_hz)
+        self._user_offset = float(offset_hz)
+        self._mixer.set_offset(self._mix_offset())
 
     def input_for_audio(self, n_audio: int) -> int:
         """Input IQ samples needed for roughly `n_audio` output samples."""

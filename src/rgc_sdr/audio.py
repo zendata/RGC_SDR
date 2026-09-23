@@ -130,6 +130,7 @@ class AudioSink:
         self._volume = float(volume)
         self._squelch = squelch_dbfs
         self._bandwidth = bandwidth_hz
+        self._muted = False
 
         self._chain: DemodChain | None = None
         self._reader = None
@@ -184,6 +185,20 @@ class AudioSink:
             squelch_dbfs=self._squelch,
             bandwidth_hz=self._bandwidth,
         )
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    def set_muted(self, muted: bool) -> None:
+        """Silence the output without touching the volume setting.
+
+        The demodulator keeps running, so unmuting is instant and at the right level
+        rather than waiting for the AGC to find its feet again.
+        """
+        self._muted = bool(muted)
+        if self._muted:
+            self._fifo.clear()      # drop what is already queued, or it plays on briefly
 
     def set_volume(self, volume: float) -> None:
         self._volume = float(volume)
@@ -319,13 +334,19 @@ class AudioSink:
                 # Never let a DSP error kill audio silently or spin the thread.
                 self._chain_errors += 1
                 continue
-            self._fifo.push(audio)
+            # The recorder is fed before muting: muting is a choice about the room,
+            # not about the recording, and a silent file would be a nasty surprise.
             tap = self.on_audio
             if tap is not None and audio.size:
                 try:
                     tap(audio)
                 except Exception:
                     self._chain_errors += 1
+            if self._muted:
+                # Pushed as silence rather than skipped, so the stream stays fed and the
+                # callback never reports an underrun for something deliberate.
+                audio = np.zeros_like(audio)
+            self._fifo.push(audio)
 
     # -- reporting ---------------------------------------------------------
 
@@ -342,4 +363,5 @@ class AudioSink:
             "agc_gain": chain.agc_gain if chain else 1.0,
             "channel_dbfs": chain.channel_dbfs if chain else -200.0,
             "chain_errors": self._chain_errors,
+            "muted": self._muted,
         }

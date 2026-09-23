@@ -415,6 +415,24 @@ class SoapyIQSource(IQSource):
         bandwidths = tuple(
             float(b) for b in _safe(lambda: d.listBandwidths(SOAPY_RX, 0), ()) if float(b) > 0
         )
+        # Verified, not trusted. SoapyAirspyHF reports hasGainMode() == True and then
+        # ignores setGainMode entirely: measured 2026-09-23, setting it False leaves
+        # getGainMode() reporting True and the received level unchanged to within 0.05 dB.
+        # A control that does nothing is worse than no control, so the claim is tested by
+        # trying to change it and putting it back.
+        has_agc = bool(_safe(lambda: d.hasGainMode(SOAPY_RX, 0), False))
+        if has_agc:
+            original = _safe(lambda: bool(d.getGainMode(SOAPY_RX, 0)), None)
+            if original is None:
+                has_agc = False
+            else:
+                try:
+                    d.setGainMode(SOAPY_RX, 0, not original)
+                    has_agc = bool(d.getGainMode(SOAPY_RX, 0)) != original
+                    d.setGainMode(SOAPY_RX, 0, original)
+                except Exception:
+                    has_agc = False
+
         info = _safe(lambda: d.getHardwareInfo(), {})
         info = dict(info) if info else {}
         return DeviceCaps(
@@ -424,7 +442,7 @@ class SoapyIQSource(IQSource):
             sample_rates=rates,
             freq_ranges=ranges,
             gain_elements=tuple(gains),
-            has_agc=bool(_safe(lambda: d.hasGainMode(SOAPY_RX, 0), False)),
+            has_agc=has_agc,
             formats=tuple(str(f) for f in _safe(lambda: d.getStreamFormats(SOAPY_RX, 0), ())),
             bandwidths=bandwidths,
         )

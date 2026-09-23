@@ -64,6 +64,8 @@ class Snapshot:
     bandwidth_hz: float | None = None
     #: Tuning increment for the arrow keys and sideways swipes.
     step_hz: float = 10e3
+    #: Round tuning to a multiple of the step, for channelised bands.
+    snap: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)

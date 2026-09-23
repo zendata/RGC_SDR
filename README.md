@@ -50,6 +50,9 @@ saved on exit and restored next launch. Any flag you pass overrides just that on
   where the receiver is actually tuned.
 - **Freq** box takes a frequency directly; **Step** sets the tuning increment, from
   **10 Hz** up to 1 MHz — including 100 Hz for SSB and 9 kHz for MW channel spacing.
+- **Snap** rounds tuning to a multiple of the step, for channelised bands like airband
+  (25 kHz) or medium wave (9 kHz). Recalled memories and scanner hits are left exactly
+  where they are.
 - **Two-finger swipe left or right over the FFT display** tunes gradually by that step,
   so you can pitch an SSB voice by ear. Up and down still zooms.
 - **Shift + two-finger swipe up or down** does the same thing, and is the reliable one:
@@ -94,14 +97,22 @@ at 25 FPS throughout.
 
 ### Audio
 
-Pick a mode from the **Audio** dropdown — AM, NBFM, WBFM, USB or LSB — and the shaded band
-on the spectrum shows exactly what is being demodulated.
+Pick a mode from the **Audio** dropdown — AM, NBFM, WBFM, USB, LSB or CW — and the shaded
+band on the spectrum shows exactly what is being demodulated.
+
+**CW** adds a beat-frequency oscillator: a keyed carrier tuned exactly would sit at 0 Hz
+and be silent, so it is mixed up to a 700 Hz tone. Filters are narrow (100 Hz to 1.5 kHz,
+500 Hz by default) and mistuning moves the pitch, so you can zero-beat by ear — which is
+what the 10 Hz and 100 Hz steps are for.
 
 - **Offset** listens that far from the tuned centre without moving the radio, so you can
   watch a wide span and hear one signal inside it. The shaded band follows it.
 - **Vol** is a plain output gain. An automatic gain control runs ahead of it, so a weak
   station is still audible: without it a −104 dBFS carrier gives an audio level of
   0.00001, which is silence at any volume.
+- **Mute** silences the output without losing your volume setting, and keeps the
+  demodulator running so unmuting is instant. A recording in progress still captures
+  audio — muting is about the room, not the file.
 - **Squelch** mutes below a threshold, and is only enabled for the FM modes.
 - **BW** sets the channel filter width — narrow it to pull one AM station out of a
   crowded band, or widen it for better fidelity.
@@ -188,8 +199,10 @@ launch, because real levels swing by tens of dB between setups. Override it with
 `--min-db` / `--max-db`, or re-fit at any time with the **Auto** button.
 
 Also in the window: FFT size, colour map, dBFS range and peak hold. Gain and bandwidth
-controls are built from what the driver reports, so for the Airspy HF+ you get an AGC
-toggle and nothing else — it exposes no gain stages and no bandwidth control.
+controls are built from what the driver *actually honours*, so for the Airspy HF+ you get
+neither: it exposes no gain stages, no bandwidth control, and although it claims to have
+an AGC toggle it ignores the setting entirely (verified by trying it — the mode will not
+change and the level moves 0.05 dB). Radios that do honour these grow the controls.
 
 Device diagnostic / P0 check:
 

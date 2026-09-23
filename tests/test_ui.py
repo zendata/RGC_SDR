@@ -1402,3 +1402,204 @@ def test_shift_vertical_reaches_the_handler_through_the_viewport(qapp):
     qapp.sendEvent(win.spectrum.viewport(), _wheel(win.spectrum, 0, 120, shift=True))
     assert src.center_freq == pytest.approx(14.2e6 + 100.0)
     win.close()
+
+
+# -- mute, CW, snap ----------------------------------------------------------
+
+def test_mute_button_starts_unmuted_and_toggles(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win.muted is False
+    assert win._mute_button.text() == "Mute"
+    win._mute_button.setChecked(True)
+    assert win.muted is True
+    assert win._mute_button.text() == "Muted"
+    win.close()
+
+
+def test_mute_does_not_change_the_volume_setting(qapp):
+    """The point of a mute button: your level is still there when you come back."""
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._volume_slider.setValue(65)
+    win._mute_button.setChecked(True)
+    assert win._volume_slider.value() == 65
+    win._mute_button.setChecked(False)
+    assert win._volume_slider.value() == 65
+    assert win.current_snapshot().volume == pytest.approx(0.65)
+    win.close()
+
+
+def test_mute_is_not_persisted(qapp, tmp_path):
+    """Coming back muted with no explanation would look like a broken radio."""
+    path = tmp_path / "s.json"
+    win = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    win._mute_button.setChecked(True)
+    win.close()
+    saved = Settings.load(path).last
+    assert not hasattr(saved, "muted")
+
+
+def test_cw_is_offered_as_a_mode(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win._mode_combo.findData("cw") >= 0
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win.mode == "cw"
+    win.close()
+
+
+def test_cw_offers_narrow_bandwidths(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    widths = [win._bw_audio_combo.itemData(i) for i in range(win._bw_audio_combo.count())]
+    assert min(widths) <= 250.0
+    assert max(widths) <= 1.5e3, "CW filters should all be narrow"
+    assert win.bandwidth_hz() == pytest.approx(500.0)
+    win.close()
+
+
+def test_cw_passband_sits_at_the_pitch(qapp):
+    """The tone appears above where you are listening, so shade it there."""
+    from src.rgc_sdr.dsp.demod import MODE_SPECS as SPECS
+
+    win = window_for(StubSource(_caps(), center=14.05e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (lo + hi) / 2 == pytest.approx(14.05e6 + SPECS["cw"].pitch_hz, abs=1.0)
+    assert (hi - lo) == pytest.approx(500.0, abs=1.0)
+    win.close()
+
+
+def test_snap_rounds_tuning_to_the_step(qapp):
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("25 kHz")
+    win._snap_check.setChecked(True)
+    # 118.262 is 12 kHz above the 118.250 channel and 13 kHz below 118.275, so it
+    # rounds down; 118.263 crosses the midpoint and rounds up.
+    win.waterfall.frequencySelected.emit(118_262_000)
+    assert src.center_freq == pytest.approx(118_250_000)
+    win.waterfall.frequencySelected.emit(118_263_000)
+    assert src.center_freq == pytest.approx(118_275_000)
+    win.close()
+
+
+def test_snap_off_tunes_exactly_where_asked(qapp):
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("25 kHz")
+    win._snap_check.setChecked(False)
+    win.waterfall.frequencySelected.emit(118_262_000)
+    assert src.center_freq == pytest.approx(118_262_000)
+    win.close()
+
+
+def test_snap_uses_whatever_step_is_selected(qapp):
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._snap_check.setChecked(True)
+    win._step_combo.setCurrentText("100 Hz")
+    win.spectrum.frequencySelected.emit(7_100_037.0)
+    assert src.center_freq == pytest.approx(7_100_000.0)
+    win._step_combo.setCurrentText("9 kHz")
+    win.spectrum.frequencySelected.emit(1_000_000.0)
+    assert src.center_freq == pytest.approx(999_000.0)   # nearest multiple of 9 kHz
+    win.close()
+
+
+def test_snap_applies_to_the_frequency_box(qapp):
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("500 Hz")
+    win._snap_check.setChecked(True)
+    win._freq_spin.setValue(7.100_137)
+    assert src.center_freq == pytest.approx(7_100_000.0)
+    win.close()
+
+
+def test_ticking_snap_realigns_immediately(qapp):
+    """Enabling it should visibly do something rather than wait for the next tune."""
+    src = StubSource(_caps(), center=7_100_037.0)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    win._snap_check.setChecked(True)
+    assert src.center_freq == pytest.approx(7_100_000.0)
+    win.close()
+
+
+def test_snap_leaves_a_recalled_memory_exactly_where_it_was(qapp, tmp_path):
+    """A saved frequency is a deliberate choice; snapping would quietly move it."""
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("odd spot", Snapshot(freq_hz=7_100_037.0))
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, settings=settings)
+    win._step_combo.setCurrentText("25 kHz")
+    win._snap_check.setChecked(True)
+    win.recall_memory("odd spot")
+    assert src.center_freq == pytest.approx(7_100_037.0)
+    win.close()
+
+
+def test_snap_leaves_a_scanner_hit_alone(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.record_found(118_262_500.0, -90.0, 20.0)
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, settings=settings)
+    win._refresh_scan_lists()
+    win._step_combo.setCurrentText("25 kHz")
+    win._snap_check.setChecked(True)
+    win.scanner_panel.channelActivated.emit(118_262_500.0)
+    assert src.center_freq == pytest.approx(118_262_500.0)
+    win.close()
+
+
+def test_snap_is_remembered(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    first = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    first._snap_check.setChecked(True)
+    first.close()
+    assert Settings.load(path).last.snap is True
+
+    second = window_for(StubSource(_caps()), fft_size=1024, snap=True)
+    assert second.snap_enabled is True
+    second.close()
+
+
+def test_snap_keeps_nudges_on_the_grid(qapp):
+    src = StubSource(_caps(), center=7_100_037.0)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    win._snap_check.setChecked(True)          # realigns to 7_100_000
+    win.nudge_frequency(1)
+    assert src.center_freq == pytest.approx(7_100_100.0)
+    win.close()
+
+
+def test_no_gain_controls_shown_when_agc_is_not_honoured(qapp):
+    """The Airspy claims AGC and ignores it, so verification leaves nothing to show."""
+    win = window_for(StubSource(_caps(has_agc=False)), fft_size=1024)
+    box = win._build_device_controls()
+    assert win._agc_check is None
+    labels = [c.text() for c in box.children() if isinstance(c, QtWidgets.QLabel)]
+    assert any("no gain" in t for t in labels)
+    win.close()
+
+
+def test_snapping_a_typed_frequency_updates_the_box(qapp):
+    """The box must not keep showing what was typed while the radio sits elsewhere."""
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    win._snap_check.setChecked(True)
+    win._freq_spin.setValue(7.100137)
+    assert src.center_freq == pytest.approx(7_100_100.0)
+    assert win._freq_spin.value() == pytest.approx(7.1001, abs=1e-6)
+    win.close()
+
+
+def test_typing_an_exact_frequency_is_left_alone_with_snap_off(qapp):
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._snap_check.setChecked(False)
+    win._freq_spin.setValue(7.100137)
+    assert src.center_freq == pytest.approx(7_100_137.0)
+    assert win._freq_spin.value() == pytest.approx(7.100137, abs=1e-6)
+    win.close()

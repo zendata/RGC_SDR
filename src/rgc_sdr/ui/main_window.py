@@ -52,6 +52,7 @@ class MainWindow(QtWidgets.QMainWindow):
         squelch_dbfs: float | None = None,
         bandwidth_hz: float | None = None,
         step_hz: float = 10e3,
+        snap: bool = False,
         enable_audio: bool = True,
         recordings_dir=None,
         settings: Settings | None = None,
@@ -80,6 +81,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_offset = float(offset_hz)
         self._initial_squelch = squelch_dbfs
         self._initial_step_hz = float(step_hz)
+        self._initial_snap = bool(snap)
         self._initial_bandwidth = bandwidth_hz
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
@@ -275,7 +277,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.scanner is not None:
             self.stop_scan()
         self._offset_spin.setValue(0.0)
-        self._retune(freq_hz)
+        self._retune(freq_hz, allow_snap=False)
 
     def _save_found_to_memory(self, freq_hz: float) -> None:
         """Promote a scanner hit into the named memories, which are a separate list."""
@@ -379,6 +381,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         row.addWidget(self._volume_slider)
 
+        self._mute_button = QtWidgets.QPushButton("Mute")
+        self._mute_button.setCheckable(True)
+        self._mute_button.setFixedWidth(60)
+        self._mute_button.setToolTip("Silence the output without losing the volume setting")
+        self._mute_button.toggled.connect(self._on_mute_toggled)
+        row.addWidget(self._mute_button)
+
         row.addWidget(QtWidgets.QLabel("Offset"))
         self._offset_spin = QtWidgets.QDoubleSpinBox()
         self._offset_spin.setDecimals(2)
@@ -459,6 +468,15 @@ class MainWindow(QtWidgets.QMainWindow):
                                          self._step_combo.findData(10e3))
         self._step_combo.currentIndexChanged.connect(self._on_step_changed)
         row.addWidget(self._step_combo)
+
+        self._snap_check = QtWidgets.QCheckBox("Snap")
+        self._snap_check.setChecked(self._initial_snap)
+        self._snap_check.setToolTip(
+            "Round tuning to a multiple of the step, for channelised bands.\n"
+            "Recalled memories and scanner hits are left exactly where they are."
+        )
+        self._snap_check.toggled.connect(self._on_snap_changed)
+        row.addWidget(self._snap_check)
         self._on_step_changed()
 
         if len(caps.sample_rates) > 1:
@@ -665,7 +683,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         return self.effective_rate / max(1, self.waterfall.buffer.cols)
 
-    def _retune(self, hz: float, from_spin: bool = False, from_scan: bool = False) -> None:
+    def _retune(
+        self,
+        hz: float,
+        from_spin: bool = False,
+        from_scan: bool = False,
+        allow_snap: bool = True,
+    ) -> None:
         """Tune, dropping whatever described the old frequency.
 
         A large move invalidates everything: the ring, the waterfall history, the
@@ -683,6 +707,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_scan()
 
         previous = self.source.center_freq
+        requested = float(hz)
+        if allow_snap and not from_scan:
+            # Scanner hits are already on their own grid, and a recalled memory is an
+            # exact frequency someone chose; neither should be moved.
+            hz = self.snap_frequency(hz)
         # Decided before tuning, so the source can be told whether to flush.
         target = self.source.caps.clamp_freq(float(hz))
         fine = abs(target - previous) < self.fine_tune_limit()
@@ -704,8 +733,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_geometry()
         self._update_passband()
 
-        if not from_spin or abs(actual - hz) > 1.0:
-            # Clamped to a tunable range, or tuned from a click: reflect reality.
+        if not from_spin or abs(actual - requested) > 1.0:
+            # Compared against what was *asked for*, not the snapped value: otherwise a
+            # typed frequency stays in the box while the radio sits on the nearest
+            # channel, and the display quietly disagrees with the hardware.
             self._freq_spin.blockSignals(True)
             self._freq_spin.setValue(actual / 1e6)
             self._freq_spin.blockSignals(False)
@@ -776,6 +807,10 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         width = self._channel_bandwidth()
         centre = self.source.center_freq + self._offset_spin.value() * 1e3
+        if mode == "cw":
+            # Narrow, and sitting at the BFO pitch above where you are listening.
+            self.spectrum.set_passband(centre + MODE_SPECS[mode].pitch_hz, width)
+            return
         if mode in ("usb", "lsb"):
             # One-sided: shade only the sideband actually being demodulated.
             lower = centre if mode == "usb" else centre - width
@@ -805,6 +840,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             try:
                 sink.start()
+                sink.set_muted(self.muted)
                 self.audio = sink
             except Exception as exc:
                 self._status.showMessage(f"could not start audio: {exc}", 6000)
@@ -821,6 +857,34 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_mode_changed(self) -> None:
         self.set_mode(self.mode)
         self._schedule_save()
+
+    @property
+    def snap_enabled(self) -> bool:
+        return self._snap_check.isChecked()
+
+    def _on_snap_changed(self, enabled: bool) -> None:
+        self._schedule_save()
+        if enabled:
+            # Apply at once, so ticking it visibly does something.
+            self._retune(self.source.center_freq)
+
+    def snap_frequency(self, hz: float) -> float:
+        """Round to the nearest multiple of the step, when snapping is on."""
+        if not self.snap_enabled:
+            return float(hz)
+        step = self.step_hz
+        if step <= 0:
+            return float(hz)
+        return round(float(hz) / step) * step
+
+    @property
+    def muted(self) -> bool:
+        return self._mute_button.isChecked()
+
+    def _on_mute_toggled(self, muted: bool) -> None:
+        if self.audio is not None:
+            self.audio.set_muted(muted)
+        self._mute_button.setText("Muted" if muted else "Mute")
 
     def _on_volume_changed(self, value: int) -> None:
         if self.audio is not None:
@@ -1033,6 +1097,7 @@ class MainWindow(QtWidgets.QMainWindow):
             squelch_dbfs=self._squelch_value(),
             bandwidth_hz=self.bandwidth_hz(),
             step_hz=self.step_hz,
+            snap=self.snap_enabled,
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -1090,9 +1155,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._offset_spin.setValue(snap.offset_hz / 1e3)
         self._offset_spin.blockSignals(False)
 
-        self._retune(snap.freq_hz)
+        self._retune(snap.freq_hz, allow_snap=False)
 
         self._initial_bandwidth = snap.bandwidth_hz
+        self._snap_check.blockSignals(True)
+        self._snap_check.setChecked(snap.snap)
+        self._snap_check.blockSignals(False)
         index = self._step_combo.findData(snap.step_hz)
         if index >= 0:
             self._step_combo.blockSignals(True)

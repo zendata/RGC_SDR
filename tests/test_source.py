@@ -110,7 +110,24 @@ def test_covers_the_airspy_gap_correctly():
 def test_airspyhf_reports_no_gain_elements():
     """Documents the measured reality that P2 gain UI must handle (PLANNING.md section 3)."""
     assert _caps().gain_elements == ()
-    assert _caps().has_agc is True
+
+
+@pytest.mark.hardware
+def test_agc_toggle_is_verified_not_trusted(sdr_devices):
+    """setGainMode is accepted and ignored, so the claim must be checked."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import SoapySDR
+    from SoapySDR import SOAPY_SDR_RX
+
+    d = SoapySDR.Device("driver=airspyhf")
+    assert d.hasGainMode(SOAPY_SDR_RX, 0) is True, "claim changed; revisit the probe"
+    was = bool(d.getGainMode(SOAPY_SDR_RX, 0))
+    d.setGainMode(SOAPY_SDR_RX, 0, not was)
+    assert bool(d.getGainMode(SOAPY_SDR_RX, 0)) == was, "driver now honours it; probe will allow it"
+    del d
+
+    assert SoapyIQSource(driver="airspyhf", center_freq=7.1e6).caps.has_agc is False
 
 
 def test_gain_elements_supported_for_other_radios():
@@ -136,7 +153,10 @@ def test_probed_caps_match_measured_airspy(sdr_devices):
     caps = src.caps
     assert set(caps.sample_rates) == set(AIRSPY_RATES)
     assert caps.gain_elements == ()
-    assert caps.has_agc is True
+    # Claimed but not honoured: the driver reports hasGainMode() True, refuses to change
+    # it, and the received level does not move (measured 0.05 dB). Verification catches
+    # that, so no dead control is offered.
+    assert caps.has_agc is False
     assert "CF32" in caps.formats
     assert caps.covers(7.1e6) and not caps.covers(45e6)
 

@@ -411,3 +411,83 @@ def test_agc_output_still_never_clips():
     chain = DemodChain(FS, "am", volume=1.0)
     audio = run_blocks(chain, am_signal(200_000, 1000.0) * 1e-5)
     assert np.max(np.abs(audio)) <= 1.0
+
+
+# -- CW ----------------------------------------------------------------------
+
+def keyed_carrier(n, fs=FS, offset_hz=0.0, on=True):
+    """An on/off carrier, which is what CW actually is."""
+    t = np.arange(n) / fs
+    x = np.exp(2j * np.pi * offset_hz * t)
+    return (x if on else x * 0.0).astype(np.complex64)
+
+
+def test_cw_turns_a_tuned_carrier_into_an_audible_tone():
+    """Tuned exactly, a keyed carrier is at DC and therefore silent without a BFO."""
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.5)), block=16384)
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(chain.pitch_hz, abs=25.0)
+    assert np.std(audio[2000:]) > 0.1
+
+
+def test_cw_key_up_is_silence():
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.2), on=False), block=16384)
+    assert np.max(np.abs(audio)) < 1e-6
+
+
+def test_cw_pitch_follows_mistuning():
+    """Tuning off by 200 Hz should move the tone by 200 Hz -- that is how you zero-beat."""
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.5), offset_hz=200.0), block=16384)
+    expected = chain.pitch_hz + 200.0
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(expected, abs=30.0)
+
+
+def test_cw_is_narrow_enough_to_reject_a_nearby_signal():
+    """A 500 Hz filter must reject something 3 kHz away, which SSB width would pass."""
+    on_channel = run_blocks(DemodChain(FS, "cw", volume=1.0, agc=False),
+                            keyed_carrier(int(FS * 0.5)), block=16384)
+    off_channel = run_blocks(DemodChain(FS, "cw", volume=1.0, agc=False),
+                             keyed_carrier(int(FS * 0.5), offset_hz=3000.0), block=16384)
+    ratio = 20 * np.log10(np.std(on_channel[2000:]) / (np.std(off_channel[2000:]) + 1e-20))
+    assert ratio > 30.0, f"only {ratio:.1f} dB of rejection 3 kHz away"
+
+
+def test_cw_offset_keeps_meaning_where_you_are_listening():
+    """The BFO is internal: the offset the UI sets is still the listening frequency."""
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False, offset_hz=5000.0)
+    assert chain.offset_hz == pytest.approx(5000.0)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.5), offset_hz=5000.0), block=16384)
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(chain.pitch_hz, abs=30.0)
+
+
+def test_cw_bandwidth_can_be_narrowed():
+    chain = DemodChain(FS, "cw", volume=1.0, agc=False, bandwidth_hz=250.0)
+    assert chain.bandwidth_hz == pytest.approx(250.0)
+    audio = run_blocks(chain, keyed_carrier(int(FS * 0.4)), block=16384)
+    assert peak_freq(audio[2000:], chain.audio_rate) == pytest.approx(chain.pitch_hz, abs=30.0)
+
+
+def test_only_cw_has_a_pitch():
+    for mode in MODES:
+        chain = DemodChain(FS, mode)
+        if mode == "cw":
+            assert chain.pitch_hz > 0.0
+        else:
+            assert chain.pitch_hz == 0.0
+
+
+def test_bandpass_taps_are_centred_where_asked():
+    from src.rgc_sdr.dsp.demod import bandpass_taps
+
+    fs = 48e3
+    taps = bandpass_taps(700.0, 500.0, fs)
+
+    def response(freq):
+        n = np.arange(taps.size)
+        return abs(complex(np.sum(taps * np.exp(-2j * np.pi * freq * n / fs))))
+
+    assert response(700.0) > 10 * response(0.0)        # rejects DC
+    assert response(700.0) > 10 * response(-700.0)     # asymmetric, as it must be
+    assert response(700.0) > 10 * response(2000.0)     # and narrow
