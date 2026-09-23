@@ -23,6 +23,14 @@ import numpy as np
 #: inside a single CW element rather than spanning several.
 DEFAULT_FFT = 32768
 
+#: How strong a peak must be before it is treated as a carrier worth tuning to.
+#:
+#: Measured on air 2026-09-23 against a real 40 m CW signal: the genuine carrier read
+#: 26-29 dB, while noise peaks and marginal neighbours read 8-10 dB. An earlier default
+#: of 8 dB acted on those and dragged the tuning 770 Hz away onto a different signal
+#: entirely. 15 dB separates the two cleanly.
+MIN_SNR_DB = 15.0
+
 
 @dataclass(frozen=True)
 class CarrierMeasurement:
@@ -56,7 +64,7 @@ def measure_carrier(
     sample_rate: float,
     listen_hz: float = 0.0,
     search_hz: float = 500.0,
-    min_snr_db: float = 8.0,
+    min_snr_db: float = MIN_SNR_DB,
     fft_size: int = DEFAULT_FFT,
 ) -> CarrierMeasurement | None:
     """Find the strongest carrier within `search_hz` of `listen_hz`.

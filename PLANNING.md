@@ -458,6 +458,20 @@ it is right, and snapping is deliberately bypassed: a channel grid is exactly wh
 zero-beating must ignore. Corrections are under 500 Hz and therefore *fine* tunes by
 section 7f, so the audio keeps running while it converges.
 
+**The detection threshold came from on-air failure, not taste.** Verified against a real
+40 m CW signal at 7.04020 MHz: with the threshold at 8 dB, the first attempt converged
+perfectly when mistuned downward but wandered upward, acting on 8-10 dB readings and
+dragging the tuning 770 Hz onto a different signal. The genuine carrier consistently read
+26-29 dB, so the threshold is 15 dB, which separates them cleanly. Re-measured afterwards,
+all four cases converge in one or two steps:
+
+| Mistuned | Tone before | After | Residual |
+|---|---|---|---|
+| −250 Hz | 941 Hz | 700 Hz | 0 Hz |
+| +250 Hz | 443 Hz | 700 Hz | 0 Hz |
+| −420 Hz | 915 Hz | 701 Hz | +1 Hz |
+| +420 Hz | 768 Hz | 699 Hz | −1 Hz |
+
 Worth recording, because it shaped the tests: a carrier at amplitude 2e-4 in 1e-3 of
 noise is **negative** SNR in the time domain yet over 25 dB in the spectrum. A
 32768-point transform concentrates a coherent carrier into one bin while spreading noise

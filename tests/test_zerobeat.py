@@ -142,3 +142,24 @@ def test_measurement_cost_is_acceptable_for_interactive_use():
         measure_carrier(signal, FS)
     ms = (time.perf_counter() - start) / 10 * 1000
     assert ms < 30.0, f"{ms:.1f} ms per measurement is too slow to hold a button down"
+
+
+def test_the_default_threshold_rejects_marginal_peaks():
+    """Set from on-air measurement, not taste.
+
+    Against a real 40 m CW signal the genuine carrier read 26-29 dB while noise peaks
+    and marginal neighbours read 8-10 dB. An 8 dB default acted on those and dragged the
+    tuning 770 Hz onto a different signal, so the default sits above them.
+    """
+    from src.rgc_sdr.dsp.zerobeat import MIN_SNR_DB
+
+    assert MIN_SNR_DB >= 12.0, "a marginal peak will be chased"
+    marginal = carrier(DEFAULT_FFT * 2, 120.0, amplitude=1.2e-5, noise=1e-3)
+    detected = measure_carrier(marginal, FS, min_snr_db=0.0)
+    assert detected is not None
+    if detected.snr_db < MIN_SNR_DB:
+        assert measure_carrier(marginal, FS) is None
+
+
+def test_a_strong_carrier_still_passes_the_default_threshold():
+    assert measure_carrier(carrier(DEFAULT_FFT * 2, 120.0, amplitude=0.3), FS) is not None
