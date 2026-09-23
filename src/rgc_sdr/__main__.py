@@ -48,6 +48,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="listen this far from the tuned centre")
     p.add_argument("--squelch", type=float, default=None, metavar="DBFS",
                    help="mute FM below this level")
+    p.add_argument("--step", type=float, default=None, metavar="HZ",
+                   help="tuning increment for arrow keys and sideways swipes")
     p.add_argument("--bandwidth", type=float, default=None, metavar="HZ",
                    help="channel filter width (default: the mode's own)")
     p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
@@ -126,6 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     bandwidth = args.bandwidth if args.bandwidth is not None else (
         base.bandwidth_hz if base is not None else None
     )
+    step = pick(args.step, "step_hz", 10e3)
 
     if args.min_db is not None or args.max_db is not None:
         levels = (args.min_db if args.min_db is not None else -120.0,
@@ -170,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
         offset_hz=offset,
         squelch_dbfs=squelch,
         bandwidth_hz=bandwidth,
+        step_hz=step,
         enable_audio=not args.no_audio,
         recordings_dir=args.recordings,
         settings=settings,

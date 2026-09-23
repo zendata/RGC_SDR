@@ -10,6 +10,7 @@ import pyqtgraph as pg
 from PyQt6 import QtCore
 
 from ..dsp.waterfall import WaterfallBuffer
+from .gestures import TUNE_DIRECTION, SwipeAccumulator, horizontal_dominates
 
 # Rows of the array must map to y, columns to x. Without this, pyqtgraph's legacy default
 # treats the first axis as x and the waterfall renders transposed.
@@ -23,6 +24,8 @@ class WaterfallView(pg.PlotWidget):
 
     #: Emitted with a frequency in Hz when the user clicks to tune.
     frequencySelected = QtCore.pyqtSignal(float)
+    #: Emitted with a signed number of tuning steps on a sideways swipe.
+    frequencyNudged = QtCore.pyqtSignal(int)
 
     def __init__(
         self,
@@ -37,6 +40,7 @@ class WaterfallView(pg.PlotWidget):
         self._levels = levels
         self._history_s = 1.0
         self._rect: QtCore.QRectF | None = None
+        self._swipe = SwipeAccumulator()
 
         self._img = pg.ImageItem(axisOrder="row-major")
         self.addItem(self._img)
@@ -62,6 +66,19 @@ class WaterfallView(pg.PlotWidget):
             return
         self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
         event.accept()
+
+
+    def wheelEvent(self, event) -> None:  # noqa: N802  (Qt naming)
+        """Sideways swipe tunes; up/down keeps pyqtgraph's zoom."""
+        angle = event.angleDelta()
+        if horizontal_dominates(angle.x(), angle.y()):
+            steps = self._swipe.add(float(angle.x()) * TUNE_DIRECTION)
+            if steps:
+                self.frequencyNudged.emit(steps)
+            event.accept()
+            return
+        self._swipe.reset()
+        super().wheelEvent(event)
 
     def set_colormap(self, name: str) -> None:
         self._img.setColorMap(pg.colormap.get(name))

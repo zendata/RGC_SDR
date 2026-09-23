@@ -277,3 +277,33 @@ def test_settle_can_be_disabled(sdr_devices):
     with src:
         time.sleep(0.5)
         assert src.stats["dropped"] == 0
+
+
+@pytest.mark.hardware
+def test_unflushed_retune_keeps_the_buffer_and_discards_nothing(sdr_devices):
+    """Fine tuning must not cost a settle period: that starved audio, measured."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import time
+
+    src = SoapyIQSource(driver="airspyhf", sample_rate=768e3, center_freq=7.1e6)
+    with src:
+        time.sleep(0.8)
+        before = src.stats["dropped"]
+        reader = src.sequential_reader()
+        time.sleep(0.3)
+
+        for i in range(10):
+            src.set_center_freq(7.1e6 + (i + 1) * 100.0, flush=False)
+        time.sleep(0.3)
+
+        assert src.stats["dropped"] == before, "a fine nudge armed the settle period"
+        # The audio-side reader must see a continuous stream throughout.
+        assert reader.available() > 0
+        assert reader.lost == 0, "samples were lost across fine nudges"
+        assert src.center_freq == pytest.approx(7.1e6 + 1000.0, abs=1.0)
+
+        # A flushing retune still settles, as a band change should.
+        src.set_center_freq(14.2e6, flush=True)
+        time.sleep(0.4)
+        assert src.stats["dropped"] > before

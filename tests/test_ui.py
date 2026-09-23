@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
-from PyQt6 import QtCore, QtWidgets  # noqa: E402
+from PyQt6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 from src.rgc_sdr.device.source import (  # noqa: E402
     DeviceCaps,
@@ -73,8 +73,11 @@ class StubSource(IQSource):
     def get_gain(self, name):
         return 0.0
 
-    def set_center_freq(self, hz):
+    def set_center_freq(self, hz, flush=True):
         self._center = self._caps.clamp_freq(hz)
+        self.last_flush = flush
+        if flush:
+            self._ring.clear()
         return self._center
 
     def set_sample_rate(self, hz):
@@ -1129,3 +1132,210 @@ def test_smeter_snr_is_bounded_for_a_strong_signal(qapp):
     _pump(qapp, win, 3)
     assert 0.0 <= win.smeter._snr <= 100.0
     win.close()
+
+
+# -- fine steps and swipe tuning ---------------------------------------------
+
+def test_step_options_include_ssb_sized_increments(qapp):
+    """1 kHz is far too coarse for SSB; a few hundred hertz changes intelligibility."""
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    offered = [win._step_combo.itemData(i) for i in range(win._step_combo.count())]
+    assert 100.0 in offered
+    assert 10.0 in offered
+    assert min(offered) <= 100.0
+    win.close()
+
+
+def test_selecting_a_100_hz_step_sets_the_spinbox_increment(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._step_combo.setCurrentText("100 Hz")
+    assert win.step_hz == pytest.approx(100.0)
+    # The spin box works in MHz, so 100 Hz is 0.0001 and must survive its precision.
+    assert win._freq_spin.singleStep() == pytest.approx(1e-4)
+    assert win._freq_spin.decimals() >= 4
+    win.close()
+
+
+def test_nudge_moves_by_exactly_one_step(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    win.nudge_frequency(1)
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0)
+    win.nudge_frequency(-3)
+    assert src.center_freq == pytest.approx(14.2e6 - 200.0)
+    win.close()
+
+
+def test_nudge_respects_the_chosen_step(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("1 kHz")
+    win.nudge_frequency(2)
+    assert src.center_freq == pytest.approx(14.2e6 + 2000.0)
+    win.close()
+
+
+def test_nudge_of_zero_does_nothing(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024)
+    assert win.nudge_frequency(0) == pytest.approx(14.2e6)
+    win.close()
+
+
+def test_step_choice_is_remembered(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    first = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    first._step_combo.setCurrentText("100 Hz")
+    first.close()
+    assert Settings.load(path).last.step_hz == pytest.approx(100.0)
+
+    second = window_for(StubSource(_caps()), fft_size=1024,
+                        step_hz=Settings.load(path).last.step_hz)
+    assert second.step_hz == pytest.approx(100.0)
+    second.close()
+
+
+def _wheel(view, dx, dy):
+    """A wheel event of the kind a trackpad swipe produces."""
+    return QtGui.QWheelEvent(
+        QtCore.QPointF(view.width() / 2, view.height() / 2),
+        QtCore.QPointF(
+            view.mapToGlobal(QtCore.QPoint(int(view.width() / 2), int(view.height() / 2)))
+        ),
+        QtCore.QPoint(0, 0),
+        QtCore.QPoint(int(dx), int(dy)),
+        QtCore.Qt.MouseButton.NoButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        QtCore.Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
+
+
+def test_sideways_swipe_tunes_on_the_waterfall(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    win.waterfall.wheelEvent(_wheel(win.waterfall, 120, 0))
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0)
+    win.close()
+
+
+def test_sideways_swipe_tunes_on_the_spectrum(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    win.spectrum.wheelEvent(_wheel(win.spectrum, -120, 0))
+    assert src.center_freq == pytest.approx(14.2e6 - 100.0)
+    win.close()
+
+
+def test_vertical_swipe_still_zooms_and_does_not_tune(qapp):
+    """The existing gesture must keep working untouched."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    before = src.center_freq
+    (x0, x1), _ = win.waterfall.getViewBox().viewRange()
+    win.waterfall.wheelEvent(_wheel(win.waterfall, 0, 120))
+    assert src.center_freq == pytest.approx(before), "a vertical swipe tuned the radio"
+    (z0, z1), _ = win.waterfall.getViewBox().viewRange()
+    assert (z1 - z0) != pytest.approx(x1 - x0), "a vertical swipe no longer zooms"
+    win.close()
+
+
+def test_small_sideways_deltas_tune_gradually(qapp):
+    """A trackpad sends many tiny deltas; each must not be a whole step."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    for _ in range(5):
+        win.waterfall.wheelEvent(_wheel(win.waterfall, 20, 0))
+    assert src.center_freq == pytest.approx(14.2e6), "tuned before a full step"
+    win.waterfall.wheelEvent(_wheel(win.waterfall, 20, 0))
+    assert src.center_freq == pytest.approx(14.2e6 + 100.0)
+    win.close()
+
+
+def test_swipe_tuning_stops_a_scan(qapp, tmp_path):
+    """Swiping is a manual tune, so it should take the dial back from the scanner."""
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, settings=Settings(tmp_path / "s.json"))
+    win.resize(900, 600)
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    win.start_scan()
+    win.waterfall.wheelEvent(_wheel(win.waterfall, 120, 0))
+    assert win.scanner is None
+    win.close()
+
+
+def test_a_fine_nudge_keeps_the_waterfall_and_audio_running(qapp):
+    """Tuning 100 Hz by ear must not wipe the display or click the audio each step."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    _pump(qapp, win, 5)
+    assert win.waterfall.buffer.written_rows == 5
+
+    win.nudge_frequency(1)
+    assert win.waterfall.buffer.written_rows == 5, "history cleared by a 100 Hz nudge"
+    assert win.spectrum._smoothed is not None, "smoothing reset by a 100 Hz nudge"
+    win.close()
+
+
+def test_a_coarse_retune_still_clears_everything(qapp):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    _pump(qapp, win, 5)
+    win.waterfall.frequencySelected.emit(20e6)
+    assert win.waterfall.buffer.written_rows == 0
+    assert win.spectrum._smoothed is None
+    win.close()
+
+
+def test_the_fine_limit_is_one_display_bin(qapp):
+    win = window_for(StubSource(_caps(), rate=768e3), fft_size=1024, waterfall_bins=1024)
+    assert win.fine_tune_limit() == pytest.approx(750.0)
+    # A 500 Hz step is fine, 1 kHz is not.
+    win._step_combo.setCurrentText("500 Hz")
+    assert win.step_hz < win.fine_tune_limit()
+    win._step_combo.setCurrentText("1 kHz")
+    assert win.step_hz > win.fine_tune_limit()
+    win.close()
+
+
+def test_the_fine_limit_shrinks_with_zoom(qapp):
+    """Zoomed in, a smaller move already shifts the display by a whole bin."""
+    win = window_for(StubSource(_caps(), rate=768e3), fft_size=1024, waterfall_bins=1024)
+    wide = win.fine_tune_limit()
+    win._zoom_combo.setCurrentText("8x")
+    assert win.fine_tune_limit() == pytest.approx(wide / 8)
+    win.close()
+
+
+def test_a_fine_nudge_does_not_stop_an_iq_recording(qapp, tmp_path):
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25, recordings_dir=tmp_path)
+    win._step_combo.setCurrentText("100 Hz")
+    win.start_iq_recording()
+    win.nudge_frequency(1)
+    assert win.iq_recorder is not None, "a 100 Hz nudge killed the capture"
+    win.nudge_frequency(100)          # 10 kHz: a real retune
+    assert win.iq_recorder is None
+    win.close()
+
+
+def test_a_fine_nudge_does_not_flush_the_buffer(qapp):
+    """Flushing on every 100 Hz step cost 3.7 s of audio silence, measured on hardware."""
+    src = StubSource(_caps(), center=14.2e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win._step_combo.setCurrentText("100 Hz")
+    win.nudge_frequency(1)
+    assert src.last_flush is False
+
+    win._step_combo.setCurrentText("10 kHz")
+    win.nudge_frequency(1)
+    assert src.last_flush is True

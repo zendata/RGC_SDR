@@ -51,6 +51,7 @@ class MainWindow(QtWidgets.QMainWindow):
         offset_hz: float = 0.0,
         squelch_dbfs: float | None = None,
         bandwidth_hz: float | None = None,
+        step_hz: float = 10e3,
         enable_audio: bool = True,
         recordings_dir=None,
         settings: Settings | None = None,
@@ -78,6 +79,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_volume = float(volume)
         self._initial_offset = float(offset_hz)
         self._initial_squelch = squelch_dbfs
+        self._initial_step_hz = float(step_hz)
         self._initial_bandwidth = bandwidth_hz
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
@@ -103,6 +105,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.waterfall.setXLink(self.spectrum)  # one shared frequency axis
         self.spectrum.frequencySelected.connect(self._retune)
         self.waterfall.frequencySelected.connect(self._retune)
+        self.spectrum.frequencyNudged.connect(self.nudge_frequency)
+        self.waterfall.frequencyNudged.connect(self.nudge_frequency)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.addWidget(self.spectrum)
@@ -441,12 +445,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row.addWidget(QtWidgets.QLabel("Step"))
         self._step_combo = QtWidgets.QComboBox()
+        # 10 Hz and 100 Hz matter for SSB, where a few hundred hertz is the
+        # difference between intelligible speech and a comedy voice.
         for label, hz in (
+            ("10 Hz", 10.0), ("100 Hz", 100.0), ("500 Hz", 500.0),
             ("1 kHz", 1e3), ("5 kHz", 5e3), ("9 kHz", 9e3), ("10 kHz", 10e3),
             ("25 kHz", 25e3), ("100 kHz", 100e3), ("1 MHz", 1e6),
         ):
             self._step_combo.addItem(label, hz)
-        self._step_combo.setCurrentText("10 kHz")
+        index = self._step_combo.findData(self._initial_step_hz)
+        self._step_combo.setCurrentIndex(index if index >= 0 else
+                                         self._step_combo.findData(10e3))
         self._step_combo.currentIndexChanged.connect(self._on_step_changed)
         row.addWidget(self._step_combo)
         self._on_step_changed()
@@ -630,33 +639,70 @@ class MainWindow(QtWidgets.QMainWindow):
         history_s = self.waterfall.buffer.rows / float(self.fps)
         self.waterfall.set_geometry(self.source.center_freq, self.effective_rate, history_s)
 
+    @property
+    def step_hz(self) -> float:
+        return float(self._step_combo.currentData() or 10e3)
+
     def _on_step_changed(self) -> None:
-        self._freq_spin.setSingleStep(self._step_combo.currentData() / 1e6)
+        self._freq_spin.setSingleStep(self.step_hz / 1e6)
+        self._schedule_save()
+
+    def nudge_frequency(self, steps: int) -> float:
+        """Tune by `steps` of the selected step size, for a sideways swipe."""
+        if not steps:
+            return self.source.center_freq
+        target = self.source.center_freq + steps * self.step_hz
+        self._retune(target)
+        return self.source.center_freq
+
+    def fine_tune_limit(self) -> float:
+        """Below this much movement, a tune is an adjustment rather than a change.
+
+        One display bin wide. Smaller than that and the waterfall would shift by under a
+        pixel, so its history is still honest; it is also small against any channel
+        filter, so the demodulator's state remains valid.
+        """
+        return self.effective_rate / max(1, self.waterfall.buffer.cols)
 
     def _retune(self, hz: float, from_spin: bool = False, from_scan: bool = False) -> None:
-        """Tune, then drop everything that described the old frequency.
+        """Tune, dropping whatever described the old frequency.
 
-        The ring, the waterfall history, the smoothing state and the peak hold all
-        describe the previous tuning; keeping any of them smears stale signal across the
-        new span.
+        A large move invalidates everything: the ring, the waterfall history, the
+        spectrum smoothing and the audio in flight all describe the previous tuning, and
+        keeping any of it smears a stale signal across the new span.
+
+        A *fine* move does not. Nudging 100 Hz to pitch an SSB voice would otherwise
+        clear the display and interrupt the audio on every step, which defeats the point
+        of tuning by ear -- so below `fine_tune_limit` the history and the audio are left
+        running and only the axis moves.
         """
         if not from_scan and self.scanner is not None:
             # A manual tune means the user wants to stay here, so stop sweeping rather
             # than fighting them for the dial.
             self.stop_scan()
-        if self.iq_recorder is not None:
-            # The sidecar records one centre frequency, so a retune would make the file
-            # a lie about itself.
+
+        previous = self.source.center_freq
+        # Decided before tuning, so the source can be told whether to flush.
+        target = self.source.caps.clamp_freq(float(hz))
+        fine = abs(target - previous) < self.fine_tune_limit()
+        actual = self.source.set_center_freq(hz, flush=not fine)
+
+        if self.iq_recorder is not None and not fine:
+            # The sidecar records one centre frequency, so a real retune would make the
+            # file a lie about itself. A sub-bin nudge is not worth killing a capture.
             self.stop_iq_recording("frequency changed")
             self._rec_iq_button.setChecked(False)
-        actual = self.source.set_center_freq(hz)
-        self.spectrum.reset()
+
+        if not fine:
+            self.spectrum.reset()
+            self.waterfall.clear_history()
+            if self.audio is not None:
+                self.audio.reset()
+
         self.spectrum.set_center_marker(actual)
-        self.waterfall.clear_history()
         self._apply_geometry()
-        if self.audio is not None:
-            self.audio.reset()   # in-flight audio belongs to the old frequency
         self._update_passband()
+
         if not from_spin or abs(actual - hz) > 1.0:
             # Clamped to a tunable range, or tuned from a click: reflect reality.
             self._freq_spin.blockSignals(True)
@@ -985,6 +1031,7 @@ class MainWindow(QtWidgets.QMainWindow):
             offset_hz=self._offset_spin.value() * 1e3,
             squelch_dbfs=self._squelch_value(),
             bandwidth_hz=self.bandwidth_hz(),
+            step_hz=self.step_hz,
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -1045,6 +1092,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._retune(snap.freq_hz)
 
         self._initial_bandwidth = snap.bandwidth_hz
+        index = self._step_combo.findData(snap.step_hz)
+        if index >= 0:
+            self._step_combo.blockSignals(True)
+            self._step_combo.setCurrentIndex(index)
+            self._step_combo.blockSignals(False)
+            self._on_step_changed()
         wanted = snap.mode if snap.mode in MODES else "off"
         self._mode_combo.blockSignals(True)
         self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(wanted)))
@@ -1130,7 +1183,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # -- persistence -------------------------------------------------------
 
     def _schedule_save(self) -> None:
-        if self._persist:
+        # Defensive about the timer: control handlers fire while the widgets are still
+        # being built, which is before the timer exists.
+        if self._persist and getattr(self, "_save_timer", None) is not None:
             self._save_timer.start()
 
     def _save_state(self) -> None:

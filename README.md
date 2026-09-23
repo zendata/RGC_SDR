@@ -48,13 +48,19 @@ saved on exit and restored next launch. Any flag you pass overrides just that on
 
 - **Click** anywhere on the spectrum or the waterfall to tune there. A dotted line marks
   where the receiver is actually tuned.
-- **Freq** box takes a frequency directly; **Step** sets the arrow-key/scroll increment
-  (1 kHz to 1 MHz, including 9 kHz for MW channel spacing).
+- **Freq** box takes a frequency directly; **Step** sets the tuning increment, from
+  **10 Hz** up to 1 MHz — including 100 Hz for SSB and 9 kHz for MW channel spacing.
+- **Two-finger swipe left or right** tunes gradually by that step, so you can pitch an SSB
+  voice by ear. Swiping up and down still zooms the display.
 - **Rate** selects any of the seven supported sample rates (192 kHz to 912 kHz), which
   changes how much spectrum you see at once.
 
 Tuning outside a tunable range snaps to the nearest one and the Freq box updates to show
 where you really are — the Airspy HF+ has a gap between 31 and 60 MHz.
+
+Small adjustments are treated as adjustments: a step under one display bin (750 Hz at
+768 kHz) leaves the waterfall history and the audio running, so tuning by ear does not
+click or wipe the screen on every step. A larger move clears them, as it should.
 
 ### Desktop shortcut
 

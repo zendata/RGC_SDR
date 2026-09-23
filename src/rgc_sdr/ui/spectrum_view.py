@@ -6,6 +6,8 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt6 import QtCore
 
+from .gestures import TUNE_DIRECTION, SwipeAccumulator, horizontal_dominates
+
 
 class SpectrumView(pg.PlotWidget):
     """Instantaneous spectrum, lightly smoothed, with a decaying peak-hold trace.
@@ -16,6 +18,8 @@ class SpectrumView(pg.PlotWidget):
 
     #: Emitted with a frequency in Hz when the user clicks to tune.
     frequencySelected = QtCore.pyqtSignal(float)
+    #: Emitted with a signed number of tuning steps on a sideways swipe.
+    frequencyNudged = QtCore.pyqtSignal(int)
 
     def __init__(self, alpha: float = 0.3, peak_decay_db: float = 0.5, parent=None) -> None:
         super().__init__(parent=parent)
@@ -40,6 +44,7 @@ class SpectrumView(pg.PlotWidget):
         )
         self.addItem(self._center_line, ignoreBounds=True)
         self._peak_enabled = True
+        self._swipe = SwipeAccumulator()
         # Shaded band showing what the demodulator is actually listening to, so the
         # offset and channel width are visible rather than abstract numbers.
         self._passband = pg.LinearRegionItem(
@@ -59,6 +64,19 @@ class SpectrumView(pg.PlotWidget):
             return
         self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
         event.accept()
+
+
+    def wheelEvent(self, event) -> None:  # noqa: N802  (Qt naming)
+        """Sideways swipe tunes; up/down keeps pyqtgraph's zoom."""
+        angle = event.angleDelta()
+        if horizontal_dominates(angle.x(), angle.y()):
+            steps = self._swipe.add(float(angle.x()) * TUNE_DIRECTION)
+            if steps:
+                self.frequencyNudged.emit(steps)
+            event.accept()
+            return
+        self._swipe.reset()
+        super().wheelEvent(event)
 
     def set_center_marker(self, hz: float) -> None:
         """Show where the receiver is actually tuned."""

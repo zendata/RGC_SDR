@@ -296,7 +296,9 @@ class IQSource(ABC):
     def read_latest(self, n: int) -> np.ndarray:
         """Newest `n` samples, chronological. Short or empty if the stream is still filling."""
 
-    def set_center_freq(self, hz: float) -> float:
+    def set_center_freq(self, hz: float, flush: bool = True) -> float:
+        """Retune. `flush` discards buffered samples; see SoapyIQSource for why a fine
+        adjustment should not."""
         raise NotImplementedError
 
     def set_sample_rate(self, hz: float) -> float:
@@ -441,17 +443,26 @@ class SoapyIQSource(IQSource):
         """Discard the next `settle_seconds` of samples."""
         self._drop_until = self._read_samples + int(self._rate * self._settle_seconds)
 
-    def set_center_freq(self, hz: float) -> float:
+    def set_center_freq(self, hz: float, flush: bool = True) -> float:
         """Retune, clamped to a tunable range.
 
-        The ring is dropped: whatever it holds was received at the old frequency, and
-        rendering it after a retune smears stale signals across the new span.
+        With `flush` the ring is dropped and a settle period armed, because whatever the
+        buffer holds was received at the old frequency and rendering it smears stale
+        signal across the new span.
+
+        Pass `flush=False` for a small adjustment. Discarding ~150 ms on every step made
+        fine tuning unusable: 30 nudges of 100 Hz cost 3.7 seconds of audio silence,
+        measured. A 100 Hz error inside a several-kHz channel is inaudible, so the
+        buffered samples stay valid and the audio runs on. (Measured at P2: an LO change
+        on a live stream shows no transient; only a *rate* change, which restarts the
+        stream, needs the settle.)
         """
         target = self._caps.clamp_freq(float(hz))
         self._dev.setFrequency(SOAPY_RX, 0, target)
         self._freq = float(self._dev.getFrequency(SOAPY_RX, 0))
-        self._ring.clear()
-        self._arm_settle()
+        if flush:
+            self._ring.clear()
+            self._arm_settle()
         return self._freq
 
     @property

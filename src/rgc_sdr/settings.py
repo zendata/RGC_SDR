@@ -62,6 +62,8 @@ class Snapshot:
     squelch_dbfs: float | None = None
     #: None means use the mode's default channel width.
     bandwidth_hz: float | None = None
+    #: Tuning increment for the arrow keys and sideways swipes.
+    step_hz: float = 10e3
 
     def to_dict(self) -> dict:
         return asdict(self)

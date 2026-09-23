@@ -344,6 +344,40 @@ different normalisations, which produced readings like "S/N −203 dB". It is al
 at zero: a channel at or below the noise floor has no measurable SNR, and 0 dB says
 "indistinguishable from the noise" rather than dressing noise up as a measurement.
 
+## 7f. Fine tuning and swipe gestures
+
+**Steps go down to 10 Hz.** 1 kHz was the smallest increment, which is useless for SSB
+where a few hundred hertz is the difference between intelligible speech and a comedy
+voice. The hardware honours it: measured 2026-09-23, 100 Hz and 10 Hz steps come back
+exact.
+
+**A sideways two-finger swipe tunes; up and down still zooms.** Both arrive as wheel
+events, told apart by which axis dominates. Trackpads deliver a stream of small deltas
+rather than notches, so they are accumulated and a step is emitted each time the total
+crosses a threshold -- acting on each delta would make tuning uncontrollable. A direction
+reversal discards the built-up total so it takes effect at once rather than first working
+through momentum the other way. `TUNE_DIRECTION` in `ui/gestures.py` is the single
+constant to flip if the gesture feels backwards, since the sign depends on the system's
+natural-scrolling setting.
+
+**A fine tune is not a retune.** This was the important discovery. `_retune` cleared the
+waterfall, reset the spectrum smoothing, reset the audio chain and -- via
+`set_center_freq` -- flushed the IQ ring and armed a 150 ms settle period. Doing all that
+for a 100 Hz nudge defeats the entire point of tuning by ear.
+
+Measured on hardware, 30 nudges of 100 Hz with the old behaviour cost **178,176 underrun
+samples (3.7 seconds of silence)** and 18,432 lost IQ samples, because each step
+discarded 150 ms of the stream. Treating a sub-bin move as an adjustment instead brought
+that to **5,120 underruns and zero lost samples** — a 35x improvement — while the
+waterfall history kept accumulating rather than being wiped 30 times.
+
+The threshold is one display bin (`effective_rate / waterfall columns`, so 750 Hz at
+768 kHz and proportionally less when zoomed). Below it the waterfall would shift by under
+a pixel, so its history is still honest, and the move is small against any channel filter,
+so the demodulator's state remains valid. `set_center_freq` therefore takes a `flush`
+flag; the settle period is kept for stream restarts, where section 3 measured it is
+genuinely needed. A fine nudge also no longer stops an IQ capture.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image
