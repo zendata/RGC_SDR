@@ -497,6 +497,27 @@ across all of them, roughly 42 dB of processing gain. "Weak" therefore has to be
 spectrally, which is why the threshold test measures the signal's own SNR rather than
 guessing an amplitude.
 
+## 7i. Zoom is kept across tuning
+
+**A retune preserves the view zoom and recentres it.** `_apply_geometry` used to reset the
+frequency axis to the full span every time the tuning moved, which threw the zoom away
+exactly when it was most useful: zoom in to inspect a crowded patch, click the station
+next door, and the view snapped back to the whole 768 kHz.
+
+Only the *tuning* preserves it. Changing the sample rate or the decimation changes the
+span itself, which the user asked for explicitly, so those still reset the view. A
+preserved window is clamped inside the available span so tuning near an edge cannot
+scroll the view off the spectrum.
+
+**This uncovered a test-suite fault worth recording.** Adding the tests produced a
+segmentation fault in a test that passed perfectly well on its own. The cause was leaked
+widgets: `close()` only hides a window, and with a hundred-odd of them accumulating in one
+process, pyqtgraph's registry of axis-linked views ended up holding closed ones, and
+following a stale link crashed. The suite now destroys each test's windows
+(`setParent(None)` plus `deleteLater()`, then a collection), and `closeEvent` drops the
+shared-axis link on the way out, which is correct teardown for the application too. The
+suite also got faster, and stopped depending on test order.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

@@ -691,9 +691,18 @@ class MainWindow(QtWidgets.QMainWindow):
         """Sample rate after decimation: the span actually on screen."""
         return self.decimator.effective_rate(self.source.sample_rate)
 
-    def _apply_geometry(self) -> None:
+    def _apply_geometry(self, preserve_span: bool = False) -> None:
+        """Re-place the display on the axes.
+
+        `preserve_span` is used when only the tuning moved. Changing the sample rate or
+        the decimation changes the span itself, which the user asked for explicitly, so
+        those reset the view.
+        """
         history_s = self.waterfall.buffer.rows / float(self.fps)
-        self.waterfall.set_geometry(self.source.center_freq, self.effective_rate, history_s)
+        self.waterfall.set_geometry(
+            self.source.center_freq, self.effective_rate, history_s,
+            preserve_span=preserve_span,
+        )
 
     @property
     def step_hz(self) -> float:
@@ -767,7 +776,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.audio.reset()
 
         self.spectrum.set_center_marker(actual)
-        self._apply_geometry()
+        self._apply_geometry(preserve_span=True)
         self._update_passband()
 
         if not from_spin or abs(actual - requested) > 1.0:
@@ -1516,6 +1525,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.scanner is not None:
             self.scanner.stop()
             self.scanner = None
+        # Drop the shared-axis link before tearing down. pyqtgraph keeps a registry of
+        # linked views, and leaving a closed one in it is a dangling reference.
+        try:
+            self.waterfall.setXLink(None)
+        except Exception:
+            pass
         self.stop_audio_recording()
         self.stop_iq_recording()
         if self.audio is not None:

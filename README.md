@@ -59,6 +59,11 @@ saved on exit and restored next launch. Any flag you pass overrides just that on
   macOS may claim a sideways swipe for its own "Swipe between pages" gesture, in which
   case the application never sees it. A vertical swipe always arrives.
 
+Zooming with a two-finger vertical swipe is kept when you tune: the view stays at the
+same width and recentres on the new frequency, so you can zoom into a busy patch and hop
+between stations without losing your place. Changing the sample rate or the Zoom
+decimation resets it, since those change the span deliberately.
+
 Tuning by gesture works on the spectrum only, not the waterfall — the waterfall is what
 you read history from. If a sideways swipe does nothing, run with `--debug-gestures` to
 see exactly which events your trackpad delivers.

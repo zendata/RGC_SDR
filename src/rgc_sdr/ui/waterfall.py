@@ -72,15 +72,36 @@ class WaterfallView(pg.PlotWidget):
         self._levels = (float(low), float(high))
         self._img.setLevels(self._levels)
 
-    def set_geometry(self, center_hz: float, sample_rate: float, history_s: float) -> None:
-        """Place the image on the frequency/age axes."""
+    def set_geometry(
+        self,
+        center_hz: float,
+        sample_rate: float,
+        history_s: float,
+        preserve_span: bool = False,
+    ) -> None:
+        """Place the image on the frequency/age axes.
+
+        With `preserve_span`, an existing zoom is kept and simply recentred on the new
+        tuning. Resetting to the full span on every retune threw away the zoom just as
+        it became useful -- zoom in to inspect a crowded patch, click the station next
+        door, and the view would snap back to the whole span.
+        """
         self._history_s = float(history_s)
         f0 = center_hz - sample_rate / 2.0
         self._rect = QtCore.QRectF(f0, 0.0, float(sample_rate), self._history_s)
         self._apply_rect()
-        self.getViewBox().setRange(
-            xRange=(f0, f0 + sample_rate), yRange=(0.0, self._history_s), padding=0.0
-        )
+
+        view = self.getViewBox()
+        lo, hi = f0, f0 + sample_rate
+        if preserve_span:
+            (was_lo, was_hi), _ = view.viewRange()
+            width = was_hi - was_lo
+            # Only when actually zoomed in; a full-span view has nothing to preserve.
+            if 0.0 < width < sample_rate * 0.999:
+                half = width / 2.0
+                lo = min(max(center_hz - half, f0), f0 + sample_rate - width)
+                hi = lo + width
+        view.setRange(xRange=(lo, hi), yRange=(0.0, self._history_s), padding=0.0)
 
     def _apply_rect(self) -> None:
         """Map image pixels onto the frequency/age axes.

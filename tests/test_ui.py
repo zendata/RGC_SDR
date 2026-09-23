@@ -5,6 +5,8 @@ protocol, not a simulated device mode in the application (PLANNING.md section 1)
 the UI be regression-tested without the radio attached.
 """
 
+import gc
+
 import numpy as np
 import pytest
 
@@ -115,10 +117,39 @@ def qapp():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+#: Windows created by a test, destroyed by the autouse fixture below.
+_OPEN_WINDOWS = []
+
+
 def window_for(src, **kw):
     """MainWindow with audio off: tests must not open a real output device."""
     kw.setdefault("enable_audio", False)
-    return MainWindow(src, **kw)
+    win = MainWindow(src, **kw)
+    _OPEN_WINDOWS.append(win)
+    return win
+
+
+@pytest.fixture(autouse=True)
+def _destroy_windows(qapp):
+    """Destroy each test's windows rather than leaking them.
+
+    close() only hides a window; the C++ object survives until garbage collection. With
+    a hundred-odd windows accumulating in one process, pyqtgraph's registry of
+    axis-linked views ends up holding closed ones, and following a stale link segfaults.
+    Leaked widgets also made failures depend on test order.
+    """
+    yield
+    while _OPEN_WINDOWS:
+        win = _OPEN_WINDOWS.pop()
+        try:
+            win.close()
+            win.setParent(None)
+            win.deleteLater()
+        except RuntimeError:
+            pass          # already deleted by Qt
+    qapp.processEvents()
+    gc.collect()
+    qapp.processEvents()
 
 
 def _pump(app, window, frames):
@@ -1820,3 +1851,109 @@ def test_zero_beat_targets_whatever_pitch_is_selected(qapp):
         win._pitch_combo.setCurrentText(pitch)
         assert win.zerobeat_once() == pytest.approx(160.0, abs=6.0)
         win.close()
+
+
+# -- zoom survives tuning ----------------------------------------------------
+
+def _view_span(win):
+    (lo, hi), _ = win.waterfall.getViewBox().viewRange()
+    return lo, hi, hi - lo
+
+
+def test_pinch_zoom_survives_a_retune(qapp):
+    """Zoom in, click the station next door, and the zoom must still be there."""
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    _pump(qapp, win, 2)
+
+    # Zoom to a 60 kHz window, as a two-finger swipe would.
+    win.waterfall.getViewBox().setXRange(7.100e6 - 30e3, 7.100e6 + 30e3, padding=0)
+    _, _, before = _view_span(win)
+    assert before == pytest.approx(60e3, rel=0.02)
+
+    win.waterfall.frequencySelected.emit(7.120e6)
+    lo, hi, after = _view_span(win)
+    assert after == pytest.approx(before, rel=0.02), "zoom was reset by tuning"
+    # And the station just tuned is in view, near the middle.
+    assert lo < 7.120e6 < hi
+    assert (lo + hi) / 2 == pytest.approx(7.120e6, abs=before * 0.05)
+    win.close()
+
+
+def test_zoom_survives_a_fine_nudge(qapp):
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win._step_combo.setCurrentText("100 Hz")
+    win.waterfall.getViewBox().setXRange(7.100e6 - 5e3, 7.100e6 + 5e3, padding=0)
+    _, _, before = _view_span(win)
+    win.nudge_frequency(3)
+    _, _, after = _view_span(win)
+    assert after == pytest.approx(before, rel=0.02)
+    win.close()
+
+
+def test_a_full_span_view_is_left_alone(qapp):
+    """Nothing to preserve when not zoomed; the view should track the new span."""
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    _pump(qapp, win, 2)
+    win.waterfall.frequencySelected.emit(7.300e6)
+    lo, hi, span = _view_span(win)
+    assert span == pytest.approx(768e3, rel=0.02)
+    assert (lo + hi) / 2 == pytest.approx(7.300e6, abs=1e3)
+    win.close()
+
+
+def test_changing_the_decimation_resets_the_view(qapp):
+    """The user changed the span deliberately, so show the new one."""
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win.waterfall.getViewBox().setXRange(7.100e6 - 30e3, 7.100e6 + 30e3, padding=0)
+    win._zoom_combo.setCurrentText("8x")
+    _, _, span = _view_span(win)
+    assert span == pytest.approx(96e3, rel=0.02)
+    win.close()
+
+
+def test_changing_the_sample_rate_resets_the_view(qapp):
+    src = StubSource(_caps(sample_rates=(768e3, 192e3)), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win.waterfall.getViewBox().setXRange(7.100e6 - 30e3, 7.100e6 + 30e3, padding=0)
+    win._rate_combo.setCurrentText("192 kS/s")
+    _, _, span = _view_span(win)
+    assert span == pytest.approx(192e3, rel=0.02)
+    win.close()
+
+
+def test_a_preserved_zoom_is_clamped_inside_the_span(qapp):
+    """Tuning near the edge must not scroll the view off the available spectrum."""
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win.waterfall.getViewBox().setXRange(7.100e6 - 100e3, 7.100e6 + 100e3, padding=0)
+    win.waterfall.frequencySelected.emit(7.100e6)
+    lo, hi, span = _view_span(win)
+    full_lo = src.center_freq - 768e3 / 2
+    full_hi = src.center_freq + 768e3 / 2
+    assert lo >= full_lo - 1.0 and hi <= full_hi + 1.0
+    assert span == pytest.approx(200e3, rel=0.02)
+    win.close()
+
+
+def test_the_spectrum_follows_the_preserved_zoom(qapp):
+    """Both plots share one frequency axis, so they must stay in step."""
+    src = StubSource(_caps(), rate=768e3, center=7.100e6)
+    win = window_for(src, fft_size=1024, fps=25)
+    win.resize(900, 600)
+    win.waterfall.getViewBox().setXRange(7.100e6 - 20e3, 7.100e6 + 20e3, padding=0)
+    win.waterfall.frequencySelected.emit(7.130e6)
+    (wlo, whi), _ = win.waterfall.getViewBox().viewRange()
+    (slo, shi), _ = win.spectrum.getViewBox().viewRange()
+    assert slo == pytest.approx(wlo, abs=500.0)
+    assert shi == pytest.approx(whi, abs=500.0)
+    win.close()
