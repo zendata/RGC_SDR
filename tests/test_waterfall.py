@@ -87,3 +87,29 @@ def test_percentile_levels_ignore_unwritten_rows():
 def test_percentile_levels_on_empty_history():
     lo, hi = WaterfallBuffer(rows=4, cols=4).percentile_levels()
     assert (lo, hi) == (-115.0, -40.0)
+
+
+def test_written_rows_tracks_pushes_and_saturates():
+    wf = WaterfallBuffer(rows=4, cols=8)
+    assert wf.written_rows == 0
+    for expected in (1, 2, 3, 4, 4, 4):
+        wf.push(np.zeros(8, dtype=np.float32))
+        assert wf.written_rows == expected
+
+
+def test_written_rows_resets_on_clear_and_resize():
+    wf = WaterfallBuffer(rows=4, cols=8)
+    wf.push(np.zeros(8, dtype=np.float32))
+    wf.clear()
+    assert wf.written_rows == 0
+    wf.push(np.zeros(8, dtype=np.float32))
+    wf.resize_cols(16)
+    assert wf.written_rows == 0
+
+
+def test_percentile_levels_use_very_quiet_rows_not_mistaken_for_fill():
+    """A real bin below the -140 fill sentinel must still count as data."""
+    wf = WaterfallBuffer(rows=8, cols=16)
+    wf.push(np.full(16, -294.0, dtype=np.float32))
+    lo, hi = wf.percentile_levels()
+    assert lo < -290.0, f"quiet row ignored: got {lo:.1f}..{hi:.1f}"

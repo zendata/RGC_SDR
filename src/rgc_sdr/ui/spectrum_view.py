@@ -14,6 +14,9 @@ class SpectrumView(pg.PlotWidget):
     steadier noise floor, while the waterfall must keep transients intact.
     """
 
+    #: Emitted with a frequency in Hz when the user clicks to tune.
+    frequencySelected = QtCore.pyqtSignal(float)
+
     def __init__(self, alpha: float = 0.3, peak_decay_db: float = 0.5, parent=None) -> None:
         super().__init__(parent=parent)
         self.alpha = float(alpha)
@@ -32,7 +35,25 @@ class SpectrumView(pg.PlotWidget):
             pen=pg.mkPen("#ff8a65", width=1, style=QtCore.Qt.PenStyle.DashLine)
         )
         self._curve = self.plot(pen=pg.mkPen("#4fc3f7", width=1))
+        self._center_line = pg.InfiniteLine(
+            angle=90, movable=False, pen=pg.mkPen("#9e9e9e", width=1, style=QtCore.Qt.PenStyle.DotLine)
+        )
+        self.addItem(self._center_line, ignoreBounds=True)
         self._peak_enabled = True
+        self.scene().sigMouseClicked.connect(self._on_click)
+
+    def _on_click(self, event) -> None:
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(event.scenePos()):
+            return
+        self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
+        event.accept()
+
+    def set_center_marker(self, hz: float) -> None:
+        """Show where the receiver is actually tuned."""
+        self._center_line.setPos(hz)
 
     def set_levels(self, low: float, high: float) -> None:
         self.setYRange(float(low), float(high), padding=0.02)

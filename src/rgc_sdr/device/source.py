@@ -71,6 +71,9 @@ class DeviceCaps:
     gain_elements: tuple[GainElement, ...]
     has_agc: bool
     formats: tuple[str, ...]
+    # Probed, not assumed: libairspyhf ties IF bandwidth to sample rate and may expose
+    # nothing here, while other radios offer a list. Empty means "no bandwidth control".
+    bandwidths: tuple[float, ...] = ()
 
     def default_sample_rate(self, prefer: float = 768e3) -> float:
         """Pick `prefer` if offered, else the highest rate at or below it, else the lowest."""
@@ -83,6 +86,23 @@ class DeviceCaps:
 
     def covers(self, hz: float) -> bool:
         return any(r.contains(hz) for r in self.freq_ranges)
+
+    def clamp_freq(self, hz: float) -> float:
+        """Nearest tunable frequency.
+
+        The Airspy HF+ has two disjoint ranges (0.009-31 and 60-260 MHz), so a frequency
+        can be between them rather than merely out of bounds. Snap to the nearest edge of
+        the nearest range instead of silently accepting an untunable value.
+        """
+        if not self.freq_ranges or self.covers(hz):
+            return float(hz)
+        edges = [e for r in self.freq_ranges for e in (r.min_hz, r.max_hz)]
+        return float(min(edges, key=lambda e: abs(e - hz)))
+
+    def nearest_sample_rate(self, hz: float) -> float:
+        if not self.sample_rates:
+            return float(hz)
+        return float(min(self.sample_rates, key=lambda r: abs(r - hz)))
 
     def describe_ranges(self) -> str:
         return ", ".join(f"{r.min_hz / 1e6:g}-{r.max_hz / 1e6:g} MHz" for r in self.freq_ranges)
@@ -121,6 +141,11 @@ class _Ring:
     def __len__(self) -> int:
         with self._lock:
             return self._filled
+
+    def clear(self) -> None:
+        with self._lock:
+            self._write = 0
+            self._filled = 0
 
     def write(self, block: np.ndarray) -> None:
         n = block.size
@@ -187,6 +212,12 @@ class IQSource(ABC):
     def read_latest(self, n: int) -> np.ndarray:
         """Newest `n` samples, chronological. Short or empty if the stream is still filling."""
 
+    def set_center_freq(self, hz: float) -> float:
+        raise NotImplementedError
+
+    def set_sample_rate(self, hz: float) -> float:
+        raise NotImplementedError
+
     def __enter__(self):
         self.start()
         return self
@@ -212,6 +243,7 @@ class SoapyIQSource(IQSource):
         buffer_seconds: float = 0.5,
         read_size: int = 65536,
         agc: bool | None = None,
+        settle_seconds: float = 0.15,
     ) -> None:
         SoapySDR = _import_soapy()
         self._soapy = SoapySDR
@@ -235,7 +267,9 @@ class SoapyIQSource(IQSource):
             self._dev.setGainMode(SOAPY_RX, 0, bool(agc))
 
         self._read_size = int(read_size)
-        self._ring = _Ring(max(int(self._rate * buffer_seconds), self._read_size * 2))
+        self._buffer_seconds = float(buffer_seconds)
+        self._settle_seconds = float(settle_seconds)
+        self._ring = _Ring(self._ring_capacity())
         self._stream = None
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -243,6 +277,14 @@ class SoapyIQSource(IQSource):
         self._timeouts = 0
         self._errors = 0
         self._total_samples = 0
+        self._read_samples = 0
+        self._dropped = 0
+        # Measured 2026-09-23: the first ~4 frames after a stream restart read about 8 dB
+        # hot broadband (peak -93.5 dBFS against -110 steady) while the front end settles,
+        # which paints one bright row across the waterfall and skews auto-ranging.
+        # `_drop_until` is only ever written from the calling thread and `_read_samples`
+        # only from the reader, so no lock is needed.
+        self._drop_until = 0
 
     # -- capability probing -------------------------------------------------
 
@@ -267,6 +309,9 @@ class SoapyIQSource(IQSource):
                 gains.append(
                     GainElement(str(name), float(gr.minimum()), float(gr.maximum()), float(gr.step()))
                 )
+        bandwidths = tuple(
+            float(b) for b in _safe(lambda: d.listBandwidths(SOAPY_RX, 0), ()) if float(b) > 0
+        )
         info = _safe(lambda: d.getHardwareInfo(), {})
         info = dict(info) if info else {}
         return DeviceCaps(
@@ -278,6 +323,7 @@ class SoapyIQSource(IQSource):
             gain_elements=tuple(gains),
             has_agc=bool(_safe(lambda: d.hasGainMode(SOAPY_RX, 0), False)),
             formats=tuple(str(f) for f in _safe(lambda: d.getStreamFormats(SOAPY_RX, 0), ())),
+            bandwidths=bandwidths,
         )
 
     # -- IQSource ----------------------------------------------------------
@@ -294,11 +340,59 @@ class SoapyIQSource(IQSource):
     def center_freq(self) -> float:
         return self._freq
 
+    def _ring_capacity(self) -> int:
+        return max(int(self._rate * self._buffer_seconds), self._read_size * 2)
+
+    def _arm_settle(self) -> None:
+        """Discard the next `settle_seconds` of samples."""
+        self._drop_until = self._read_samples + int(self._rate * self._settle_seconds)
+
     def set_center_freq(self, hz: float) -> float:
-        """Retune. Kept here for P2; the P1 UI only reads `center_freq`."""
-        self._dev.setFrequency(SOAPY_RX, 0, float(hz))
+        """Retune, clamped to a tunable range.
+
+        The ring is dropped: whatever it holds was received at the old frequency, and
+        rendering it after a retune smears stale signals across the new span.
+        """
+        target = self._caps.clamp_freq(float(hz))
+        self._dev.setFrequency(SOAPY_RX, 0, target)
         self._freq = float(self._dev.getFrequency(SOAPY_RX, 0))
+        self._ring.clear()
+        self._arm_settle()
         return self._freq
+
+    @property
+    def bandwidth(self) -> float:
+        try:
+            return float(self._dev.getBandwidth(SOAPY_RX, 0))
+        except Exception:
+            return 0.0
+
+    def set_bandwidth(self, hz: float) -> float:
+        """Set IF bandwidth. No-op when the driver reports no bandwidth options."""
+        if not self._caps.bandwidths:
+            return self.bandwidth
+        self._dev.setBandwidth(SOAPY_RX, 0, float(hz))
+        return self.bandwidth
+
+    def set_sample_rate(self, hz: float) -> float:
+        """Change sample rate, restarting the stream around it.
+
+        SoapySDR will not accept a rate change on an active stream, so the reader thread
+        is stopped and restarted. The ring is rebuilt because its capacity is derived
+        from the rate, and its contents were sampled at the old one.
+        """
+        target = self._caps.nearest_sample_rate(float(hz))
+        if target == self._rate:
+            return self._rate
+        was_running = self._thread is not None
+        if was_running:
+            self.stop()
+        self._dev.setSampleRate(SOAPY_RX, 0, target)
+        self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
+        self._ring = _Ring(self._ring_capacity())
+        if was_running:
+            self.start()
+        return self._rate
 
     def set_agc(self, enabled: bool) -> None:
         """Enable/disable hardware AGC. No-op when the driver has no gain mode."""
@@ -327,6 +421,7 @@ class SoapyIQSource(IQSource):
     def stats(self) -> dict[str, int]:
         return {
             "samples": self._total_samples,
+            "dropped": self._dropped,
             "overflows": self._overflows,
             "timeouts": self._timeouts,
             "errors": self._errors,
@@ -337,6 +432,7 @@ class SoapyIQSource(IQSource):
             return
         self._stream = self._dev.setupStream(SOAPY_RX, "CF32")
         self._dev.activateStream(self._stream)
+        self._arm_settle()
         self._running.set()
         self._thread = threading.Thread(target=self._reader, name="iq-reader", daemon=True)
         self._thread.start()
@@ -352,6 +448,10 @@ class SoapyIQSource(IQSource):
             ret = sr.ret
             if ret > 0:
                 # Only the first `ret` entries are valid; the tail is uninitialised.
+                self._read_samples += ret
+                if self._read_samples <= self._drop_until:
+                    self._dropped += ret
+                    continue
                 self._ring.write(buf[:ret])
                 self._total_samples += ret
             elif ret == ERR_OVERFLOW:

@@ -13,14 +13,28 @@ pytest.importorskip("pyqtgraph")
 
 from PyQt6 import QtCore, QtWidgets  # noqa: E402
 
-from src.rgc_sdr.device.source import DeviceCaps, FreqRange, GainElement, IQSource  # noqa: E402
+from src.rgc_sdr.device.source import (  # noqa: E402
+    DeviceCaps,
+    FreqRange,
+    GainElement,
+    IQSource,
+)
 from src.rgc_sdr.dsp.spectrum import SpectrumAnalyzer  # noqa: E402
 from src.rgc_sdr.ui.main_window import MainWindow  # noqa: E402
 
 
 class StubSource(IQSource):
-    def __init__(self, caps, rate=768e3, center=7.1e6, tone_hz=96e3):
+    """A test double for IQSource: one tone over a noise floor.
+
+    The noise matters. A noiseless tone leaves most bins at numerical zero (~-294 dBFS),
+    which no real receiver produces and which skews anything that fits a range to the
+    data. Seeded, so tests stay deterministic.
+    """
+
+    def __init__(self, caps, rate=768e3, center=7.1e6, tone_hz=96e3, noise=1e-4):
         self._caps, self._rate, self._center, self._tone = caps, rate, center, tone_hz
+        self._noise = noise
+        self._rng = np.random.default_rng(1234)
 
     @property
     def caps(self):
@@ -53,9 +67,23 @@ class StubSource(IQSource):
     def get_gain(self, name):
         return 0.0
 
+    def set_center_freq(self, hz):
+        self._center = self._caps.clamp_freq(hz)
+        return self._center
+
+    def set_sample_rate(self, hz):
+        self._rate = self._caps.nearest_sample_rate(hz)
+        return self._rate
+
+    def set_bandwidth(self, hz):
+        self.bandwidth_set = hz
+        return hz
+
     def read_latest(self, n):
         t = np.arange(n) / self._rate
-        return (0.5 * np.exp(2j * np.pi * self._tone * t)).astype(np.complex64)
+        tone = 0.5 * np.exp(2j * np.pi * self._tone * t)
+        noise = self._noise * (self._rng.standard_normal(n) + 1j * self._rng.standard_normal(n))
+        return (tone + noise).astype(np.complex64)
 
 
 def _caps(**kw):
@@ -105,7 +133,8 @@ def test_startup_auto_range_brings_data_into_view(qapp):
     _pump(qapp, win, 25)
     assert not win._auto_pending
     lo, hi = win._levels
-    written = win.waterfall.buffer.image[win.waterfall.buffer.image > -140.0]
+    buf = win.waterfall.buffer
+    written = buf.image[: buf.written_rows]
     inside = np.mean((written >= lo) & (written <= hi))
     assert inside > 0.9, f"auto-range {lo:.1f}..{hi:.1f} covers only {inside:.0%} of data"
     win.close()
@@ -215,4 +244,124 @@ def test_window_waterfall_is_actually_on_screen(qapp):
     overlap = drawn.intersected(view)
     assert overlap.width() / view.width() > 0.95
     assert overlap.height() / view.height() > 0.95
+    win.close()
+
+
+# -- P2: tuning UI -----------------------------------------------------------
+
+def test_click_to_tune_retunes_to_clicked_frequency(qapp):
+    src = StubSource(_caps())
+    win = MainWindow(src, fft_size=1024, fps=25)
+    _pump(qapp, win, 3)
+    win.waterfall.frequencySelected.emit(7.3e6)
+    assert src.center_freq == pytest.approx(7.3e6)
+    assert win._freq_spin.value() == pytest.approx(7.3, abs=1e-6)
+    win.close()
+
+
+def test_retune_clears_stale_history_and_smoothing(qapp):
+    """History and peak hold describe the old frequency and must not survive a retune."""
+    win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25)
+    _pump(qapp, win, 6)
+    assert win.waterfall.buffer.written_rows == 6
+    assert win.waterfall.buffer.image[0].max() > -50.0  # the tone is in there
+    win.spectrum.frequencySelected.emit(10e6)
+    assert win.waterfall.buffer.written_rows == 0
+    assert np.all(win.waterfall.buffer.image == -140.0)
+    assert win.spectrum._smoothed is None
+    assert win.spectrum._peak is None
+    win.close()
+
+
+def test_retune_moves_the_frequency_axis(qapp):
+    win = MainWindow(StubSource(_caps(), rate=768e3, center=7.1e6), fft_size=1024, fps=25)
+    win.waterfall.frequencySelected.emit(20e6)
+    (x0, x1), _ = win.waterfall.getViewBox().viewRange()
+    assert x0 == pytest.approx(20e6 - 384e3, abs=1e3)
+    assert x1 == pytest.approx(20e6 + 384e3, abs=1e3)
+    win.close()
+
+
+def test_clicking_into_the_untunable_gap_snaps_and_shows_the_truth(qapp):
+    """Clamping must be reflected back into the spinbox, not silently diverge."""
+    src = StubSource(_caps(freq_ranges=(FreqRange(9e3, 31e6), FreqRange(60e6, 260e6))))
+    win = MainWindow(src, fft_size=1024, fps=25)
+    win.waterfall.frequencySelected.emit(45e6)
+    assert src.center_freq == pytest.approx(31e6)
+    assert win._freq_spin.value() == pytest.approx(31.0, abs=1e-6)
+    win.close()
+
+
+def test_spinbox_change_retunes_the_source(qapp):
+    src = StubSource(_caps())
+    win = MainWindow(src, fft_size=1024, fps=25)
+    win._freq_spin.setValue(14.2)
+    assert src.center_freq == pytest.approx(14.2e6)
+    win.close()
+
+
+def test_step_size_drives_the_spinbox_increment(qapp):
+    win = MainWindow(StubSource(_caps()), fft_size=1024)
+    win._step_combo.setCurrentText("1 MHz")
+    assert win._freq_spin.singleStep() == pytest.approx(1.0)
+    win._step_combo.setCurrentText("9 kHz")
+    assert win._freq_spin.singleStep() == pytest.approx(0.009)
+    win.close()
+
+
+def test_rate_combo_offers_every_supported_rate_and_applies_it(qapp):
+    rates = (912e3, 768e3, 650e3, 456e3, 384e3, 228e3, 192e3)
+    src = StubSource(_caps(sample_rates=rates))
+    win = MainWindow(src, fft_size=1024, fps=25)
+    assert win._rate_combo is not None
+    assert win._rate_combo.count() == len(rates)
+    win._rate_combo.setCurrentText("456 kS/s")
+    assert src.sample_rate == pytest.approx(456e3)
+    (x0, x1), _ = win.waterfall.getViewBox().viewRange()
+    assert (x1 - x0) == pytest.approx(456e3, abs=1e3)
+    win.close()
+
+
+def test_no_rate_combo_when_only_one_rate(qapp):
+    win = MainWindow(StubSource(_caps(sample_rates=(768e3,))), fft_size=1024)
+    assert win._rate_combo is None
+    win.close()
+
+
+def test_no_bandwidth_control_for_airspyhf(qapp):
+    """Capability-driven: this driver reports no bandwidth options, so none is shown."""
+    win = MainWindow(StubSource(_caps(bandwidths=())), fft_size=1024)
+    assert win._bw_combo is None
+    win.close()
+
+
+def test_bandwidth_control_appears_when_the_driver_offers_options(qapp):
+    src = StubSource(_caps(driver="hackrf", bandwidths=(1.75e6, 2.5e6, 3.5e6)))
+    win = MainWindow(src, fft_size=1024)
+    assert win._bw_combo is not None and win._bw_combo.count() == 3
+    win._bw_combo.setCurrentText("2500 kHz")
+    assert src.bandwidth_set == pytest.approx(2.5e6)
+    win.close()
+
+
+def test_centre_marker_follows_tuning(qapp):
+    win = MainWindow(StubSource(_caps(), center=7.1e6), fft_size=1024, fps=25)
+    assert win.spectrum._center_line.value() == pytest.approx(7.1e6)
+    win.waterfall.frequencySelected.emit(12e6)
+    assert win.spectrum._center_line.value() == pytest.approx(12e6)
+    win.close()
+
+
+def test_right_click_does_not_tune(qapp):
+    """Only left-click tunes; right-click is reserved for the view's own handling."""
+    src = StubSource(_caps())
+    win = MainWindow(src, fft_size=1024)
+    before = src.center_freq
+    ev = type("E", (), {
+        "button": lambda self: QtCore.Qt.MouseButton.RightButton,
+        "scenePos": lambda self: QtCore.QPointF(0, 0),
+        "accept": lambda self: None,
+    })()
+    win.waterfall._on_click(ev)
+    assert src.center_freq == before
     win.close()

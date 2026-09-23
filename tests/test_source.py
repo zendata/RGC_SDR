@@ -163,3 +163,117 @@ def test_streams_real_iq(sdr_devices):
         assert -200.0 < db.min() and db.max() < 0.1
         assert src.stats["samples"] > 0
     assert src.stats["errors"] == 0
+
+
+# -- P2: tuning, clamping, rate selection ------------------------------------
+
+def test_clamp_freq_snaps_into_the_31_to_60_mhz_gap():
+    """The Airspy HF+ has two disjoint ranges, so a frequency can be *between* them."""
+    caps = _caps()
+    assert caps.clamp_freq(45e6) == 31e6   # nearer the top of the HF range
+    assert caps.clamp_freq(55e6) == 60e6   # nearer the bottom of the VHF range
+    assert caps.clamp_freq(7.1e6) == 7.1e6  # in range, untouched
+
+
+def test_clamp_freq_handles_out_of_range_ends():
+    caps = _caps()
+    assert caps.clamp_freq(1e3) == 9e3
+    assert caps.clamp_freq(500e6) == 260e6
+
+
+def test_clamp_freq_without_known_ranges_is_identity():
+    assert _caps(freq_ranges=()).clamp_freq(123e6) == 123e6
+
+
+def test_nearest_sample_rate_snaps_to_a_supported_rate():
+    caps = _caps()
+    assert caps.nearest_sample_rate(700e3) == 650e3
+    assert caps.nearest_sample_rate(900e3) == 912e3
+    assert caps.nearest_sample_rate(1e9) == 912e3
+
+
+def test_airspyhf_reports_no_bandwidth_options():
+    """Measured 2026-09-23: listBandwidths() is empty, so no bandwidth UI is built."""
+    assert _caps().bandwidths == ()
+
+
+def test_ring_clear_discards_stale_samples():
+    r = _Ring(16)
+    r.write(np.arange(8, dtype=np.complex64))
+    r.clear()
+    assert len(r) == 0 and r.read_latest(8).size == 0
+
+
+@pytest.mark.hardware
+def test_retune_and_rate_change_on_live_stream(sdr_devices):
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import time
+
+    src = SoapyIQSource(driver="airspyhf", sample_rate=768e3, center_freq=7.1e6)
+    with src:
+        time.sleep(0.4)
+        assert src.set_center_freq(5.0e6) == pytest.approx(5.0e6, abs=1.0)
+        # The ring is dropped on retune so stale audio from the old QRG cannot render.
+        assert src.read_latest(4096).size < 4096
+        time.sleep(0.5)
+        assert src.read_latest(4096).size == 4096
+
+        assert src.set_sample_rate(456e3) == pytest.approx(456e3, abs=1.0)
+        assert src.sample_rate == pytest.approx(456e3, abs=1.0)
+        time.sleep(0.5)
+        assert src.read_latest(4096).size == 4096
+        assert src.stats["errors"] == 0
+
+
+@pytest.mark.hardware
+def test_clamped_retune_never_leaves_an_untunable_frequency(sdr_devices):
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    src = SoapyIQSource(driver="airspyhf", center_freq=7.1e6)
+    assert src.set_center_freq(45e6) == pytest.approx(31e6, abs=1.0)
+    assert src.caps.covers(src.center_freq)
+
+
+@pytest.mark.hardware
+def test_set_bandwidth_is_a_safe_noop_when_unsupported(sdr_devices):
+    """setBandwidth() is silently accepted by this driver but does nothing; guard on caps."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    src = SoapyIQSource(driver="airspyhf", center_freq=7.1e6)
+    assert src.caps.bandwidths == ()
+    assert src.set_bandwidth(200e3) == 0.0  # unchanged, and must not raise
+
+
+@pytest.mark.hardware
+def test_settle_period_discards_samples_after_restart(sdr_devices):
+    """The first frames after a stream restart read ~8 dB hot; they must not be served."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import time
+
+    src = SoapyIQSource(driver="airspyhf", sample_rate=768e3, center_freq=0.909e6,
+                        settle_seconds=0.15)
+    with src:
+        time.sleep(0.8)
+        after_start = src.stats["dropped"]
+        assert after_start > 0, "nothing discarded at stream start"
+        # ~0.15 s at 768 kS/s, allowing for the 2048-sample read granularity.
+        assert 0.5 * 0.15 * 768e3 < after_start < 2.0 * 0.15 * 768e3
+
+        src.set_sample_rate(456e3)
+        time.sleep(0.8)
+        assert src.stats["dropped"] > after_start, "rate change did not re-arm settling"
+        assert src.stats["errors"] == 0
+
+
+@pytest.mark.hardware
+def test_settle_can_be_disabled(sdr_devices):
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import time
+
+    src = SoapyIQSource(driver="airspyhf", center_freq=7.1e6, settle_seconds=0.0)
+    with src:
+        time.sleep(0.5)
+        assert src.stats["dropped"] == 0

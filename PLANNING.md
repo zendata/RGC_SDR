@@ -36,6 +36,10 @@ Probed 2026-09-21 on the actual device — these numbers override vendor-datashe
 | **Actual `readStream` return** | **2048 samples per call, regardless of buffer size** |
 | Gain elements | **none** — `listGains()` empty, `getGainRange()` = 0.0–0.0, `getSettingInfo()` empty |
 | AGC | `hasGainMode()` = true (on/off only) |
+| Bandwidth control | **none** — `listBandwidths()` = `()`, `getBandwidthRange()` = `[]`; `setBandwidth()` is silently accepted while `getBandwidth()` stays 0.0 |
+| Sustained throughput | 912 kHz: 99.2 % of nominal over 8 s, 0 overflows. 768 kHz: 99.0 %. Both fine |
+| Restart settling | first ~4 frames after a stream restart read ≈8 dB hot broadband (peak −93.5 vs −110 dBFS steady) |
+| Retune | LO change on a live stream shows no transient; only a *rate* change restarts the stream |
 | Measured noise floor | ≈ −111 dBFS median on 40 m |
 | Measured strongest carrier | ≈ −47 dBFS |
 | Python / NumPy | 3.14.7 / 2.5.3 |
@@ -75,18 +79,23 @@ headless-testable and lets modules be swapped independently.
 
 ## 6. Roadmap (incremental)
 - **P0 — Spike.** Open device, stream IQ, report rate & levels. ✅ *(real hardware; verified above)*
-- **P1 — Spectrum & waterfall.** IQ → FFT → live spectrum + scrolling waterfall UI. ← **current**
-- **P2 — Tune.** Set frequency, sample rate and bandwidth from the UI; click-to-tune on the
-  waterfall; AGC toggle. *(Corrected from v1: no LNA/VGA gain sliders — this driver has no gain
-  elements. Build gain controls from `DeviceCaps.gain_elements`, which is empty here.)*
-- **P3 — Demod.** AM audio out, then NBFM/WBFM, then SSB (USB/LSB). Needs `sounddevice`; verify
-  Python 3.14 wheels for it and `scipy` before starting.
+- **P1 — Spectrum & waterfall.** IQ → FFT → live spectrum + scrolling waterfall UI. ✅
+- **P2 — Tune.** Frequency entry with a step size, sample-rate selection, click-to-tune on
+  spectrum and waterfall, AGC toggle. ✅
+  *(Corrected twice from v1: there are no LNA/VGA gain sliders and **no bandwidth control** —
+  this driver exposes neither. Gain and bandwidth UI are both built from `DeviceCaps`, which
+  reports empty tuples here, so neither control appears. A radio that does offer them, such as
+  HackRF, grows the controls with no code change.)*
+- **P3 — Demod.** AM audio out, then NBFM/WBFM, then SSB (USB/LSB). ← **current**
+  Needs `sounddevice`; verify Python 3.14 wheels for it and `scipy` before starting. Audio needs
+  a *continuous* sample path, unlike the display, which is free to drop frames — expect the ring
+  buffer's consumer side to need a real queue rather than `read_latest`.
 - **P4 — UX polish.** Gain/squelch where supported, S-meter, recording (WAV/IQ).
 - **P5 — Extras.** Bookmarks, scanner, multi-device, network (SpyServer-style), plugins.
 
 Each phase ends runnable and tested.
 
-## 7. P1 design (current phase)
+## 7. P1 design (spectrum & waterfall)
 **Threading.** Reader thread owns the device and loops `readStream` into a ~0.5 s ring buffer
 (384 k × complex64 ≈ 3 MB), holding a lock only for the index update. The GUI thread runs a 25 FPS
 `QTimer`, snapshots the newest samples and renders. Dropping intermediate samples is correct for
@@ -114,6 +123,29 @@ correctly (naive `reshape`-based pooling silently drops whole trailing buckets).
 Exponential smoothing (α ≈ 0.3) on the spectrum curve only — the waterfall stays unsmoothed so
 transients remain visible.
 
+## 7a. P2 design (tuning)
+**Retuning drops derived state.** The IQ ring, waterfall history, spectrum smoothing and peak
+hold all describe the *previous* tuning. Keeping any of them across a retune smears stale signal
+across the new span, so all four are cleared together.
+
+**Settling.** After a stream restart the front end needs ~150 ms; samples read during that window
+are discarded rather than rendered, or they paint one bright row across the waterfall and skew the
+auto-ranging. Implemented as a sample-count threshold (`_drop_until`) written only by the calling
+thread and compared against a counter written only by the reader thread, so it needs no lock.
+
+**Rate changes restart the stream.** SoapySDR will not accept a rate change on an active stream,
+so the reader thread is stopped and restarted around it and the ring is rebuilt (its capacity is
+derived from the rate). Frequency changes need none of this.
+
+**Two disjoint tuning ranges.** 0.009–31 and 60–260 MHz means a requested frequency can fall
+*between* ranges rather than merely out of bounds, so `DeviceCaps.clamp_freq` snaps to the nearest
+range edge and the UI reflects the clamped value back into the frequency box rather than letting
+the display and the hardware disagree.
+
+**Click-to-tune** is a left-click on either the spectrum or the waterfall; pyqtgraph raises
+`sigMouseClicked` only for a click without a drag, so it does not fight panning. A dotted centre
+marker shows where the receiver is actually tuned.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image
@@ -124,7 +156,8 @@ transients remain visible.
 - Manual smoke check per phase (attach → stream → render → shutdown with no dangling thread).
 
 ## 9. Risks / unknowns
-- 912 kHz rate is untested for sustained USB throughput; default to 768 kHz and expose the rest.
+- ~~912 kHz sustained USB throughput~~ — **closed 2026-09-23**: 99.2 % of nominal over 8 s with
+  zero overflows. 768 kHz remains the default; all seven rates are selectable.
 - pyqtgraph 0.14 + PyQt6 6.11 on Python **3.14** is a very new stack, and `ImageItem`
   colormap/axis-order APIs have shifted between versions — pin behaviour with an early smoke run.
 - `scipy` / `sounddevice` wheels for Python 3.14 are unverified; both are P3 concerns, not P1.

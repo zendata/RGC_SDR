@@ -57,6 +57,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.spectrum.set_levels(*levels)
         self.waterfall.setXLink(self.spectrum)  # one shared frequency axis
+        self.spectrum.frequencySelected.connect(self._retune)
+        self.waterfall.frequencySelected.connect(self._retune)
 
         splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
         splitter.addWidget(self.spectrum)
@@ -72,6 +74,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._status = self.statusBar()
         self._apply_geometry()
+        self.spectrum.set_center_marker(source.center_freq)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
@@ -81,6 +84,81 @@ class MainWindow(QtWidgets.QMainWindow):
     # -- controls ----------------------------------------------------------
 
     def _build_controls(self) -> QtWidgets.QWidget:
+        bar = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(bar)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(4)
+        outer.addWidget(self._build_tuning_row())
+        outer.addWidget(self._build_display_row())
+        return bar
+
+    def _build_tuning_row(self) -> QtWidgets.QWidget:
+        """Frequency and sample rate, both driven by probed capabilities."""
+        box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        caps = self.source.caps
+
+        row.addWidget(QtWidgets.QLabel("Freq"))
+        self._freq_spin = QtWidgets.QDoubleSpinBox()
+        self._freq_spin.setDecimals(6)
+        self._freq_spin.setSuffix(" MHz")
+        lo = min((r.min_hz for r in caps.freq_ranges), default=0.0) / 1e6
+        hi = max((r.max_hz for r in caps.freq_ranges), default=6000.0) / 1e6
+        self._freq_spin.setRange(lo, hi)
+        self._freq_spin.setValue(self.source.center_freq / 1e6)
+        self._freq_spin.setKeyboardTracking(False)
+        self._freq_spin.setToolTip(f"Tunable: {caps.describe_ranges()}")
+        self._freq_spin.valueChanged.connect(
+            lambda mhz: self._retune(mhz * 1e6, from_spin=True)
+        )
+        row.addWidget(self._freq_spin)
+
+        row.addWidget(QtWidgets.QLabel("Step"))
+        self._step_combo = QtWidgets.QComboBox()
+        for label, hz in (
+            ("1 kHz", 1e3), ("5 kHz", 5e3), ("9 kHz", 9e3), ("10 kHz", 10e3),
+            ("25 kHz", 25e3), ("100 kHz", 100e3), ("1 MHz", 1e6),
+        ):
+            self._step_combo.addItem(label, hz)
+        self._step_combo.setCurrentText("10 kHz")
+        self._step_combo.currentIndexChanged.connect(self._on_step_changed)
+        row.addWidget(self._step_combo)
+        self._on_step_changed()
+
+        if len(caps.sample_rates) > 1:
+            row.addWidget(QtWidgets.QLabel("Rate"))
+            self._rate_combo = QtWidgets.QComboBox()
+            for rate in sorted(caps.sample_rates, reverse=True):
+                self._rate_combo.addItem(f"{rate / 1e3:g} kS/s", rate)
+            self._rate_combo.setCurrentText(f"{self.source.sample_rate / 1e3:g} kS/s")
+            self._rate_combo.currentIndexChanged.connect(self._on_rate_changed)
+            row.addWidget(self._rate_combo)
+        else:
+            self._rate_combo = None
+
+        # No bandwidth control: measured 2026-09-23, the airspyhf driver reports
+        # listBandwidths() == () and getBandwidthRange() == [], and setBandwidth() is
+        # silently accepted while getBandwidth() stays 0.0. Built only if a driver
+        # actually offers options.
+        if caps.bandwidths:
+            row.addWidget(QtWidgets.QLabel("BW"))
+            self._bw_combo = QtWidgets.QComboBox()
+            for bw in sorted(caps.bandwidths):
+                self._bw_combo.addItem(f"{bw / 1e3:g} kHz", bw)
+            self._bw_combo.currentIndexChanged.connect(
+                lambda: self.source.set_bandwidth(self._bw_combo.currentData())
+            )
+            row.addWidget(self._bw_combo)
+        else:
+            self._bw_combo = None
+
+        row.addSpacing(12)
+        row.addWidget(self._build_device_controls())
+        row.addStretch(1)
+        return box
+
+    def _build_display_row(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
@@ -117,8 +195,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_check.toggled.connect(self.spectrum.set_peak_hold)
         row.addWidget(self._peak_check)
 
-        row.addSpacing(12)
-        row.addWidget(self._build_device_controls())
         row.addStretch(1)
         return bar
 
@@ -167,6 +243,35 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_geometry(self) -> None:
         history_s = self.waterfall.buffer.rows / float(self.fps)
         self.waterfall.set_geometry(self.source.center_freq, self.source.sample_rate, history_s)
+
+    def _on_step_changed(self) -> None:
+        self._freq_spin.setSingleStep(self._step_combo.currentData() / 1e6)
+
+    def _retune(self, hz: float, from_spin: bool = False) -> None:
+        """Tune, then drop everything that described the old frequency.
+
+        The ring, the waterfall history, the smoothing state and the peak hold all
+        describe the previous tuning; keeping any of them smears stale signal across the
+        new span.
+        """
+        actual = self.source.set_center_freq(hz)
+        self.spectrum.reset()
+        self.spectrum.set_center_marker(actual)
+        self.waterfall.clear_history()
+        self._apply_geometry()
+        if not from_spin or abs(actual - hz) > 1.0:
+            # Clamped to a tunable range, or tuned from a click: reflect reality.
+            self._freq_spin.blockSignals(True)
+            self._freq_spin.setValue(actual / 1e6)
+            self._freq_spin.blockSignals(False)
+
+    def _on_rate_changed(self) -> None:
+        if self._rate_combo is None:
+            return
+        self.source.set_sample_rate(self._rate_combo.currentData())
+        self.spectrum.reset()
+        self.waterfall.clear_history()
+        self._apply_geometry()
 
     def _on_levels_changed(self) -> None:
         low, high = self._min_spin.value(), self._max_spin.value()

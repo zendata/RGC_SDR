@@ -44,6 +44,10 @@ class WaterfallBuffer:
             raise ValueError("rows and cols must be >= 1")
         self._fill = float(fill)
         self._buf = np.full((int(rows), int(cols)), self._fill, dtype=np.float32)
+        # Counted explicitly rather than inferred by comparing against `fill`: the
+        # measured noise floor (-134.7 dBFS) sits close to the sentinel, so a genuinely
+        # quiet bin could otherwise be mistaken for unwritten history.
+        self._written = 0
 
     @property
     def rows(self) -> int:
@@ -58,14 +62,21 @@ class WaterfallBuffer:
         """The history as (rows, cols); row 0 newest. Live view -- do not mutate."""
         return self._buf
 
+    @property
+    def written_rows(self) -> int:
+        """How many rows hold real data; the rest is still fill."""
+        return self._written
+
     def clear(self) -> None:
         self._buf[:] = self._fill
+        self._written = 0
 
     def resize_cols(self, cols: int) -> None:
         """Change bin count (e.g. FFT size changed); history is discarded."""
         if cols == self.cols:
             return
         self._buf = np.full((self.rows, int(cols)), self._fill, dtype=np.float32)
+        self._written = 0
 
     def push(self, row: np.ndarray) -> None:
         """Insert a spectrum row at the top, scrolling the rest down."""
@@ -73,14 +84,15 @@ class WaterfallBuffer:
             row = reduce_max(row, self.cols)
         self._buf[1:] = self._buf[:-1]
         self._buf[0] = row
+        self._written = min(self.rows, self._written + 1)
 
     def percentile_levels(
         self, low: float = 5.0, high: float = 99.5, margin_db: float = 3.0
     ) -> tuple[float, float]:
         """Colour limits fitted to the visible history, for the auto-fit control."""
-        live = self._buf[self._buf > self._fill]
-        if live.size == 0:
+        if self._written == 0:
             return (-115.0, -40.0)
+        live = self._buf[: self._written]
         lo, hi = np.percentile(live, [low, high])
         if hi - lo < 6.0:  # near-flat history: keep a usable span
             hi = lo + 6.0

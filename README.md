@@ -1,7 +1,8 @@
 # RGC_SDR
 
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
-Airspy HF+ over SoapySDR. Currently at **P1: live spectrum + scrolling waterfall**.
+Airspy HF+ over SoapySDR. Currently at **P2: tuning** — live spectrum, scrolling waterfall,
+and click-to-tune. Next is P3 (demodulation and audio).
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -33,12 +34,27 @@ python -m src.rgc_sdr --freq 100.1e6 --rate 384e3
 python -m src.rgc_sdr --help                 # all options
 ```
 
+### Tuning
+
+- **Click** anywhere on the spectrum or the waterfall to tune there. A dotted line marks
+  where the receiver is actually tuned.
+- **Freq** box takes a frequency directly; **Step** sets the arrow-key/scroll increment
+  (1 kHz to 1 MHz, including 9 kHz for MW channel spacing).
+- **Rate** selects any of the seven supported sample rates (192 kHz to 912 kHz), which
+  changes how much spectrum you see at once.
+
+Tuning outside a tunable range snaps to the nearest one and the Freq box updates to show
+where you really are — the Airspy HF+ has a gap between 31 and 60 MHz.
+
+### Display
+
 The colour range **auto-fits** to what the antenna is actually receiving a second after
 launch, because real levels swing by tens of dB between setups. Override it with
 `--min-db` / `--max-db`, or re-fit at any time with the **Auto** button.
 
-In the window: FFT size, colour map, dBFS range, peak hold, and whatever gain controls the
-driver actually exposes (for the Airspy HF+ that is AGC only — it reports no gain stages).
+Also in the window: FFT size, colour map, dBFS range and peak hold. Gain and bandwidth
+controls are built from what the driver reports, so for the Airspy HF+ you get an AGC
+toggle and nothing else — it exposes no gain stages and no bandwidth control.
 
 Device diagnostic / P0 check:
 

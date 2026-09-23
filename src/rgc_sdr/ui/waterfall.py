@@ -21,6 +21,9 @@ COLORMAPS = ("inferno", "magma", "plasma", "viridis", "turbo", "CET-L9", "CET-R4
 class WaterfallView(pg.PlotWidget):
     """Scrolling spectrogram, newest row at the top."""
 
+    #: Emitted with a frequency in Hz when the user clicks to tune.
+    frequencySelected = QtCore.pyqtSignal(float)
+
     def __init__(
         self,
         rows: int = 512,
@@ -47,6 +50,18 @@ class WaterfallView(pg.PlotWidget):
         self.setLabel("bottom", "frequency", units="Hz")
         self.showGrid(x=True, y=False, alpha=0.2)
         self.setMenuEnabled(False)
+        self.scene().sigMouseClicked.connect(self._on_click)
+
+    def _on_click(self, event) -> None:
+        """Click-to-tune. pyqtgraph only raises this for a click without a drag, so it
+        does not fight panning."""
+        if event.button() != QtCore.Qt.MouseButton.LeftButton:
+            return
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(event.scenePos()):
+            return
+        self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
+        event.accept()
 
     def set_colormap(self, name: str) -> None:
         self._img.setColorMap(pg.colormap.get(name))
