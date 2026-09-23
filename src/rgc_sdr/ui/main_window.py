@@ -19,8 +19,10 @@ from ..device.source import IQSource
 from ..dsp.decimate import Decimator
 from ..dsp.demod import BANDWIDTH_PRESETS, MODE_SPECS, MODES
 from ..recorder import DEFAULT_DIR, AudioRecorder, IQRecorder, timestamp_name
+from ..scanner import ScanAction, ScanConfig, Scanner
 from ..dsp.spectrum import SpectrumAnalyzer
 from ..settings import Settings, Snapshot
+from .scanner_panel import ScannerPanel
 from .smeter import SMeter
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
@@ -80,6 +82,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
         self.iq_recorder: IQRecorder | None = None
+        self.scanner: Scanner | None = None
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
         self.audio: AudioSink | None = None
@@ -114,6 +117,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
 
         self._status = self.statusBar()
+        self._build_scanner_dock()
         self._apply_geometry()
         self.spectrum.set_center_marker(source.center_freq)
 
@@ -131,6 +135,201 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_frame)
         self._timer.start(int(1000 / self.fps))
+
+    # -- scanner -----------------------------------------------------------
+
+    def _build_scanner_dock(self) -> None:
+        self.scanner_panel = ScannerPanel()
+        scan = self.settings.scan
+        self.scanner_panel.apply_config(
+            scan.start_hz, scan.end_hz, scan.step_hz, scan.threshold_db,
+            scan.stop_on_signal, scan.min_sightings,
+        )
+        self.scanner_panel.set_found(self.settings.found)
+        self.scanner_panel.set_lockout(self.settings.lockout)
+
+        self.scanner_panel.scanRequested.connect(self.start_scan)
+        self.scanner_panel.stopRequested.connect(self.stop_scan)
+        self.scanner_panel.skipRequested.connect(self.skip_current)
+        self.scanner_panel.lockOutCurrentRequested.connect(self.lock_out_current)
+        self.scanner_panel.channelActivated.connect(self._tune_to_found)
+        self.scanner_panel.lockOutRequested.connect(self.lock_out)
+        self.scanner_panel.unlockRequested.connect(self.unlock)
+        self.scanner_panel.clearFoundRequested.connect(self.clear_found)
+        self.scanner_panel.saveFoundRequested.connect(self._save_found_to_memory)
+        self.scanner_panel.configChanged.connect(self._on_scan_config_changed)
+
+        self._scanner_dock = QtWidgets.QDockWidget("Scanner", self)
+        self._scanner_dock.setObjectName("scannerDock")
+        self._scanner_dock.setWidget(self.scanner_panel)
+        self._scanner_dock.setAllowedAreas(
+            QtCore.Qt.DockWidgetArea.LeftDockWidgetArea
+            | QtCore.Qt.DockWidgetArea.RightDockWidgetArea
+        )
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._scanner_dock)
+
+    def _scan_config(self) -> ScanConfig:
+        panel = self.scanner_panel
+        return ScanConfig(
+            start_hz=panel.start_hz,
+            end_hz=panel.end_hz,
+            step_hz=panel.step_hz,
+            threshold_db=panel.threshold_db,
+            stop_on_signal=panel.stop_on_signal,
+            min_sightings=panel.min_sightings,
+        )
+
+    def _on_scan_config_changed(self) -> None:
+        panel = self.scanner_panel
+        scan = self.settings.scan
+        scan.start_hz, scan.end_hz = panel.start_hz, panel.end_hz
+        scan.step_hz, scan.threshold_db = panel.step_hz, panel.threshold_db
+        scan.stop_on_signal = panel.stop_on_signal
+        scan.min_sightings = panel.min_sightings
+        self._schedule_save()
+
+    def start_scan(self) -> bool:
+        """Begin sweeping the configured range."""
+        try:
+            config = self._scan_config()
+            self.scanner = Scanner(config, lockout=set(self.settings.lockout))
+        except ValueError as exc:
+            self.scanner = None
+            self.scanner_panel.set_running(False)
+            self.scanner_panel.set_status(str(exc))
+            return False
+        caps = self.source.caps
+        if not (caps.covers(config.start_hz) and caps.covers(config.end_hz)):
+            self.scanner_panel.set_status(
+                f"range is outside this receiver ({caps.describe_ranges()})"
+            )
+            self.scanner = None
+            self.scanner_panel.set_running(False)
+            return False
+        step = self.scanner.start(self.effective_rate)
+        self._apply_scan_step(step)
+        self.scanner_panel.set_running(True)
+        if config.stop_on_signal and self.audio is None:
+            self.scanner_panel.set_status(
+                "scanning \u2014 choose an audio mode to hear what it stops on"
+            )
+        return True
+
+    def stop_scan(self) -> None:
+        if self.scanner is not None:
+            self.scanner.stop()
+            self.scanner = None
+        self.scanner_panel.set_running(False)
+        self.scanner_panel.set_status("idle")
+        if self.audio is not None:
+            self.audio.set_offset(self._offset_spin.value() * 1e3)
+
+    def skip_current(self) -> None:
+        if self.scanner is not None:
+            self._apply_scan_step(self.scanner.skip())
+
+    def lock_out_current(self) -> None:
+        if self.scanner is None:
+            return
+        frequency = self.scanner.lock_out_current()
+        if frequency is None:
+            self.scanner_panel.set_status("nothing to lock out")
+            return
+        self.settings.add_lockout(frequency)
+        self._refresh_scan_lists()
+        self._save_state()
+
+    def lock_out(self, freq_hz: float) -> None:
+        """Lock out a channel whether or not a scan is running."""
+        self.settings.add_lockout(freq_hz)
+        if self.scanner is not None:
+            self.scanner.lock_out(freq_hz)
+        self._refresh_scan_lists()
+        self._save_state()
+
+    def unlock(self, freq_hz: float) -> None:
+        self.settings.remove_lockout(freq_hz)
+        if self.scanner is not None:
+            self.scanner.unlock(freq_hz)
+        self._refresh_scan_lists()
+        self._save_state()
+
+    def clear_found(self) -> None:
+        self.settings.clear_found()
+        if self.scanner is not None:
+            self.scanner.clear_hits()
+        self._refresh_scan_lists()
+        self._save_state()
+
+    def _refresh_scan_lists(self) -> None:
+        self.scanner_panel.set_found(self.settings.found)
+        self.scanner_panel.set_lockout(self.settings.lockout)
+
+    def _tune_to_found(self, freq_hz: float) -> None:
+        """Tune a discovered channel, stopping the sweep so it stays put."""
+        if self.scanner is not None:
+            self.stop_scan()
+        self._offset_spin.setValue(0.0)
+        self._retune(freq_hz)
+
+    def _save_found_to_memory(self, freq_hz: float) -> None:
+        """Promote a scanner hit into the named memories, which are a separate list."""
+        channel = self.settings.find_channel(freq_hz)
+        default = f"{freq_hz / 1e6:.4f} MHz"
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save to memory", "Name for this memory:",
+            QtWidgets.QLineEdit.EchoMode.Normal, channel.label or default if channel else default,
+        )
+        if not ok or not name.strip():
+            return
+        snapshot = self.current_snapshot()
+        snapshot.freq_hz = freq_hz
+        snapshot.offset_hz = 0.0
+        self.settings.add_memory(name, snapshot)
+        self._refresh_memories()
+        self._save_state()
+        self._status.showMessage(f"saved {name.strip()} to memories", 4000)
+
+    def _apply_scan_step(self, step) -> None:
+        """Carry out whatever the scanner asked for."""
+        if step.new_hits:
+            from datetime import datetime
+
+            stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+            for hit in step.new_hits:
+                self.settings.record_found(hit.freq_hz, hit.level_dbfs, hit.snr_db, stamp)
+            self._refresh_scan_lists()
+            self._schedule_save()
+
+        if step.action is ScanAction.TUNE and step.centre_hz is not None:
+            if self.audio is not None:
+                self.audio.set_offset(0.0)
+            self._retune(step.centre_hz, from_scan=True)
+        elif step.action is ScanAction.DWELL and step.dwell_hz is not None:
+            # Listening is an audio offset, not a retune: the hit is already inside the
+            # window being received, so nothing needs to move.
+            if self.audio is not None:
+                self.audio.set_offset(step.dwell_hz - self.source.center_freq)
+                self.audio.reset()
+            self._update_passband()
+
+    def _scan_frame(self, freqs, dbfs) -> None:
+        if self.scanner is None:
+            return
+        step = self.scanner.on_frame(self.source.center_freq, freqs, dbfs)
+        self._apply_scan_step(step)
+        scanner = self.scanner
+        if scanner is None:
+            return
+        self.scanner_panel.set_progress(scanner.window_index, max(1, scanner.window_count))
+        if scanner.dwell_hz is not None:
+            text = f"listening {scanner.dwell_hz / 1e6:.4f} MHz"
+        else:
+            text = (
+                f"sweeping {scanner.window_index + 1}/{scanner.window_count}"
+                f"  pass {scanner.passes + 1}"
+            )
+        self.scanner_panel.set_status(f"{text}  —  {len(self.settings.found)} found")
 
     # -- controls ----------------------------------------------------------
 
@@ -434,13 +633,17 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_step_changed(self) -> None:
         self._freq_spin.setSingleStep(self._step_combo.currentData() / 1e6)
 
-    def _retune(self, hz: float, from_spin: bool = False) -> None:
+    def _retune(self, hz: float, from_spin: bool = False, from_scan: bool = False) -> None:
         """Tune, then drop everything that described the old frequency.
 
         The ring, the waterfall history, the smoothing state and the peak hold all
         describe the previous tuning; keeping any of them smears stale signal across the
         new span.
         """
+        if not from_scan and self.scanner is not None:
+            # A manual tune means the user wants to stay here, so stop sweeping rather
+            # than fighting them for the dial.
+            self.stop_scan()
         if self.iq_recorder is not None:
             # The sidecar records one centre frequency, so a retune would make the file
             # a lie about itself.
@@ -459,7 +662,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self._freq_spin.blockSignals(True)
             self._freq_spin.setValue(actual / 1e6)
             self._freq_spin.blockSignals(False)
-        self._schedule_save()
+        if not from_scan:
+            # Sweeping rewrites the frequency many times a second; that is not a
+            # preference worth persisting.
+            self._schedule_save()
 
     def _on_rate_changed(self) -> None:
         if self._rate_combo is None:
@@ -647,14 +853,24 @@ class MainWindow(QtWidgets.QMainWindow):
 
         noise_in_channel = noise_per_bin * bins
         spectrum_power = float(linear[mask].sum())
+
+        # The displayed level prefers the demodulator's own measurement, which is taken
+        # after the channel filter and so is exactly what is being listened to.
         if self.audio is not None and self.audio.channel_dbfs is not None:
             level_db = float(self.audio.channel_dbfs)
-            total = 10.0 ** (level_db / 10.0)
         else:
-            total = spectrum_power
-            level_db = 10.0 * np.log10(total + 1e-30)
-        excess = max(total - noise_in_channel, 1e-30)
-        snr_db = 10.0 * np.log10(excess / max(noise_in_channel, 1e-30))
+            level_db = 10.0 * np.log10(spectrum_power + 1e-30)
+
+        # SNR is always computed from the spectrum, on both sides of the ratio. Mixing
+        # the chain's level with a spectrum-derived noise figure compares two different
+        # normalisations and produced readings like "-203 dB". Clamped at zero because
+        # a channel at or below the noise floor has no measurable SNR -- 0 dB states
+        # "indistinguishable from the noise" rather than dressing noise up as a number.
+        excess = spectrum_power - noise_in_channel
+        if excess <= 0.0 or noise_in_channel <= 0.0:
+            snr_db = 0.0
+        else:
+            snr_db = min(100.0, max(0.0, 10.0 * np.log10(excess / noise_in_channel)))
         self.smeter.set_level(level_db, snr_db)
 
     # -- recording ---------------------------------------------------------
@@ -999,6 +1215,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
         self._update_smeter(dbfs, freqs)
+        self._scan_frame(freqs, dbfs)
         self._rows_pushed += 1
 
         # One-shot auto-range once there is enough history to be representative.
@@ -1052,6 +1269,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.stop()
         self._save_timer.stop()
         self._save_state()   # immediately, not debounced: there is no later
+        if self.scanner is not None:
+            self.scanner.stop()
+            self.scanner = None
         self.stop_audio_recording()
         self.stop_iq_recording()
         if self.audio is not None:

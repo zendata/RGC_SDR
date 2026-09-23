@@ -2,8 +2,8 @@
 
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
-named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter and
-recording. Next is P5 (scanner, IQ playback, networking).
+named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter,
+recording, and a **band scanner**. Next: IQ playback, multi-device, networking.
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -106,6 +106,38 @@ use, and any underruns.
 WBFM is mono. SSB is a proper single-sideband filter, measured at over 30 dB rejection of
 the opposite sideband.
 
+### Scanner
+
+The **Scanner** panel sweeps a frequency range, logs every active channel it finds, and
+stops on transmissions so you can hear them.
+
+Set **From** / **To**, pick a **Step** matching the band's channel spacing, and press
+**Scan** — or choose a **Band preset** (airband, marine, 2 m, FM broadcast, MW, shortwave)
+which fills all three in. Airband is 118–137 MHz at 25 kHz: about 31 windows, swept in
+**10 s**.
+
+It scans by spectrum, not channel by channel: the receiver sees 768 kHz at once, so one
+FFT finds every active channel in a window. That makes a sweep roughly 25x faster than
+retuning to each channel in turn. Stopping on a signal moves only the audio offset, not
+the radio, so resuming is instant and short transmissions are not clipped.
+
+- **Threshold** is how far above the noise floor counts as a signal. Higher finds less but
+  is more certain.
+- **Confirm** is how many passes a channel must appear on before it is stored. The default
+  of 2 is doing real work: the loudest *noise* peak in a window sits 7–24 dB above the
+  median, so a single sighting is not evidence. In testing this cut 44 candidates to 22
+  real ones. Set it to 1 to store everything, including noise.
+- **Stop on signal** unchecked surveys the range without pausing, which builds a list fast.
+- **Skip** leaves the current transmission; **Lock out** means never stop there again.
+
+**Found** lists what the scan discovered — double-click to tune. This is a **separate list
+from your memories**, so a scan can never bury a frequency you saved by hand; use **To
+memory** to promote one. **Locked out** holds channels the scanner skips on later passes
+(double-click to unlock) — useful for silencing a continuous ATIS or a local data carrier.
+Both lists persist between sessions.
+
+Tuning manually stops the scan, rather than the two fighting over the dial.
+
 ### Recording
 
 **Record → Audio** writes the demodulated audio to a 16-bit WAV. **Record → IQ** writes
@@ -171,6 +203,9 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/audio.py](src/rgc_sdr/audio.py) | Demod worker thread, FIFO, sound device |
 | [src/rgc_sdr/recorder.py](src/rgc_sdr/recorder.py) | WAV and raw-IQ recording, on their own threads |
 | [src/rgc_sdr/ui/smeter.py](src/rgc_sdr/ui/smeter.py) | Signal meter (dBFS + SNR, no invented S-units) |
+| [src/rgc_sdr/dsp/detect.py](src/rgc_sdr/dsp/detect.py) | Sweep planning and carrier detection |
+| [src/rgc_sdr/scanner.py](src/rgc_sdr/scanner.py) | Scanner state machine, lockout, confirmation |
+| [src/rgc_sdr/ui/scanner_panel.py](src/rgc_sdr/ui/scanner_panel.py) | Scanner dock: range, found list, lockout |
 | [src/rgc_sdr/ui/](src/rgc_sdr/ui/) | pyqtgraph spectrum + waterfall, main window |
 
 `dsp/` never imports Qt and `device/` never imports Qt or `dsp`, so both are testable

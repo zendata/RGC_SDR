@@ -91,8 +91,9 @@ headless-testable and lets modules be swapped independently.
   HackRF, grows the controls with no code change.)*
 - **P3 — Demod.** AM, NBFM, WBFM, USB and LSB with audio out. ✅ See section 7c.
 - **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
-- **P5 — Extras.** Scanner, multi-device, network (SpyServer-style), plugins,
-  IQ *playback* (the recorder's sidecar format is designed for it). ← **current**
+- **P5 — Extras.** Scanner ✅ (section 7e). Remaining: IQ *playback* (the recorder's
+  sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
+  ← **current**
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
 (originally part of the P3 DSP chain) and named memories with last-state restore
@@ -289,6 +290,59 @@ for WBFM.
 band 38.6 dB above the 12 kHz+ region) and 3.93 s of IQ (23 MB, zero lost samples) written
 concurrently while the display held 25 FPS and audio reported zero underruns. Replaying
 the IQ file on its own puts the carrier at +0 Hz from the recorded centre.
+
+## 7e. Scanner
+
+**Spectrum-based, not step-and-dwell.** A step-and-dwell scanner retunes to every channel
+in turn: airband's 19 MHz at 25 kHz spacing is 760 retunes. This receiver already sees
+768 kHz at once, so the same range is **31 windows** and one FFT finds every active
+channel in each. Measured 2026-09-23: **0.34 s per window, a full airband sweep in
+10.5 s**, and an FM broadcast sweep found 33 stations in 11.6 s.
+
+**Dwelling moves the audio offset, not the radio.** A hit is by construction inside the
+window already being received, so listening to it needs no retune and therefore no settle
+delay. Resuming the sweep is instant, and a short transmission is not missed while the
+front end recovers from a tune.
+
+**The false-positive problem, and what actually solves it.** The first working sweep
+returned 29 airband "channels" spaced almost exactly 0.61 MHz apart — one per scan window,
+which is the signature of reporting the loudest noise peak in each. Measured on quiet
+windows, **the loudest noise bin sits 7–24 dB above the median (mean 16.3 dB)**, so *no
+fixed dB-above-noise threshold separates signal from noise*: even 20 dB left about 4 false
+hits per sweep.
+
+Peak *width* was the next candidate and does not work either. Quiet-VHF noise peaks
+measured 2–3 bins wide, FM broadcast signals up to 1017 bins — but the one unambiguously
+real airband carrier (122.875 MHz, 36 dB SNR) was itself only **2 bins**, the same as
+noise. Narrowband AM cannot be separated from a spur by width.
+
+What does separate them is **persistence**: a real channel reappears at the same frequency
+every pass, a noise spike does not. So a channel is stored only after appearing on
+`min_sightings` passes (default 2). Measured effect: **44 candidates reduced to 22
+confirmed**, and the one-per-window pattern disappeared. The scanner still *dwells* on a
+first sighting, so short transmissions are not missed — only the stored list waits for
+confirmation, because that list is what accumulates rubbish over time.
+
+**No DC guard is needed on this radio, but windows avoid DC anyway.** The centre bin
+measured within ±1 dB of the noise floor at 20, 125 and 130 MHz, so the HF+ leaks no
+detectable LO. Window centres are still planned half a channel *off* the grid, so a real
+channel can never land on DC — free insurance for drivers that do leak, such as HackRF.
+
+**Found channels are a separate list from memories.** Memories are deliberate, named
+choices; found channels accumulate automatically and get cleared between sweeps. Mixing
+them would let a scan bury a hand-saved frequency. A found channel can be promoted into
+the memories explicitly.
+
+**Other boundaries.** Detection is clamped to the range actually requested, since the
+first and last windows overrun it. A manual tune stops the sweep rather than fighting the
+user for the dial. Sweeping does not persist the frequency it lands on, which would
+otherwise rewrite the saved state many times a second.
+
+**The S-meter's SNR is computed from the spectrum on both sides of the ratio.** Mixing the
+demodulator's post-filter level with a spectrum-derived noise figure compares two
+different normalisations, which produced readings like "S/N −203 dB". It is also clamped
+at zero: a channel at or below the noise floor has no measurable SNR, and 0 dB says
+"indistinguishable from the noise" rather than dressing noise up as a measurement.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

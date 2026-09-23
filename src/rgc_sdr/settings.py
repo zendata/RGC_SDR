@@ -94,6 +94,80 @@ class Memory:
     snapshot: Snapshot = field(default_factory=Snapshot)
 
 
+@dataclass
+class FoundChannel:
+    """A channel the scanner discovered.
+
+    Kept in its own list, separate from `Memory`: memories are deliberate choices the
+    user made and named, while these accumulate automatically and get cleared between
+    sweeps. Mixing them would mean a scan could bury a hand-saved frequency.
+    """
+
+    freq_hz: float
+    level_dbfs: float = -200.0
+    snr_db: float = 0.0
+    count: int = 1
+    last_seen: str = ""
+    #: Optional user note, e.g. "Tower" or "Approach".
+    label: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: object) -> "FoundChannel | None":
+        if not isinstance(data, dict) or "freq_hz" not in data:
+            return None
+        try:
+            freq = float(data["freq_hz"])
+        except (TypeError, ValueError):
+            return None
+        return cls(
+            freq_hz=freq,
+            level_dbfs=_coerce(data.get("level_dbfs", -200.0), -200.0),
+            snr_db=_coerce(data.get("snr_db", 0.0), 0.0),
+            count=_coerce(data.get("count", 1), 1),
+            last_seen=str(data.get("last_seen", "")),
+            label=str(data.get("label", "")),
+        )
+
+    def describe(self) -> str:
+        text = f"{self.freq_hz / 1e6:.4f} MHz"
+        if self.label:
+            text += f"  {self.label}"
+        text += f"   {self.snr_db:.0f} dB S/N"
+        if self.count > 1:
+            text += f"   x{self.count}"
+        return text
+
+
+@dataclass
+class ScanSettings:
+    """The scan range, remembered between sessions."""
+
+    start_hz: float = 118e6
+    end_hz: float = 137e6
+    step_hz: float = 25e3
+    threshold_db: float = 10.0
+    stop_on_signal: bool = True
+    min_sightings: int = 2
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: object) -> "ScanSettings":
+        out = cls()
+        if not isinstance(data, dict):
+            return out
+        for f in fields(cls):
+            if f.name in data:
+                setattr(out, f.name, _coerce(data[f.name], f.default))
+        if out.end_hz <= out.start_hz or out.step_hz <= 0:
+            return cls()
+        return out
+
+
 class Settings:
     """The settings file: the last-used state plus any named memories."""
 
@@ -101,6 +175,11 @@ class Settings:
         self.path = Path(path) if path is not None else SETTINGS_FILE
         self.last: Snapshot | None = None
         self.memories: list[Memory] = []
+        #: Scanner results, separate from `memories` by design.
+        self.found: list[FoundChannel] = []
+        #: Channels the scanner must skip on later passes.
+        self.lockout: set[float] = set()
+        self.scan = ScanSettings()
 
     # -- persistence -------------------------------------------------------
 
@@ -124,6 +203,24 @@ class Settings:
                                Snapshot.from_dict(entry.get("snapshot")))
                     )
             settings._sort()
+
+        entries = raw.get("found")
+        if isinstance(entries, list):
+            for entry in entries:
+                channel = FoundChannel.from_dict(entry)
+                if channel is not None:
+                    settings.found.append(channel)
+            settings.found.sort(key=lambda c: c.freq_hz)
+
+        locked = raw.get("lockout")
+        if isinstance(locked, list):
+            for value in locked:
+                try:
+                    settings.lockout.add(float(value))
+                except (TypeError, ValueError):
+                    continue
+
+        settings.scan = ScanSettings.from_dict(raw.get("scan"))
         return settings
 
     def save(self) -> None:
@@ -134,6 +231,9 @@ class Settings:
             "memories": [
                 {"name": m.name, "snapshot": m.snapshot.to_dict()} for m in self.memories
             ],
+            "found": [c.to_dict() for c in self.found],
+            "lockout": sorted(self.lockout),
+            "scan": self.scan.to_dict(),
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = None
@@ -183,3 +283,48 @@ class Settings:
             return False
         self.memories.remove(existing)
         return True
+
+    # -- scanner results ---------------------------------------------------
+
+    def find_channel(self, freq_hz: float, tolerance_hz: float = 1.0) -> FoundChannel | None:
+        for channel in self.found:
+            if abs(channel.freq_hz - freq_hz) <= tolerance_hz:
+                return channel
+        return None
+
+    def record_found(
+        self, freq_hz: float, level_dbfs: float, snr_db: float, seen: str = ""
+    ) -> FoundChannel:
+        """Add or update a scanner hit, keeping the strongest reading seen."""
+        existing = self.find_channel(freq_hz)
+        if existing is not None:
+            existing.level_dbfs = max(existing.level_dbfs, level_dbfs)
+            existing.snr_db = max(existing.snr_db, snr_db)
+            existing.count += 1
+            if seen:
+                existing.last_seen = seen
+            return existing
+        channel = FoundChannel(float(freq_hz), level_dbfs, snr_db, 1, seen)
+        self.found.append(channel)
+        self.found.sort(key=lambda c: c.freq_hz)
+        return channel
+
+    def remove_found(self, freq_hz: float, tolerance_hz: float = 1.0) -> bool:
+        channel = self.find_channel(freq_hz, tolerance_hz)
+        if channel is None:
+            return False
+        self.found.remove(channel)
+        return True
+
+    def clear_found(self) -> None:
+        self.found.clear()
+
+    def add_lockout(self, freq_hz: float) -> None:
+        self.lockout.add(float(freq_hz))
+        self.remove_found(freq_hz)
+
+    def remove_lockout(self, freq_hz: float) -> bool:
+        if freq_hz in self.lockout:
+            self.lockout.discard(freq_hz)
+            return True
+        return False

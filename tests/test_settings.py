@@ -160,3 +160,92 @@ def test_default_path_is_under_application_support():
     s = Settings()
     assert s.path.parent.name == "RGC_SDR"
     assert "Application Support" in str(s.path)
+
+
+# -- scanner results (kept separate from memories) ---------------------------
+
+def test_found_channels_are_separate_from_memories(tmp_path):
+    """A scan must never bury a hand-saved memory: two independent lists."""
+    path = tmp_path / "s.json"
+    s = Settings(path)
+    s.add_memory("Tower", a_snapshot(freq_hz=118.7e6))
+    s.record_found(118.325e6, -95.0, 22.0, "2026-09-23 14:00")
+    s.save()
+
+    again = Settings.load(path)
+    assert again.names() == ["Tower"]
+    assert [c.freq_hz for c in again.found] == [pytest.approx(118.325e6)]
+    again.clear_found()
+    assert again.names() == ["Tower"], "clearing scan results touched the memories"
+
+
+def test_record_found_accumulates_rather_than_duplicating(tmp_path):
+    s = Settings(tmp_path / "s.json")
+    s.record_found(118.325e6, -100.0, 15.0)
+    s.record_found(118.325e6, -92.0, 24.0)
+    assert len(s.found) == 1
+    assert s.found[0].count == 2
+    assert s.found[0].level_dbfs == pytest.approx(-92.0)   # strongest kept
+    assert s.found[0].snr_db == pytest.approx(24.0)
+
+
+def test_found_channels_stay_sorted_by_frequency():
+    s = Settings()
+    for freq in (121.5e6, 118.325e6, 119.9e6):
+        s.record_found(freq, -95.0, 20.0)
+    assert [c.freq_hz for c in s.found] == sorted(c.freq_hz for c in s.found)
+
+
+def test_lockout_persists_and_removes_the_found_entry(tmp_path):
+    path = tmp_path / "s.json"
+    s = Settings(path)
+    s.record_found(118.325e6, -95.0, 20.0)
+    s.add_lockout(118.325e6)
+    assert s.found == [], "locking out should drop it from the results"
+    s.save()
+
+    again = Settings.load(path)
+    assert 118.325e6 in again.lockout
+    assert again.remove_lockout(118.325e6) is True
+    assert again.remove_lockout(118.325e6) is False
+
+
+def test_scan_range_is_remembered(tmp_path):
+    path = tmp_path / "s.json"
+    s = Settings(path)
+    s.scan.start_hz, s.scan.end_hz = 156e6, 163e6
+    s.scan.step_hz, s.scan.threshold_db = 12.5e3, 14.0
+    s.scan.stop_on_signal = False
+    s.save()
+
+    scan = Settings.load(path).scan
+    assert scan.start_hz == pytest.approx(156e6)
+    assert scan.end_hz == pytest.approx(163e6)
+    assert scan.step_hz == pytest.approx(12.5e3)
+    assert scan.threshold_db == pytest.approx(14.0)
+    assert scan.stop_on_signal is False
+
+
+def test_nonsense_scan_range_falls_back_to_defaults(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"scan": {"start_hz": 200e6, "end_hz": 100e6}}))
+    scan = Settings.load(path).scan
+    assert scan.end_hz > scan.start_hz
+
+
+def test_corrupt_found_entries_are_skipped(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({
+        "found": [{"freq_hz": 118.325e6}, {"no_freq": 1}, "junk", None],
+        "lockout": [121.5e6, "nonsense"],
+    }))
+    s = Settings.load(path)
+    assert [c.freq_hz for c in s.found] == [pytest.approx(118.325e6)]
+    assert s.lockout == {121.5e6}
+
+
+def test_found_channel_describe():
+    from src.rgc_sdr.settings import FoundChannel
+
+    text = FoundChannel(118.325e6, -95.0, 22.0, 3, label="Tower").describe()
+    assert "118.3250 MHz" in text and "Tower" in text and "x3" in text

@@ -891,3 +891,241 @@ def test_recordings_default_under_documents(qapp):
     assert win.recordings_dir.name == "RGC_SDR"
     assert "Documents" in str(win.recordings_dir)
     win.close()
+
+
+# -- P5: scanner -------------------------------------------------------------
+
+def _airband_caps():
+    return _caps(freq_ranges=(FreqRange(9e3, 31e6), FreqRange(60e6, 260e6)))
+
+
+def _scan_window(win, carriers=()):
+    """A spectrum for the window the scanner is currently on."""
+    centre = win.source.center_freq
+    bins = win.analyzer.fft_size
+    freqs = centre + (np.arange(bins) - bins // 2) * (win.effective_rate / bins)
+    rng = np.random.default_rng(11)
+    dbfs = -118.0 + rng.normal(0, 0.7, bins)
+    for freq, excess in carriers:
+        idx = int(np.argmin(np.abs(freqs - freq)))
+        for off, share in ((0, 1.0), (-1, 0.6), (1, 0.6)):
+            if 0 <= idx + off < bins:
+                dbfs[idx + off] = -118.0 + excess * share
+    return freqs, dbfs
+
+
+def test_scan_starts_and_tunes_into_the_range(qapp, tmp_path):
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    assert win.start_scan() is True
+    assert win.scanner is not None
+    assert 118e6 <= src.center_freq <= 137e6
+    win.stop_scan()
+    assert win.scanner is None
+    win.close()
+
+
+def test_scan_refuses_a_range_the_receiver_cannot_reach(qapp, tmp_path):
+    """The Airspy has a 31-60 MHz hole and stops at 260 MHz."""
+    win = window_for(StubSource(_airband_caps()), fft_size=1024,
+                     settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(400e6, 450e6, 25e3, 10.0, True)
+    assert win.start_scan() is False
+    assert win.scanner is None
+    assert "outside this receiver" in win.scanner_panel._status.text()
+    win.close()
+
+
+def test_scan_refuses_a_backwards_range(qapp, tmp_path):
+    win = window_for(StubSource(_airband_caps()), fft_size=1024,
+                     settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(137e6, 118e6, 25e3, 10.0, True)
+    assert win.start_scan() is False
+    win.close()
+
+
+def test_scan_records_hits_into_found_not_memories(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("hand saved", Snapshot(freq_hz=7.1e6))
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=4096, fps=25, settings=settings)
+    # Confirmation off, so one sighting is reported immediately.
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, False, 1)
+    win.start_scan()
+
+    target = win.source.center_freq + 150e3
+    freqs, dbfs = _scan_window(win, carriers=[(target, 30)])
+    win.scanner._state = __import__(
+        "src.rgc_sdr.scanner", fromlist=["ScanState"]
+    ).ScanState.SEARCHING
+    win._scan_frame(freqs, dbfs)
+
+    assert len(settings.found) == 1
+    assert settings.names() == ["hand saved"], "a scan hit leaked into the memories"
+    win.stop_scan()
+    win.close()
+
+
+def test_found_channels_survive_a_restart(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    first = window_for(StubSource(_airband_caps()), fft_size=1024, settings=Settings(path))
+    first.settings.record_found(118.325e6, -95.0, 22.0)
+    first.close()
+
+    second = window_for(StubSource(_airband_caps()), fft_size=1024,
+                        settings=Settings.load(path))
+    assert [c.freq_hz for c in second.settings.found] == [pytest.approx(118.325e6)]
+    assert second.scanner_panel._found_list.count() == 1
+    second.close()
+
+
+def test_lock_out_persists_and_shows_in_the_panel(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win = window_for(StubSource(_airband_caps()), fft_size=1024, settings=Settings(path))
+    win.settings.record_found(121.5e6, -90.0, 25.0)
+    win._refresh_scan_lists()
+    assert win.scanner_panel._found_list.count() == 1
+
+    win.lock_out(121.5e6)
+    assert 121.5e6 in win.settings.lockout
+    assert win.scanner_panel._found_list.count() == 0, "locked channel still listed as found"
+    assert win.scanner_panel._lock_list.count() == 1
+    win.close()
+
+    assert 121.5e6 in Settings.load(path).lockout
+
+
+def test_unlock_removes_it_from_the_lockout_list(qapp, tmp_path):
+    win = window_for(StubSource(_airband_caps()), fft_size=1024,
+                     settings=Settings(tmp_path / "s.json"))
+    win.lock_out(121.5e6)
+    win.unlock(121.5e6)
+    assert win.settings.lockout == set()
+    assert win.scanner_panel._lock_list.count() == 0
+    win.close()
+
+
+def test_locked_channel_is_not_found_again_while_scanning(qapp, tmp_path):
+    """The point of lockout: subsequent passes must not stop there."""
+    from src.rgc_sdr.scanner import ScanState
+
+    settings = Settings(tmp_path / "s.json")
+    win = window_for(StubSource(_airband_caps()), fft_size=4096, fps=25, settings=settings)
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, False)
+    win.start_scan()
+    target = round((win.source.center_freq + 150e3) / 25e3) * 25e3
+    win.lock_out(target)
+
+    freqs, dbfs = _scan_window(win, carriers=[(target, 30)])
+    win.scanner._state = ScanState.SEARCHING
+    win._scan_frame(freqs, dbfs)
+    assert settings.found == [], "a locked-out channel was reported"
+    win.stop_scan()
+    win.close()
+
+
+def test_dwelling_uses_the_audio_offset_and_does_not_retune(qapp, tmp_path):
+    from src.rgc_sdr.scanner import ScanState
+
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=4096, fps=25, settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    win.start_scan()
+    window_centre = src.center_freq
+
+    target = window_centre + 150e3
+    freqs, dbfs = _scan_window(win, carriers=[(target, 30)])
+    win.scanner._state = ScanState.SEARCHING
+    win._scan_frame(freqs, dbfs)
+
+    assert win.scanner.dwell_hz is not None
+    assert src.center_freq == pytest.approx(window_centre), "the radio moved to dwell"
+    win.stop_scan()
+    win.close()
+
+
+def test_manual_tuning_stops_the_scan(qapp, tmp_path):
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    win.start_scan()
+    assert win.scanner is not None
+
+    win.waterfall.frequencySelected.emit(125e6)      # user clicks the waterfall
+    assert win.scanner is None, "the scan kept fighting the user for the dial"
+    assert not win.scanner_panel._scan_button.isChecked()
+    win.close()
+
+
+def test_tuning_a_found_channel_stops_the_scan_and_goes_there(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.record_found(121.5e6, -90.0, 25.0)
+    src = StubSource(_airband_caps(), center=7.1e6)
+    win = window_for(src, fft_size=1024, fps=25, settings=settings)
+    win._refresh_scan_lists()
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    win.start_scan()
+
+    win.scanner_panel.channelActivated.emit(121.5e6)
+    assert win.scanner is None
+    assert src.center_freq == pytest.approx(121.5e6)
+    assert win._offset_spin.value() == pytest.approx(0.0)
+    win.close()
+
+
+def test_scan_range_is_saved(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win = window_for(StubSource(_airband_caps()), fft_size=1024, settings=Settings(path))
+    win.scanner_panel.apply_config(156e6, 163e6, 12.5e3, 15.0, False)
+    win._on_scan_config_changed()
+    win.close()
+
+    scan = Settings.load(path).scan
+    assert scan.start_hz == pytest.approx(156e6)
+    assert scan.step_hz == pytest.approx(12.5e3)
+    assert scan.stop_on_signal is False
+
+
+def test_clear_found_leaves_lockout_and_memories_alone(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("keep me", Snapshot(freq_hz=7.1e6))
+    settings.record_found(118.325e6, -95.0, 20.0)
+    settings.add_lockout(121.5e6)
+    win = window_for(StubSource(_airband_caps()), fft_size=1024, settings=settings)
+    win.clear_found()
+    assert settings.found == []
+    assert settings.lockout == {121.5e6}
+    assert settings.names() == ["keep me"]
+    win.close()
+
+
+def test_band_presets_include_airband(qapp):
+    from src.rgc_sdr.ui.scanner_panel import BAND_PRESETS
+
+    names = [p[0] for p in BAND_PRESETS]
+    assert any("Airband" in n for n in names)
+    for _, start, end, step in BAND_PRESETS:
+        assert end > start and step > 0
+
+
+def test_smeter_snr_is_zero_not_absurd_when_there_is_no_signal(qapp):
+    """A dead channel must read 0 dB S/N, not 10*log10(epsilon)."""
+    src = StubSource(_caps(), rate=768e3, center=7.1e6, tone_hz=300e3, noise=1e-4)
+    win = window_for(src, fft_size=4096, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._offset_spin.setValue(-200.0)      # listen far from the tone: nothing there
+    _pump(qapp, win, 3)
+    snr = win.smeter._snr
+    assert snr is not None
+    assert 0.0 <= snr < 100.0, f"implausible S/N reading {snr}"
+    win.close()
+
+
+def test_smeter_snr_is_bounded_for_a_strong_signal(qapp):
+    src = StubSource(_caps(), rate=768e3, center=7.1e6, tone_hz=1e3, noise=1e-6)
+    win = window_for(src, fft_size=4096, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    _pump(qapp, win, 3)
+    assert 0.0 <= win.smeter._snr <= 100.0
+    win.close()
