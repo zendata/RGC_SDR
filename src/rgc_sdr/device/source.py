@@ -27,6 +27,15 @@ ERR_OVERFLOW = -4
 #: is about 530k -- which exceeds a second's worth at the lower sample rates.
 MIN_RING_SAMPLES = 1_200_000
 
+class SoapyUnavailable(RuntimeError):
+    """The SoapySDR bindings are not importable at all.
+
+    Distinct from a failure to *open* a device, which Soapy also reports as a plain
+    RuntimeError -- so without its own type, a mistyped driver name produced an
+    "install SoapySDR" hint instead of "could not open".
+    """
+
+
 _SOAPY_HINT = (
     "SoapySDR Python bindings not found. Install with:\n"
     "    brew install soapysdr soapyairspyhf"
@@ -37,7 +46,7 @@ def _import_soapy():
     try:
         import SoapySDR  # type: ignore
     except ImportError:
-        raise RuntimeError(_SOAPY_HINT) from None
+        raise SoapyUnavailable(_SOAPY_HINT) from None
     return SoapySDR
 
 

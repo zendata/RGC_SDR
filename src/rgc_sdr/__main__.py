@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .device.source import SoapyIQSource, enumerate_devices
+from .device.source import SoapyIQSource, SoapyUnavailable, enumerate_devices
 from .dsp.demod import MODES
 from .settings import Settings
 from .ui.main_window import FFT_SIZES, ZOOM_FACTORS
@@ -145,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
             driver=args.driver, serial=args.serial, sample_rate=rate,
             center_freq=freq, agc=agc,
         )
-    except RuntimeError as exc:
+    except SoapyUnavailable as exc:
         print(exc, file=sys.stderr)
         return 2
     except Exception as exc:
@@ -161,7 +161,6 @@ def main(argv: list[str] | None = None) -> int:
     from .ui.main_window import run
 
     return run(
-        debug_gestures=args.debug_gestures,
         source,
         fft_size=fft,
         fps=args.fps,
@@ -180,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_audio=not args.no_audio,
         recordings_dir=args.recordings,
         settings=settings,
+        debug_gestures=args.debug_gestures,
     )
 
 
