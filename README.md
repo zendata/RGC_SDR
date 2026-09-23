@@ -27,6 +27,7 @@ source .venv/bin/activate
 ## Usage
 
 ```bash
+./run.sh                                     # or double-click "RGC SDR.app"
 python -m src.rgc_sdr --list                 # show attached SDRs
 python -m src.rgc_sdr --freq 7.1e6           # 40 m, 768 kS/s
 python -m src.rgc_sdr --freq 0.909e6         # medium wave
@@ -45,6 +46,22 @@ python -m src.rgc_sdr --help                 # all options
 
 Tuning outside a tunable range snaps to the nearest one and the Freq box updates to show
 where you really are — the Airspy HF+ has a gap between 31 and 60 MHz.
+
+### Desktop shortcut
+
+`RGC SDR.app` on the Desktop launches the current working copy — it is a thin bundle that
+just runs [run.sh](run.sh), so it picks up code changes with no rebuild. Rebuild the bundle
+itself only if the repo moves:
+
+```bash
+./tools/make_app.sh              # onto the Desktop
+./tools/make_app.sh /Applications
+```
+
+With the radio unplugged it shows a dialog rather than failing silently. The icon is
+generated from the app's own colour map by [tools/make_icon.py](tools/make_icon.py)
+(then `tools/make_icns.sh`). Note the Dock tile says "Python" while running, because the
+bundle execs a system interpreter rather than embedding one.
 
 ### Display
 

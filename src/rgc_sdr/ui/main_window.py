@@ -7,10 +7,11 @@ its AGC toggle. See PLANNING.md sections 3 and 4.
 
 from __future__ import annotations
 
+import pathlib
 import time
 
 import pyqtgraph as pg
-from PyQt6 import QtCore, QtWidgets
+from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..device.source import IQSource
 from ..dsp.spectrum import SpectrumAnalyzer
@@ -345,6 +346,15 @@ def run(source: IQSource, **kwargs) -> int:
     """Start the Qt app against an already-configured source."""
     pg.setConfigOptions(antialias=False, useOpenGL=False)
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    # Conventional Qt app identity. Note this does *not* rename the macOS Dock tile: the
+    # desktop shortcut execs a system interpreter, so macOS attributes the running process
+    # to Python.framework and the Dock says "Python". Fixing that needs the interpreter
+    # bundled inside the .app, which is more than a launcher shortcut warrants.
+    app.setApplicationName("RGC SDR")
+    app.setApplicationDisplayName("RGC SDR")
+    icon_path = pathlib.Path(__file__).resolve().parents[3] / "assets" / "icon.png"
+    if icon_path.is_file():
+        app.setWindowIcon(QtGui.QIcon(str(icon_path)))
     source.start()
     window = MainWindow(source, **kwargs)
     window.resize(1280, 800)
