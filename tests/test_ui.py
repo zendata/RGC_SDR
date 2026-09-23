@@ -20,6 +20,7 @@ from src.rgc_sdr.device.source import (  # noqa: E402
     IQSource,
 )
 from src.rgc_sdr.dsp.spectrum import SpectrumAnalyzer  # noqa: E402
+from src.rgc_sdr.settings import Settings, Snapshot  # noqa: E402
 from src.rgc_sdr.ui.main_window import MainWindow  # noqa: E402
 
 
@@ -102,6 +103,12 @@ def qapp():
 
 
 def _pump(app, window, frames):
+    """Render exactly `frames` frames.
+
+    The window's own 25 FPS timer is stopped first: processEvents() would otherwise let it
+    fire extra frames, which made row counts depend on how long a frame took to compute.
+    """
+    window._timer.stop()
     for _ in range(frames):
         window._on_frame()
         app.processEvents()
@@ -364,4 +371,204 @@ def test_right_click_does_not_tune(qapp):
     })()
     win.waterfall._on_click(ev)
     assert src.center_freq == before
+    win.close()
+
+
+# -- zoom / decimation -------------------------------------------------------
+
+def test_zoom_narrows_the_span_and_sharpens_resolution(qapp):
+    win = MainWindow(StubSource(_caps(), rate=768e3, center=7.1e6), fft_size=1024, fps=25)
+    assert win.effective_rate == pytest.approx(768e3)
+    win._zoom_combo.setCurrentText("8x")
+    assert win.decimator.factor == 8
+    assert win.effective_rate == pytest.approx(96e3)
+    (x0, x1), _ = win.waterfall.getViewBox().viewRange()
+    assert (x1 - x0) == pytest.approx(96e3, abs=1e2)
+    assert x0 == pytest.approx(7.1e6 - 48e3, abs=1e2)
+    win.close()
+
+
+def test_zoom_clears_history_since_the_span_changed(qapp):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25)
+    _pump(qapp, win, 5)
+    assert win.waterfall.buffer.written_rows == 5
+    win._zoom_combo.setCurrentText("4x")
+    assert win.waterfall.buffer.written_rows == 0
+    assert win.spectrum._smoothed is None
+    win.close()
+
+
+def test_zoomed_frames_still_render(qapp):
+    """The whole decimated path, end to end, at every offered factor."""
+    for factor in (1, 2, 4, 8, 16, 32):
+        win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25, decimation=factor)
+        _pump(qapp, win, 3)
+        assert win.waterfall.buffer.written_rows == 3, f"no frames at {factor}x"
+        assert win.spectrum._curve.getData()[0].size == 1024
+        win.close()
+
+
+def test_zoomed_tone_lands_at_the_same_absolute_frequency(qapp):
+    """Zoom must not move a signal: 20 kHz offset stays at 20 kHz offset."""
+    src = StubSource(_caps(), rate=768e3, center=7.1e6, tone_hz=20e3, noise=1e-5)
+    win = MainWindow(src, fft_size=4096, fps=25, decimation=8)
+    _pump(qapp, win, 2)
+    freqs, values = win.spectrum._curve.getData()
+    peak_hz = freqs[int(np.argmax(values))]
+    assert peak_hz == pytest.approx(7.1e6 + 20e3, abs=200.0)
+    win.close()
+
+
+def test_deep_zoom_requests_more_input_than_it_returns(qapp):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25, decimation=16)
+    assert win._frame_request() > 1024 * 16
+    win.close()
+
+
+# -- memories ----------------------------------------------------------------
+
+def test_save_and_recall_a_memory(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    src = StubSource(_caps(sample_rates=(768e3, 192e3)))
+    win = MainWindow(src, fft_size=1024, fps=25, settings=settings)
+
+    win._freq_spin.setValue(9.6)
+    win._zoom_combo.setCurrentText("4x")
+    assert win.save_memory("31m broadcast") is False
+
+    win._freq_spin.setValue(14.2)
+    win._zoom_combo.setCurrentText("1x")
+    assert src.center_freq == pytest.approx(14.2e6)
+
+    assert win.recall_memory("31m broadcast") is True
+    assert src.center_freq == pytest.approx(9.6e6)
+    assert win.decimator.factor == 4
+    assert win._zoom_combo.currentText() == "4x"
+    assert win._freq_spin.value() == pytest.approx(9.6, abs=1e-6)
+    win.close()
+
+
+def test_memory_survives_a_restart(qapp, tmp_path):
+    """Saved memories must come back in a fresh window from the file on disk."""
+    path = tmp_path / "s.json"
+    first = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    first._freq_spin.setValue(0.198)
+    first.save_memory("Radio 4 LW")
+    first.close()
+
+    second = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings.load(path))
+    assert "Radio 4 LW" in second.settings.names()
+    assert second.recall_memory("Radio 4 LW") is True
+    assert second.source.center_freq == pytest.approx(0.198e6)
+    second.close()
+
+
+def test_recalling_an_unknown_memory_is_harmless(qapp, tmp_path):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
+    assert win.recall_memory("nope") is False
+    win.close()
+
+
+def test_saving_the_same_name_replaces_it(qapp, tmp_path):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
+    win._freq_spin.setValue(7.1)
+    win.save_memory("spot")
+    win._freq_spin.setValue(7.2)
+    assert win.save_memory("spot") is True
+    assert len(win.settings.memories) == 1
+    assert win.settings.get_memory("spot").snapshot.freq_hz == pytest.approx(7.2e6)
+    win.close()
+
+
+def test_delete_memory_updates_the_combo(qapp, tmp_path):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
+    win.save_memory("a")
+    win.save_memory("b")
+    assert win._memory_combo.count() == 3        # placeholder + two
+    assert win.delete_memory("a") is True
+    assert win._memory_combo.count() == 2
+    assert win.delete_memory("a") is False
+    win.close()
+
+
+def test_memory_controls_disabled_when_there_are_none(qapp, tmp_path):
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
+    assert not win._memory_combo.isEnabled()
+    assert not win._delete_button.isEnabled()
+    win.save_memory("one")
+    assert win._memory_combo.isEnabled()
+    assert win._delete_button.isEnabled()
+    win.close()
+
+
+def test_no_settings_store_means_no_disk_writes(qapp, tmp_path):
+    """Windows built without a store must not touch the real settings file."""
+    win = MainWindow(StubSource(_caps()), fft_size=1024)
+    assert win._persist is False
+    win._save_state()
+    win.close()
+    assert not list(tmp_path.iterdir())
+
+
+# -- last-state restore ------------------------------------------------------
+
+def test_closing_saves_the_current_state(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    win._freq_spin.setValue(21.05)
+    win._zoom_combo.setCurrentText("16x")
+    win.close()
+
+    again = Settings.load(path)
+    assert again.last is not None
+    assert again.last.freq_hz == pytest.approx(21.05e6)
+    assert again.last.decimation == 16
+    assert again.last.fft_size == 1024
+
+
+def test_apply_snapshot_restores_everything(qapp):
+    src = StubSource(_caps(sample_rates=(768e3, 192e3)))
+    win = MainWindow(src, fft_size=1024, fps=25)
+    win.apply_snapshot(Snapshot(
+        freq_hz=5.0e6, sample_rate=192e3, decimation=8, fft_size=4096,
+        colormap="viridis", min_db=-118.0, max_db=-72.0, agc=False, peak_hold=False,
+    ))
+    assert src.center_freq == pytest.approx(5.0e6)
+    assert src.sample_rate == pytest.approx(192e3)
+    assert win.decimator.factor == 8
+    assert win.analyzer.fft_size == 4096
+    assert win._cmap_combo.currentText() == "viridis"
+    assert win._levels == (-118.0, -72.0)
+    assert win._peak_check.isChecked() is False
+    assert win._agc_check.isChecked() is False
+    win.close()
+
+
+def test_auto_fitted_levels_are_not_persisted_as_a_preference(qapp, tmp_path):
+    """A range fitted to today's antenna should re-fit next launch, not be restored."""
+    path = tmp_path / "s.json"
+    win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25, settings=Settings(path))
+    _pump(qapp, win, 25)                     # triggers the startup auto-fit
+    assert not win._auto_pending
+    win.close()
+    assert Settings.load(path).last.min_db is None
+
+
+def test_explicitly_chosen_levels_are_persisted(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win = MainWindow(StubSource(_caps()), fft_size=1024, fps=25, settings=Settings(path))
+    win._min_spin.setValue(-125.0)
+    win._max_spin.setValue(-75.0)
+    win.close()
+    saved = Settings.load(path).last
+    assert saved.min_db == pytest.approx(-125.0)
+    assert saved.max_db == pytest.approx(-75.0)
+
+
+def test_snapshot_round_trip_through_the_window(qapp):
+    win = MainWindow(StubSource(_caps()), fft_size=2048, fps=25, decimation=4)
+    snap = win.current_snapshot()
+    assert snap.decimation == 4
+    assert snap.fft_size == 2048
+    assert snap.freq_hz == pytest.approx(win.source.center_freq)
     win.close()

@@ -91,7 +91,11 @@ headless-testable and lets modules be swapped independently.
   a *continuous* sample path, unlike the display, which is free to drop frames — expect the ring
   buffer's consumer side to need a real queue rather than `read_latest`.
 - **P4 — UX polish.** Gain/squelch where supported, S-meter, recording (WAV/IQ).
-- **P5 — Extras.** Bookmarks, scanner, multi-device, network (SpyServer-style), plugins.
+- **P5 — Extras.** Scanner, multi-device, network (SpyServer-style), plugins.
+
+**Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
+(originally part of the P3 DSP chain) and named memories with last-state restore
+(originally P5 bookmarks). Both are done. P3 remains the next phase.
 
 Each phase ends runnable and tested.
 
@@ -145,6 +149,50 @@ the display and the hardware disagree.
 **Click-to-tune** is a left-click on either the spectrum or the waterfall; pyqtgraph raises
 `sigMouseClicked` only for a click without a drag, so it does not fight panning. A dotted centre
 marker shows where the receiver is actually tuned.
+
+## 7b. Decimation and memories
+
+**Decimation is a cascade of halving stages, not one filter per factor.** A single
+anti-alias filter sized for 32x needs roughly 40*M taps to keep its transition band
+narrower than the passband it is protecting — about 1280 taps, whose polyphase
+temporaries run to tens of megabytes. Each halving stage instead faces the same relative
+problem, so a fixed 63-tap Blackman-windowed sinc is correct at every stage and the cost
+falls geometrically. A flat 129-tap filter was measured first and rejected: at 32x its
+transition band is *wider than the surviving passband*, so it would not actually
+anti-alias while appearing to work.
+
+Measured 2026-09-23: per-stage stopband **-75.3 dB**, and a full-scale out-of-band tone
+reaches the zoomed display at **-100.5 dBFS** — below the receiver's own noise floor, so
+aliasing is not a practical concern at any offered factor.
+
+**Frame cost against the 40 ms budget for 25 FPS:**
+
+| Zoom | 1x | 2x | 4x | 8x | 16x | 32x |
+|---|---|---|---|---|---|---|
+| ms/frame | 0.8 | 1.9 | 4.4 | 9.5 | 16.4 | 16.9 |
+| span (kHz) | 768 | 384 | 192 | 96 | 48 | 24 |
+| resolution (Hz/bin) | 187.5 | 93.8 | 46.9 | 23.4 | 11.7 | 5.9 |
+
+**Welch segments are traded away as zoom increases.** Deep zoom needs `fft_size * factor`
+input samples for even a single FFT, so a frame's input is capped at a fraction of the
+sample rate and the segment count falls out of whatever that allows. This is why the cost
+plateaus between 16x and 32x. The ring also has a floor (`MIN_RING_SAMPLES`) independent
+of sample rate, because 16384 bins at 32x needs ~530k input samples, which is more than a
+second's worth at the lower rates.
+
+**Memories** are the radio sense of the word: named presets of frequency, rate, zoom and
+display choices. Stored as one JSON file under
+`~/Library/Application Support/RGC_SDR/`, written atomically via a temp file and
+`os.replace` so an interrupted write cannot corrupt it. Loading is deliberately forgiving
+— a missing, truncated or hand-edited file falls back to defaults rather than stopping
+the application, since losing a preset must never cost you the radio.
+
+**A fitted colour range is not a preference.** The auto-fit suits today's antenna and
+conditions, so it is saved as `null` and re-fitted on the next launch; only a range the
+user typed is restored verbatim. Same reasoning as the auto-fit itself (section 7).
+
+**Startup precedence** is explicit flag, then `--memory NAME`, then the last-used state.
+`--no-restore` ignores saved state for one run and `--forget` clears the file.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

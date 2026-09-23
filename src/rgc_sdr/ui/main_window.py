@@ -14,11 +14,17 @@ import pyqtgraph as pg
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..device.source import IQSource
+from ..dsp.decimate import Decimator
 from ..dsp.spectrum import SpectrumAnalyzer
+from ..settings import Settings, Snapshot
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
 
 FFT_SIZES = (1024, 2048, 4096, 8192, 16384)
+#: Decimation factors offered as a zoom control. Powers of two, matching Decimator.
+ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
+#: Fraction of the ring a single frame may consume, so deep zoom cannot starve itself.
+FRAME_INPUT_BUDGET = 0.6
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -31,18 +37,29 @@ class MainWindow(QtWidgets.QMainWindow):
         waterfall_bins: int = 1024,
         colormap: str = "inferno",
         levels: tuple[float, float] | None = None,
+        decimation: int = 1,
+        peak_hold: bool = True,
+        settings: Settings | None = None,
         parent=None,
     ) -> None:
         super().__init__(parent=parent)
         self.source = source
         self.fps = max(1, int(fps))
         self.analyzer = SpectrumAnalyzer(fft_size=fft_size)
+        self.decimator = Decimator(decimation)
+        # Only persist when a store was supplied, so tests never touch the real file.
+        self._persist = settings is not None
+        self.settings = settings if settings is not None else Settings()
         # `levels=None` means "fit to whatever this antenna is actually receiving once a
         # little history exists". Signal levels vary by tens of dB with antenna and band
         # (measured: -120..-85 dBFS on this setup, but -47 dBFS with a strong carrier), so
         # a fixed default range renders the waterfall uniformly blank as often as not.
         self._auto_pending = levels is None
+        # Remember whether the range was *chosen* or merely fitted: a fitted range suits
+        # this antenna today, so it is not worth restoring on a later launch.
+        self._levels_explicit = levels is not None
         self._levels = levels if levels is not None else (-120.0, -60.0)
+        self._initial_peak_hold = bool(peak_hold)
         self._rows_pushed = 0
         self._frames = 0
         self._fps_mark = time.perf_counter()
@@ -77,6 +94,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_geometry()
         self.spectrum.set_center_marker(source.center_freq)
 
+        # Debounced, so dragging a spinbox does not rewrite the file on every step.
+        self._save_timer = QtCore.QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(800)
+        self._save_timer.timeout.connect(self._save_state)
+
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_frame)
@@ -91,6 +114,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.setSpacing(4)
         outer.addWidget(self._build_tuning_row())
         outer.addWidget(self._build_display_row())
+        outer.addWidget(self._build_memory_row())
         return bar
 
     def _build_tuning_row(self) -> QtWidgets.QWidget:
@@ -154,9 +178,45 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._bw_combo = None
 
+        row.addWidget(QtWidgets.QLabel("Zoom"))
+        self._zoom_combo = QtWidgets.QComboBox()
+        for factor in ZOOM_FACTORS:
+            self._zoom_combo.addItem(f"{factor}x", factor)
+        self._zoom_combo.setCurrentText(f"{self.decimator.factor}x")
+        self._zoom_combo.setToolTip(
+            "Decimate the IQ stream: narrower span, proportionally finer resolution"
+        )
+        self._zoom_combo.currentIndexChanged.connect(self._on_zoom_changed)
+        row.addWidget(self._zoom_combo)
+
         row.addSpacing(12)
         row.addWidget(self._build_device_controls())
         row.addStretch(1)
+        return box
+
+    def _build_memory_row(self) -> QtWidgets.QWidget:
+        """Named presets, in the radio sense: recall a frequency/rate/zoom combination."""
+        box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        row.addWidget(QtWidgets.QLabel("Memory"))
+        self._memory_combo = QtWidgets.QComboBox()
+        self._memory_combo.setMinimumWidth(220)
+        self._memory_combo.activated.connect(self._on_memory_activated)
+        row.addWidget(self._memory_combo)
+
+        self._save_button = QtWidgets.QPushButton("Save\u2026")
+        self._save_button.setToolTip("Store the current settings under a name")
+        self._save_button.clicked.connect(self._on_save_memory)
+        row.addWidget(self._save_button)
+
+        self._delete_button = QtWidgets.QPushButton("Delete")
+        self._delete_button.clicked.connect(self._on_delete_memory)
+        row.addWidget(self._delete_button)
+
+        row.addStretch(1)
+        self._refresh_memories()
         return box
 
     def _build_display_row(self) -> QtWidgets.QWidget:
@@ -175,7 +235,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(QtWidgets.QLabel("Colour"))
         self._cmap_combo = QtWidgets.QComboBox()
         self._cmap_combo.addItems(COLORMAPS)
-        self._cmap_combo.currentTextChanged.connect(self.waterfall.set_colormap)
+        self._cmap_combo.currentTextChanged.connect(self._on_colormap_changed)
         row.addWidget(self._cmap_combo)
 
         row.addSpacing(12)
@@ -192,8 +252,9 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(auto)
 
         self._peak_check = QtWidgets.QCheckBox("Peak hold")
-        self._peak_check.setChecked(True)
-        self._peak_check.toggled.connect(self.spectrum.set_peak_hold)
+        self._peak_check.setChecked(self._initial_peak_hold)
+        self._peak_check.toggled.connect(self._on_peak_hold_toggled)
+        self.spectrum.set_peak_hold(self._initial_peak_hold)
         row.addWidget(self._peak_check)
 
         row.addStretch(1)
@@ -206,11 +267,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         caps = self.source.caps
 
+        self._agc_check = None
         if caps.has_agc:
-            check = QtWidgets.QCheckBox("AGC")
-            check.setChecked(getattr(self.source, "get_agc", lambda: False)())
-            check.toggled.connect(lambda on: self.source.set_agc(on))
-            row.addWidget(check)
+            self._agc_check = QtWidgets.QCheckBox("AGC")
+            self._agc_check.setChecked(getattr(self.source, "get_agc", lambda: False)())
+            self._agc_check.toggled.connect(self._on_agc_toggled)
+            row.addWidget(self._agc_check)
 
         for element in caps.gain_elements:
             row.addWidget(QtWidgets.QLabel(element.name))
@@ -241,9 +303,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # -- handlers ----------------------------------------------------------
 
+    @property
+    def effective_rate(self) -> float:
+        """Sample rate after decimation: the span actually on screen."""
+        return self.decimator.effective_rate(self.source.sample_rate)
+
     def _apply_geometry(self) -> None:
         history_s = self.waterfall.buffer.rows / float(self.fps)
-        self.waterfall.set_geometry(self.source.center_freq, self.source.sample_rate, history_s)
+        self.waterfall.set_geometry(self.source.center_freq, self.effective_rate, history_s)
 
     def _on_step_changed(self) -> None:
         self._freq_spin.setSingleStep(self._step_combo.currentData() / 1e6)
@@ -265,6 +332,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._freq_spin.blockSignals(True)
             self._freq_spin.setValue(actual / 1e6)
             self._freq_spin.blockSignals(False)
+        self._schedule_save()
 
     def _on_rate_changed(self) -> None:
         if self._rate_combo is None:
@@ -273,38 +341,246 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.reset()
         self.waterfall.clear_history()
         self._apply_geometry()
+        self._schedule_save()
 
-    def _on_levels_changed(self) -> None:
-        low, high = self._min_spin.value(), self._max_spin.value()
-        if high <= low:
+    def set_decimation(self, factor: int) -> None:
+        """Change zoom. The span changes, so everything derived from it is dropped."""
+        self.decimator = Decimator(factor)
+        self.spectrum.reset()
+        self.waterfall.clear_history()
+        self._apply_geometry()
+        self._rows_pushed = 0
+
+    def _on_zoom_changed(self) -> None:
+        self.set_decimation(self._zoom_combo.currentData())
+        self._sync_zoom_combo()
+        self._schedule_save()
+
+    def _sync_zoom_combo(self) -> None:
+        self._zoom_combo.blockSignals(True)
+        self._zoom_combo.setCurrentText(f"{self.decimator.factor}x")
+        self._zoom_combo.blockSignals(False)
+
+    # -- memories ----------------------------------------------------------
+
+    def current_snapshot(self) -> Snapshot:
+        """The settings worth restoring or storing under a name."""
+        explicit = self._levels_explicit
+        return Snapshot(
+            freq_hz=self.source.center_freq,
+            sample_rate=self.source.sample_rate,
+            decimation=self.decimator.factor,
+            fft_size=self.analyzer.fft_size,
+            colormap=self._cmap_combo.currentText(),
+            min_db=self._levels[0] if explicit else None,
+            max_db=self._levels[1] if explicit else None,
+            agc=self._agc_check.isChecked() if self._agc_check is not None else False,
+            peak_hold=self._peak_check.isChecked(),
+        )
+
+    def apply_snapshot(self, snap: Snapshot) -> None:
+        """Put the receiver back into a stored state.
+
+        Rate first: changing it restarts the stream, which would otherwise undo the
+        frequency and zoom set afterwards.
+        """
+        if self._rate_combo is not None and snap.sample_rate != self.source.sample_rate:
+            self.source.set_sample_rate(snap.sample_rate)
+            self._rate_combo.blockSignals(True)
+            self._rate_combo.setCurrentText(f"{self.source.sample_rate / 1e3:g} kS/s")
+            self._rate_combo.blockSignals(False)
+
+        if snap.fft_size != self.analyzer.fft_size and snap.fft_size in FFT_SIZES:
+            self.analyzer = SpectrumAnalyzer(fft_size=snap.fft_size)
+            self._fft_combo.blockSignals(True)
+            self._fft_combo.setCurrentText(str(snap.fft_size))
+            self._fft_combo.blockSignals(False)
+
+        if snap.colormap in COLORMAPS:
+            self._cmap_combo.blockSignals(True)
+            self._cmap_combo.setCurrentText(snap.colormap)
+            self._cmap_combo.blockSignals(False)
+            self.waterfall.set_colormap(snap.colormap)
+
+        factor = snap.decimation if snap.decimation in ZOOM_FACTORS else 1
+        self.set_decimation(factor)
+        self._sync_zoom_combo()
+
+        if snap.min_db is None or snap.max_db is None:
+            # Was auto-fitted rather than chosen, so fit again for today's conditions.
+            self._auto_pending = True
+            self._levels_explicit = False
+        else:
+            self._levels_explicit = True
+            self._set_levels(snap.min_db, snap.max_db)
+
+        self._peak_check.setChecked(snap.peak_hold)
+        if self._agc_check is not None:
+            self._agc_check.setChecked(snap.agc)
+
+        self._retune(snap.freq_hz)
+
+    def _refresh_memories(self) -> None:
+        self._memory_combo.blockSignals(True)
+        self._memory_combo.clear()
+        self._memory_combo.addItem("\u2014 recall \u2014", None)
+        for name in self.settings.names():
+            self._memory_combo.addItem(name, name)
+        self._memory_combo.blockSignals(False)
+        has_any = bool(self.settings.names())
+        self._memory_combo.setEnabled(has_any)
+        self._delete_button.setEnabled(has_any)
+
+    def save_memory(self, name: str) -> bool:
+        """Store the current settings. Returns True if an existing name was replaced."""
+        replaced = self.settings.add_memory(name, self.current_snapshot())
+        self._refresh_memories()
+        index = self._memory_combo.findData(self.settings.get_memory(name).name)
+        if index >= 0:
+            self._memory_combo.blockSignals(True)
+            self._memory_combo.setCurrentIndex(index)
+            self._memory_combo.blockSignals(False)
+        self._save_state()
+        return replaced
+
+    def recall_memory(self, name: str) -> bool:
+        memory = self.settings.get_memory(name)
+        if memory is None:
+            return False
+        self.apply_snapshot(memory.snapshot)
+        self._status.showMessage(f"recalled {memory.name}", 3000)
+        self._schedule_save()
+        return True
+
+    def delete_memory(self, name: str) -> bool:
+        removed = self.settings.remove_memory(name)
+        if removed:
+            self._refresh_memories()
+            self._save_state()
+        return removed
+
+    def _on_memory_activated(self, index: int) -> None:
+        name = self._memory_combo.itemData(index)
+        if name:
+            self.recall_memory(name)
+
+    def _on_save_memory(self) -> None:
+        suggestion = self.current_snapshot().describe()
+        name, ok = QtWidgets.QInputDialog.getText(
+            self, "Save memory", "Name for this memory:",
+            QtWidgets.QLineEdit.EchoMode.Normal, suggestion,
+        )
+        if not ok or not name.strip():
             return
-        self._levels = (low, high)
-        self.waterfall.set_levels(low, high)
-        self.spectrum.set_levels(low, high)
+        if self.settings.get_memory(name) is not None:
+            answer = QtWidgets.QMessageBox.question(
+                self, "Replace memory?",
+                f'"{name.strip()}" already exists. Replace it?',
+                QtWidgets.QMessageBox.StandardButton.Yes
+                | QtWidgets.QMessageBox.StandardButton.No,
+            )
+            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.save_memory(name)
 
-    def _on_auto_levels(self) -> None:
-        low, high = self.waterfall.auto_levels()
+    def _on_delete_memory(self) -> None:
+        name = self._memory_combo.currentData()
+        if not name:
+            self._status.showMessage("pick a memory to delete first", 3000)
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Delete memory?", f'Delete "{name}"?',
+            QtWidgets.QMessageBox.StandardButton.Yes
+            | QtWidgets.QMessageBox.StandardButton.No,
+        )
+        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
+            self.delete_memory(name)
+
+    # -- persistence -------------------------------------------------------
+
+    def _schedule_save(self) -> None:
+        if self._persist:
+            self._save_timer.start()
+
+    def _save_state(self) -> None:
+        if not self._persist:
+            return
+        self.settings.last = self.current_snapshot()
+        try:
+            self.settings.save()
+        except OSError as exc:
+            # Losing a preference must never take the radio down with it.
+            self._status.showMessage(f"could not save settings: {exc}", 5000)
+
+    def _set_levels(self, low: float, high: float) -> None:
+        self._levels = (float(low), float(high))
+        self.waterfall.set_levels(low, high)
         self.spectrum.set_levels(low, high)
         for spin, value in ((self._min_spin, low), (self._max_spin, high)):
             spin.blockSignals(True)
             spin.setValue(value)
             spin.blockSignals(False)
-        self._levels = (low, high)
+
+    def _on_levels_changed(self) -> None:
+        low, high = self._min_spin.value(), self._max_spin.value()
+        if high <= low:
+            return
+        self._levels_explicit = True   # chosen, so worth restoring next launch
+        self._auto_pending = False
+        self._set_levels(low, high)
+        self._schedule_save()
+
+    def _on_auto_levels(self) -> None:
+        low, high = self.waterfall.auto_levels()
+        self._set_levels(low, high)
+        self._levels_explicit = False  # fitted to today's signal, not a preference
+        self._schedule_save()
+
+    def _on_colormap_changed(self, name: str) -> None:
+        self.waterfall.set_colormap(name)
+        self._schedule_save()
+
+    def _on_peak_hold_toggled(self, enabled: bool) -> None:
+        self.spectrum.set_peak_hold(enabled)
+        self._schedule_save()
+
+    def _on_agc_toggled(self, enabled: bool) -> None:
+        self.source.set_agc(enabled)
+        self._schedule_save()
 
     def _on_fft_changed(self) -> None:
         self.analyzer = SpectrumAnalyzer(fft_size=self._fft_combo.currentData())
         self.spectrum.reset()
         self.waterfall.clear_history()
         self._rows_pushed = 0
+        self._schedule_save()
+
+    def _frame_request(self) -> int:
+        """Input samples to pull for one frame.
+
+        Deep zoom needs `fft_size * factor` input samples for a single segment, so the
+        Welch segment count is traded away as zoom increases rather than asking the ring
+        for more than it holds.
+        """
+        factor = self.decimator.factor
+        budget = int(FRAME_INPUT_BUDGET * self.source.sample_rate)
+        affordable = max(self.analyzer.fft_size, budget // factor)
+        wanted = min(self.analyzer.samples_wanted(), affordable)
+        return self.decimator.input_for_output(wanted)
 
     def _on_frame(self) -> None:
-        iq = self.source.read_latest(self.analyzer.samples_wanted())
-        if iq.size < self.analyzer.fft_size:
+        iq = self.source.read_latest(self._frame_request())
+        if iq.size < self.decimator.input_for_output(self.analyzer.fft_size):
             self._status.showMessage("waiting for samples...")
             return
 
-        dbfs = self.analyzer.psd_dbfs(iq)
-        freqs = self.analyzer.freq_axis(self.source.center_freq, self.source.sample_rate)
+        decimated = self.decimator.process(iq)
+        if decimated.size < self.analyzer.fft_size:
+            self._status.showMessage("waiting for samples...")
+            return
+
+        dbfs = self.analyzer.psd_dbfs(decimated)
+        freqs = self.analyzer.freq_axis(self.source.center_freq, self.effective_rate)
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
         self._rows_pushed += 1
@@ -324,9 +600,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_status(self, dbfs) -> None:
         stats = getattr(self.source, "stats", {})
+        span = self.effective_rate
         self._status.showMessage(
             f"{self.source.center_freq / 1e6:.4f} MHz  |  "
             f"{self.source.sample_rate / 1e3:.0f} kS/s  |  "
+            f"zoom {self.decimator.factor}x  |  "
+            f"span {span / 1e3:.1f} kHz  |  "
+            f"{span / self.analyzer.fft_size:.1f} Hz/bin  |  "
             f"FFT {self.analyzer.fft_size}  |  "
             f"{self._measured_fps:.1f} FPS  |  "
             f"peak {float(dbfs.max()):.1f} dBFS  "
@@ -338,6 +618,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
         self._timer.stop()
+        self._save_timer.stop()
+        self._save_state()   # immediately, not debounced: there is no later
         self.source.stop()
         super().closeEvent(event)
 

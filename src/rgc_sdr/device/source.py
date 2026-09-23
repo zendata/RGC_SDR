@@ -22,6 +22,11 @@ SOAPY_RX = 0
 ERR_TIMEOUT = -1
 ERR_OVERFLOW = -4
 
+#: Floor on ring capacity, independent of sample rate. Deep zoom needs
+#: `fft_size * factor` input samples for a single FFT -- 16384 x 32 plus filter overhead
+#: is about 530k -- which exceeds a second's worth at the lower sample rates.
+MIN_RING_SAMPLES = 1_200_000
+
 _SOAPY_HINT = (
     "SoapySDR Python bindings not found. Install with:\n"
     "    brew install soapysdr soapyairspyhf"
@@ -240,7 +245,7 @@ class SoapyIQSource(IQSource):
         serial: str | None = None,
         sample_rate: float | None = None,
         center_freq: float = 7.1e6,
-        buffer_seconds: float = 0.5,
+        buffer_seconds: float = 1.0,
         read_size: int = 65536,
         agc: bool | None = None,
         settle_seconds: float = 0.15,
@@ -341,7 +346,9 @@ class SoapyIQSource(IQSource):
         return self._freq
 
     def _ring_capacity(self) -> int:
-        return max(int(self._rate * self._buffer_seconds), self._read_size * 2)
+        return max(
+            int(self._rate * self._buffer_seconds), self._read_size * 2, MIN_RING_SAMPLES
+        )
 
     def _arm_settle(self) -> None:
         """Discard the next `settle_seconds` of samples."""

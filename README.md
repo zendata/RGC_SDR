@@ -1,8 +1,8 @@
 # RGC_SDR
 
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
-Airspy HF+ over SoapySDR. Currently at **P2: tuning** — live spectrum, scrolling waterfall,
-and click-to-tune. Next is P3 (demodulation and audio).
+Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom, and
+named memories. Next is P3 (demodulation and audio).
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -28,12 +28,18 @@ source .venv/bin/activate
 
 ```bash
 ./run.sh                                     # or double-click "RGC SDR.app"
+python -m src.rgc_sdr                        # resumes where you left off
 python -m src.rgc_sdr --list                 # show attached SDRs
-python -m src.rgc_sdr --freq 7.1e6           # 40 m, 768 kS/s
 python -m src.rgc_sdr --freq 0.909e6         # medium wave
-python -m src.rgc_sdr --freq 100.1e6 --rate 384e3
+python -m src.rgc_sdr --freq 7.1e6 --zoom 8  # 40 m, zoomed in
+python -m src.rgc_sdr --memory "Radio 4 LW"  # start from a saved memory
+python -m src.rgc_sdr --list-memories
 python -m src.rgc_sdr --help                 # all options
 ```
+
+**It starts up where you left it.** Frequency, rate, zoom, FFT size and colour map are
+saved on exit and restored next launch. Any flag you pass overrides just that one setting;
+`--no-restore` ignores the saved state for one run, and `--forget` clears it.
 
 ### Tuning
 
@@ -62,6 +68,20 @@ With the radio unplugged it shows a dialog rather than failing silently. The ico
 generated from the app's own colour map by [tools/make_icon.py](tools/make_icon.py)
 (then `tools/make_icns.sh`). Note the Dock tile says "Python" while running, because the
 bundle execs a system interpreter rather than embedding one.
+
+### Zoom
+
+**Zoom** decimates the IQ stream: each step halves the span and doubles the resolution,
+from 768 kHz / 187 Hz-per-bin at 1x down to 24 kHz / 5.9 Hz-per-bin at 32x. Useful for
+pulling a narrow carrier out of what looks like flat noise at full span. Frame rate holds
+at 25 FPS throughout.
+
+### Memories
+
+**Save…** stores the current frequency, rate, zoom and display settings under a name you
+type. Pick a name from the **Memory** dropdown to jump straight back to it, or
+**Delete** to remove it. They live in
+`~/Library/Application Support/RGC_SDR/settings.json`.
 
 ### Display
 

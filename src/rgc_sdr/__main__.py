@@ -1,8 +1,11 @@
 """RGC_SDR entry point.
 
     python -m src.rgc_sdr --list
-    python -m src.rgc_sdr --freq 7.1e6
-    python -m src.rgc_sdr --driver hackrf --freq 100e6 --rate 8e6
+    python -m src.rgc_sdr                      # resumes the last used settings
+    python -m src.rgc_sdr --freq 7.1e6 --zoom 8
+
+With no arguments the receiver comes back up where it was left. Any flag given overrides
+the saved value for that one setting; `--no-restore` ignores the saved state entirely.
 """
 
 from __future__ import annotations
@@ -11,7 +14,11 @@ import argparse
 import sys
 
 from .device.source import SoapyIQSource, enumerate_devices
-from .ui.main_window import FFT_SIZES
+from .settings import Settings
+from .ui.main_window import FFT_SIZES, ZOOM_FACTORS
+from .ui.waterfall import COLORMAPS
+
+DEFAULT_FREQ = 7.1e6
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,21 +26,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--list", action="store_true", help="list attached SDRs and exit")
     p.add_argument("--driver", default="airspyhf", help="SoapySDR driver key (default: airspyhf)")
     p.add_argument("--serial", default=None, help="device serial, when several are attached")
-    p.add_argument("--freq", type=float, default=7.1e6, help="centre frequency in Hz")
-    p.add_argument("--rate", type=float, default=None, help="sample rate in Hz (default: 768k)")
-    p.add_argument("--fft", type=int, default=4096, choices=FFT_SIZES, help="FFT size")
+    p.add_argument("--freq", type=float, default=None, help="centre frequency in Hz")
+    p.add_argument("--rate", type=float, default=None, help="sample rate in Hz")
+    p.add_argument("--zoom", type=int, default=None, choices=ZOOM_FACTORS,
+                   help="decimation factor: narrower span, finer resolution")
+    p.add_argument("--fft", type=int, default=None, choices=FFT_SIZES, help="FFT size")
     p.add_argument("--fps", type=int, default=25, help="display frame rate")
     p.add_argument("--rows", type=int, default=512, help="waterfall history rows")
     p.add_argument("--bins", type=int, default=1024, help="waterfall width in bins")
-    p.add_argument("--colormap", default="inferno", help="waterfall colour map")
-    p.add_argument(
-        "--min-db", type=float, default=None, help="colour range floor (default: auto-fit)"
-    )
-    p.add_argument(
-        "--max-db", type=float, default=None, help="colour range ceiling (default: auto-fit)"
-    )
+    p.add_argument("--colormap", default=None, choices=COLORMAPS, help="waterfall colour map")
+    p.add_argument("--min-db", type=float, default=None, help="colour floor (default: auto-fit)")
+    p.add_argument("--max-db", type=float, default=None, help="colour ceiling (default: auto-fit)")
     p.add_argument("--agc", dest="agc", action="store_true", default=None, help="enable AGC")
     p.add_argument("--no-agc", dest="agc", action="store_false", help="disable AGC")
+    p.add_argument("--no-restore", action="store_true", help="ignore saved settings this run")
+    p.add_argument("--forget", action="store_true",
+                   help="delete saved settings and memories, then exit")
+    p.add_argument("--memory", default=None, metavar="NAME",
+                   help="start from a saved memory")
+    p.add_argument("--list-memories", action="store_true", help="list saved memories and exit")
     return p
 
 
@@ -43,8 +54,7 @@ def list_devices() -> int:
         print("No SDR devices found. Check the USB connection and Soapy modules.")
         return 1
     for i, d in enumerate(devices):
-        detail = ", ".join(f"{k}={v}" for k, v in sorted(d.items()))
-        print(f"[{i}] {detail}")
+        print(f"[{i}] " + ", ".join(f"{k}={v}" for k, v in sorted(d.items())))
     return 0
 
 
@@ -54,15 +64,60 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return list_devices()
 
+    settings = Settings.load()
+
+    if args.forget:
+        fresh = Settings(settings.path)
+        fresh.save()
+        print(f"cleared {settings.path}")
+        return 0
+
+    if args.list_memories:
+        if not settings.memories:
+            print("No saved memories.")
+            return 0
+        for memory in settings.memories:
+            print(f"{memory.name}\t{memory.snapshot.describe()}")
+        return 0
+
+    # Precedence: an explicit flag beats a recalled memory, which beats the last state.
+    base = None
+    if args.memory:
+        memory = settings.get_memory(args.memory)
+        if memory is None:
+            print(f"No memory named {args.memory!r}. Try --list-memories.", file=sys.stderr)
+            return 2
+        base = memory.snapshot
+    elif settings.last is not None and not args.no_restore:
+        base = settings.last
+
+    def pick(flag, attr, fallback):
+        if flag is not None:
+            return flag
+        return getattr(base, attr) if base is not None else fallback
+
+    freq = pick(args.freq, "freq_hz", DEFAULT_FREQ)
+    rate = pick(args.rate, "sample_rate", None)
+    zoom = pick(args.zoom, "decimation", 1)
+    fft = pick(args.fft, "fft_size", 4096)
+    colormap = pick(args.colormap, "colormap", "inferno")
+    agc = pick(args.agc, "agc", None)
+    peak_hold = base.peak_hold if base is not None else True
+
+    if args.min_db is not None or args.max_db is not None:
+        levels = (args.min_db if args.min_db is not None else -120.0,
+                  args.max_db if args.max_db is not None else -60.0)
+    elif base is not None and base.min_db is not None and base.max_db is not None:
+        levels = (base.min_db, base.max_db)
+    else:
+        levels = None
+
     try:
         source = SoapyIQSource(
-            driver=args.driver,
-            serial=args.serial,
-            sample_rate=args.rate,
-            center_freq=args.freq,
-            agc=args.agc,
+            driver=args.driver, serial=args.serial, sample_rate=rate,
+            center_freq=freq, agc=agc,
         )
-    except RuntimeError as exc:  # missing bindings
+    except RuntimeError as exc:
         print(exc, file=sys.stderr)
         return 2
     except Exception as exc:
@@ -71,30 +126,23 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     caps = source.caps
-    if not caps.covers(args.freq):
-        print(
-            f"Warning: {args.freq / 1e6:g} MHz is outside this device's range "
-            f"({caps.describe_ranges()}).",
-            file=sys.stderr,
-        )
-
-    levels = None
-    if args.min_db is not None or args.max_db is not None:
-        levels = (
-            args.min_db if args.min_db is not None else -120.0,
-            args.max_db if args.max_db is not None else -60.0,
-        )
+    if not caps.covers(freq):
+        print(f"Warning: {freq / 1e6:g} MHz is outside this device's range "
+              f"({caps.describe_ranges()}).", file=sys.stderr)
 
     from .ui.main_window import run
 
     return run(
         source,
-        fft_size=args.fft,
+        fft_size=fft,
         fps=args.fps,
         history_rows=args.rows,
         waterfall_bins=args.bins,
-        colormap=args.colormap,
+        colormap=colormap,
         levels=levels,
+        decimation=zoom,
+        peak_hold=peak_hold,
+        settings=settings,
     )
 
 
