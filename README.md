@@ -1,8 +1,9 @@
 # RGC_SDR
 
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
-Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom, and
-named memories. Next is P3 (demodulation and audio).
+Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
+named memories, and **audio demodulation** (AM, NBFM, WBFM, USB, LSB).
+Next is P4 (S-meter and recording).
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -32,6 +33,8 @@ python -m src.rgc_sdr                        # resumes where you left off
 python -m src.rgc_sdr --list                 # show attached SDRs
 python -m src.rgc_sdr --freq 0.909e6         # medium wave
 python -m src.rgc_sdr --freq 7.1e6 --zoom 8  # 40 m, zoomed in
+python -m src.rgc_sdr --mode am --freq 0.684e6      # listen to a MW station
+python -m src.rgc_sdr --mode usb --freq 14.2e6      # 20 m SSB
 python -m src.rgc_sdr --memory "Radio 4 LW"  # start from a saved memory
 python -m src.rgc_sdr --list-memories
 python -m src.rgc_sdr --help                 # all options
@@ -76,6 +79,25 @@ from 768 kHz / 187 Hz-per-bin at 1x down to 24 kHz / 5.9 Hz-per-bin at 32x. Usef
 pulling a narrow carrier out of what looks like flat noise at full span. Frame rate holds
 at 25 FPS throughout.
 
+### Audio
+
+Pick a mode from the **Audio** dropdown — AM, NBFM, WBFM, USB or LSB — and the shaded band
+on the spectrum shows exactly what is being demodulated.
+
+- **Offset** listens that far from the tuned centre without moving the radio, so you can
+  watch a wide span and hear one signal inside it. The shaded band follows it.
+- **Vol** is a plain output gain. An automatic gain control runs ahead of it, so a weak
+  station is still audible: without it a −104 dBFS carrier gives an audio level of
+  0.00001, which is silence at any volume.
+- **Squelch** mutes below a threshold, and is only enabled for the FM modes.
+
+Audio is continuous and independent of the display: the waterfall may drop frames, the
+audio path never skips samples. The status bar reports the audio rate, the AGC gain in
+use, and any underruns.
+
+WBFM is mono. SSB is a proper single-sideband filter, measured at over 30 dB rejection of
+the opposite sideband.
+
 ### Memories
 
 **Save…** stores the current frequency, rate, zoom and display settings under a name you
@@ -113,6 +135,9 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/device/source.py](src/rgc_sdr/device/source.py) | `IQSource`, `SoapyIQSource`, `DeviceCaps`, ring buffer |
 | [src/rgc_sdr/dsp/spectrum.py](src/rgc_sdr/dsp/spectrum.py) | Welch-averaged spectrum in dBFS |
 | [src/rgc_sdr/dsp/waterfall.py](src/rgc_sdr/dsp/waterfall.py) | Rolling history, max-pool bin reduction |
+| [src/rgc_sdr/dsp/decimate.py](src/rgc_sdr/dsp/decimate.py) | Zoom decimation, stateless and streaming |
+| [src/rgc_sdr/dsp/demod.py](src/rgc_sdr/dsp/demod.py) | AM / FM / SSB detectors, channel filters, audio AGC |
+| [src/rgc_sdr/audio.py](src/rgc_sdr/audio.py) | Demod worker thread, FIFO, sound device |
 | [src/rgc_sdr/ui/](src/rgc_sdr/ui/) | pyqtgraph spectrum + waterfall, main window |
 
 `dsp/` never imports Qt and `device/` never imports Qt or `dsp`, so both are testable

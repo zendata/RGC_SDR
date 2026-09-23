@@ -44,7 +44,10 @@ Probed 2026-09-21 on the actual device — these numbers override vendor-datashe
 | Measured strongest carrier | ≈ −47 dBFS |
 | Python / NumPy | 3.14.7 / 2.5.3 |
 | Qt stack | PyQt6 6.11.0, pyqtgraph 0.14.0 |
-| Not installed | `scipy`, `sounddevice` (neither needed until P3) |
+| Audio stack | `sounddevice` 0.5.6, `scipy` 1.18.1 — both have Python 3.14 wheels |
+| Default output | MacBook Air Speakers, 48 kHz |
+| CoreAudio rates | accepts **arbitrary** rates (57000, 40625, 28500 all played) and resamples |
+| Rates dividing to 48 kHz by powers of two | 768, 384, 192 kHz only — the other four land on 57.0 / 40.6 / 28.5 kHz |
 
 Three consequences that shape the design:
 1. **2048-sample reads mean 375 `readStream` calls/sec at 768 kHz.** That cannot run on the GUI
@@ -86,11 +89,8 @@ headless-testable and lets modules be swapped independently.
   this driver exposes neither. Gain and bandwidth UI are both built from `DeviceCaps`, which
   reports empty tuples here, so neither control appears. A radio that does offer them, such as
   HackRF, grows the controls with no code change.)*
-- **P3 — Demod.** AM audio out, then NBFM/WBFM, then SSB (USB/LSB). ← **current**
-  Needs `sounddevice`; verify Python 3.14 wheels for it and `scipy` before starting. Audio needs
-  a *continuous* sample path, unlike the display, which is free to drop frames — expect the ring
-  buffer's consumer side to need a real queue rather than `read_latest`.
-- **P4 — UX polish.** Gain/squelch where supported, S-meter, recording (WAV/IQ).
+- **P3 — Demod.** AM, NBFM, WBFM, USB and LSB with audio out. ✅ See section 7c.
+- **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ← **current**
 - **P5 — Extras.** Scanner, multi-device, network (SpyServer-style), plugins.
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
@@ -194,6 +194,59 @@ user typed is restored verbatim. Same reasoning as the auto-fit itself (section 
 **Startup precedence** is explicit flag, then `--memory NAME`, then the last-used state.
 `--no-restore` ignores saved state for one run and `--forget` clears the file.
 
+## 7c. P3 design (demodulation and audio)
+
+**Audio needs a gapless reader; the display does not.** `read_latest` is lossy by design —
+a display only ever wants the newest frame and skipping is invisible. Audio cannot skip:
+every dropped sample is an audible click. So the ring gained a `SequentialReader` holding
+an absolute cursor, which resyncs and *counts what it lost* if the writer laps it. The two
+readers are independent, so the display's lossy peeking cannot disturb audio.
+
+This also exposed a latent bug: `_Ring.clear()` used to rewind the physical write pointer
+to 0, which breaks the invariant that absolute sample index maps to `index % capacity` —
+so a reader resyncing after a retune was handed pre-retune samples. `clear()` now leaves
+the pointer alone.
+
+**Everything in the chain is stateful and continuous.** Any discontinuity at a block
+boundary is audible as a buzz at the block rate, so the mixer carries its phase (wrapped,
+or it loses precision after a few minutes), the FIRs carry their history, the FM detector
+carries its previous sample, and `StreamDecimator` carries both filter history *and*
+decimation phase — when a stage's input length is odd, the next block's `[::2]` point
+must shift or the output rate drifts and audio eventually starves.
+
+**Three threads meet in `audio.py`:** the device reader fills the IQ ring, a worker pulls
+sequentially and demodulates, and PortAudio's callback drains a FIFO. The worker exists so
+the callback never allocates or blocks — either produces a dropout. The FIFO is bounded
+(a stalled sink discards rather than growing), counts underrun and dropped samples
+separately, and is pre-filled before the stream opens: starting the stream immediately
+guarantees one buffer of silence, which is a click on every start.
+
+**No fractional resampler is needed.** Only 3 of the 7 device rates divide to 48 kHz by
+powers of two, but CoreAudio accepts arbitrary output rates and resamples itself
+(measured: 57000, 40625 and 28500 Hz all play), so the chain decimates by a power of two
+into the 24–96 kHz range and hands that rate straight to the device.
+
+**Audio AGC is not optional.** AM envelope output is proportional to absolute signal
+strength: measured on air, a −103.9 dBFS carrier produced an audio RMS of **0.00001** —
+inaudible at any volume setting. With AGC the same signal gives **0.126** RMS. It uses
+asymmetric time constants (fast attack so it cannot blast, slow decay so it does not pump
+the noise floor) and jumps straight to the right gain on its first block, because easing
+in from unity at the slow rate takes ten seconds of near-silence and reads as broken.
+`max_gain` stops a dead channel being amplified to full scale.
+
+**Mode choices.** WBFM is treated as 150 kHz rather than the nominal 180: the decimation
+cascade's own anti-alias filters retain about ±0.41 of the output rate, so 180 kHz would
+sit in the transition band. It is mono — no stereo pilot decoding. SSB uses a *complex*
+asymmetric band-pass: with the carrier at 0 Hz the upper sideband occupies 0..+B and the
+lower −B..0, so a real low-pass cannot separate them (it is symmetric); modulating a
+half-width low-pass up to ±B/2 passes one side only, measured at >30 dB rejection of the
+other. Squelch applies only to the FM modes, which is what `ModeSpec.squelch_capable`
+drives in the UI.
+
+**Measured on air:** AM on a −103.9 dBFS carrier 225 kHz off centre, 8 seconds of
+continuous playback with zero underruns, zero dropped samples, zero lost IQ and zero chain
+errors, while the display held 25 FPS.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image
@@ -208,7 +261,8 @@ user typed is restored verbatim. Same reasoning as the auto-fit itself (section 
   zero overflows. 768 kHz remains the default; all seven rates are selectable.
 - pyqtgraph 0.14 + PyQt6 6.11 on Python **3.14** is a very new stack, and `ImageItem`
   colormap/axis-order APIs have shifted between versions — pin behaviour with an early smoke run.
-- `scipy` / `sounddevice` wheels for Python 3.14 are unverified; both are P3 concerns, not P1.
+- ~~`scipy` / `sounddevice` wheels for Python 3.14~~ — **closed 2026-09-23**: sounddevice
+  0.5.6 and scipy 1.18.1 both install and work. scipy is used only for FM de-emphasis.
 - PyQt6 is GPL. Fine for private/learning use; switch to PySide6 (LGPL) if this is ever distributed.
 - Overflow handling: the driver reports `SOAPY_SDR_OVERFLOW`; surface the count in the UI rather
   than swallowing it, so buffer tuning is observable.

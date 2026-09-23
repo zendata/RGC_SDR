@@ -78,3 +78,69 @@ class Decimator:
                 return out[:0]
             out = np.convolve(out, taps, mode="valid")[::2]
         return out
+
+
+class StreamDecimator:
+    """Decimate a continuous stream, carrying filter state across blocks.
+
+    `Decimator` is stateless: it uses 'valid' convolution and drops the filter transient
+    at each block's leading edge. That is right for a display, which only shows the newest
+    block, but for audio it discards real samples at every boundary and restarts the
+    filter each time -- audible as a buzz at the block rate. This keeps the tail of each
+    block as the next one's history, so the output is continuous.
+
+    Also tracks phase across blocks: when a stage's input length is odd, the `[::2]`
+    decimation point for the next block has to shift by one, or the output rate drifts.
+    """
+
+    def __init__(self, factor: int = 1, taps_per_stage: int = STAGE_TAPS) -> None:
+        if factor < 1 or (factor & (factor - 1)):
+            raise ValueError("factor must be a power of two >= 1")
+        self._factor = int(factor)
+        stages = int(self._factor).bit_length() - 1
+        self._taps = [lowpass_taps(0.25, taps_per_stage) for _ in range(stages)]
+        self._history: list[np.ndarray | None] = []
+        self._phase: list[int] = []
+        self.reset()
+
+    @property
+    def factor(self) -> int:
+        return self._factor
+
+    @property
+    def stages(self) -> int:
+        return len(self._taps)
+
+    def effective_rate(self, sample_rate: float) -> float:
+        return sample_rate / self._factor
+
+    def reset(self) -> None:
+        """Drop filter history. Call on retune -- the old samples are a different signal."""
+        # Left unallocated so the first block decides the dtype: this runs on complex
+        # IQ before detection and on real audio after it, and pre-allocating complex would
+        # silently discard the imaginary part of nothing on every real block.
+        self._history = [None] * len(self._taps)
+        self._phase = [0] * len(self._taps)
+
+    def process(self, block: np.ndarray) -> np.ndarray:
+        if self._factor == 1 or block.size == 0:
+            return block
+        out = block
+        for i, taps in enumerate(self._taps):
+            # Prepend the previous tail so 'valid' loses nothing at the seam.
+            history = self._history[i]
+            if history is None:
+                history = np.zeros(taps.size - 1, dtype=out.dtype)
+            padded = np.concatenate([history, out])
+            if padded.size < taps.size:
+                self._history[i] = padded
+                return out[:0]
+            filtered = np.convolve(padded, taps, mode="valid")
+            start = self._phase[i]
+            decimated = filtered[start::2]
+            # Where the next block should start sampling, to keep the rate exact.
+            consumed = filtered.size - start
+            self._phase[i] = (2 - (consumed % 2)) % 2
+            self._history[i] = padded[-(taps.size - 1) :]
+            out = decimated
+        return out

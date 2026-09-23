@@ -1,16 +1,16 @@
 [project]
 name = "rgc-sdr"
-version = "0.2.0"
+version = "0.3.0"
 description = "Incremental SDR receiver for macOS: live spectrum and waterfall over SoapySDR."
 requires-python = ">=3.11"
 # The GUI is the application, so Qt is a core dependency, not an extra.
 # SoapySDR is intentionally absent: it is installed via Homebrew, not pip.
-dependencies = ["numpy", "PyQt6", "pyqtgraph"]
+# Audio and demodulation are core features as of P3. scipy is used only for the one
+# stateful IIR (FM de-emphasis); everything else is NumPy.
+dependencies = ["numpy", "PyQt6", "pyqtgraph", "scipy", "sounddevice"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
-dsp = ["scipy"]        # P3: filter design
-audio = ["sounddevice"] # P3: audio output
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -21,4 +21,6 @@ filterwarnings = [
     # SoapySDR's SWIG bindings are noisy on Python 3.14.
     "ignore:builtin type Swig.*has no __module__ attribute:DeprecationWarning",
     "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+    # sounddevice 0.5.6 sets .shape on an ndarray, which numpy 2.5 deprecates.
+    "ignore:Setting the shape on a NumPy array has been deprecated:DeprecationWarning",
 ]

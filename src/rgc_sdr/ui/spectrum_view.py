@@ -40,6 +40,15 @@ class SpectrumView(pg.PlotWidget):
         )
         self.addItem(self._center_line, ignoreBounds=True)
         self._peak_enabled = True
+        # Shaded band showing what the demodulator is actually listening to, so the
+        # offset and channel width are visible rather than abstract numbers.
+        self._passband = pg.LinearRegionItem(
+            values=(0.0, 0.0), movable=False,
+            brush=pg.mkBrush(79, 195, 247, 40), pen=pg.mkPen(79, 195, 247, 90),
+        )
+        self._passband.setZValue(-10)
+        self._passband.setVisible(False)
+        self.addItem(self._passband, ignoreBounds=True)
         self.scene().sigMouseClicked.connect(self._on_click)
 
     def _on_click(self, event) -> None:
@@ -54,6 +63,18 @@ class SpectrumView(pg.PlotWidget):
     def set_center_marker(self, hz: float) -> None:
         """Show where the receiver is actually tuned."""
         self._center_line.setPos(hz)
+
+    def set_passband(self, center_hz: float, bandwidth_hz: float) -> None:
+        """Shade the demodulator's channel. Zero bandwidth hides it."""
+        if bandwidth_hz <= 0.0:
+            self._passband.setVisible(False)
+            return
+        half = bandwidth_hz / 2.0
+        self._passband.setRegion((center_hz - half, center_hz + half))
+        self._passband.setVisible(True)
+
+    def clear_passband(self) -> None:
+        self._passband.setVisible(False)
 
     def set_levels(self, low: float, high: float) -> None:
         self.setYRange(float(low), float(high), padding=0.02)

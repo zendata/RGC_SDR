@@ -113,3 +113,100 @@ def test_lowpass_taps_validates_arguments():
 
 def test_short_input_returns_empty_rather_than_raising():
     assert Decimator(8).process(np.zeros(4, dtype=np.complex64)).size == 0
+
+
+# -- stateful streaming decimator --------------------------------------------
+
+from src.rgc_sdr.dsp.decimate import StreamDecimator  # noqa: E402
+
+
+@pytest.mark.parametrize("factor", [2, 4, 8, 16])
+def test_stream_output_is_continuous_across_blocks(factor):
+    """The seam test: a pure tone fed in blocks must come out without discontinuities.
+
+    The stateless Decimator restarts its filter each block, which shows up as a step at
+    every boundary. Here the joined output must stay smooth.
+    """
+    sd = StreamDecimator(factor)
+    fs_out = FS / factor
+    x = tone(factor * 4096, fs_out * 0.1)
+    blocks = [sd.process(x[i : i + 2048]) for i in range(0, x.size, 2048)]
+    out = np.concatenate([b for b in blocks if b.size])
+    assert out.size > 100
+
+    # A continuous complex exponential has near-constant sample-to-sample phase step.
+    steady = out[50:]
+    step = np.angle(steady[1:] * np.conj(steady[:-1]))
+    assert np.std(step) < 0.02, f"phase jumps at block seams (std {np.std(step):.4f})"
+
+
+@pytest.mark.parametrize("factor", [2, 4, 8, 16, 32])
+def test_stream_rate_is_exact_over_many_blocks(factor):
+    """Output count must track input/factor, or audio drifts and eventually starves."""
+    sd = StreamDecimator(factor)
+    total_in = 0
+    total_out = 0
+    for _ in range(40):
+        block = tone(1000, 1e3)          # 1000 is not a multiple of most factors
+        total_in += block.size
+        total_out += sd.process(block).size
+    expected = total_in / factor
+    assert abs(total_out - expected) < 3 * sd.stages, (
+        f"factor {factor}: {total_out} out for {total_in} in, expected ~{expected:.0f}"
+    )
+
+
+def test_stream_matches_stateless_output_in_steady_state():
+    """Both implementations must agree once the stateful one's history is primed."""
+    factor = 8
+    x = tone(factor * 8192, FS / factor * 0.12)
+    stateless = Decimator(factor).process(x)
+    sd = StreamDecimator(factor)
+    streamed = np.concatenate(
+        [b for b in (sd.process(x[i : i + 4096]) for i in range(0, x.size, 4096)) if b.size]
+    )
+    n = min(stateless.size, streamed.size) - 200
+    # Compare well past both transients; allow a small alignment offset.
+    best = max(
+        np.abs(np.vdot(stateless[100 : 100 + n], streamed[100 + k : 100 + k + n]))
+        for k in range(-2, 3)
+    )
+    norm = np.linalg.norm(stateless[100 : 100 + n]) * np.linalg.norm(streamed[100 : 100 + n])
+    assert best / norm > 0.99, "stateful and stateless decimation disagree"
+
+
+def test_stream_reset_clears_history():
+    sd = StreamDecimator(4)
+    sd.process(tone(4096, 1e3, amp=1.0))
+    sd.reset()
+    quiet = sd.process(np.zeros(4096, dtype=np.complex64))
+    assert np.max(np.abs(quiet)) < 1e-9, "history survived reset"
+
+
+def test_stream_unity_factor_passthrough():
+    sd = StreamDecimator(1)
+    x = tone(100, 1e3)
+    assert sd.process(x) is x
+
+
+def test_stream_rejects_non_power_of_two():
+    for bad in (0, 3, 7):
+        with pytest.raises(ValueError):
+            StreamDecimator(bad)
+
+
+def test_stream_handles_tiny_blocks():
+    """Blocks shorter than the filter must be buffered, not dropped or crashed on."""
+    sd = StreamDecimator(4)
+    for _ in range(200):
+        sd.process(tone(8, 1e3))
+    assert sd.process(tone(4096, 1e3)).size > 0
+
+
+def test_stream_also_decimates_real_signals():
+    """Used after FM detection, where the signal is real audio, not complex IQ."""
+    sd = StreamDecimator(4)
+    x = np.sin(2 * np.pi * 1e3 * np.arange(8192) / FS).astype(np.float64)
+    out = sd.process(x)
+    assert out.size == pytest.approx(8192 / 4, abs=20)
+    assert np.isrealobj(out)

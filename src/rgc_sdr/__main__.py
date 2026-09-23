@@ -14,6 +14,7 @@ import argparse
 import sys
 
 from .device.source import SoapyIQSource, enumerate_devices
+from .dsp.demod import MODES
 from .settings import Settings
 from .ui.main_window import FFT_SIZES, ZOOM_FACTORS
 from .ui.waterfall import COLORMAPS
@@ -39,6 +40,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-db", type=float, default=None, help="colour ceiling (default: auto-fit)")
     p.add_argument("--agc", dest="agc", action="store_true", default=None, help="enable AGC")
     p.add_argument("--no-agc", dest="agc", action="store_false", help="disable AGC")
+    p.add_argument("--mode", default=None, choices=("off",) + MODES,
+                   help="demodulation mode (default: off)")
+    p.add_argument("--volume", type=float, default=None, metavar="0..1",
+                   help="audio volume")
+    p.add_argument("--offset", type=float, default=None, metavar="HZ",
+                   help="listen this far from the tuned centre")
+    p.add_argument("--squelch", type=float, default=None, metavar="DBFS",
+                   help="mute FM below this level")
+    p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
     p.add_argument("--no-restore", action="store_true", help="ignore saved settings this run")
     p.add_argument("--forget", action="store_true",
                    help="delete saved settings and memories, then exit")
@@ -103,6 +113,12 @@ def main(argv: list[str] | None = None) -> int:
     colormap = pick(args.colormap, "colormap", "inferno")
     agc = pick(args.agc, "agc", None)
     peak_hold = base.peak_hold if base is not None else True
+    mode = pick(args.mode, "mode", "off")
+    volume = pick(args.volume, "volume", 0.4)
+    offset = pick(args.offset, "offset_hz", 0.0)
+    squelch = args.squelch if args.squelch is not None else (
+        base.squelch_dbfs if base is not None else None
+    )
 
     if args.min_db is not None or args.max_db is not None:
         levels = (args.min_db if args.min_db is not None else -120.0,
@@ -142,6 +158,11 @@ def main(argv: list[str] | None = None) -> int:
         levels=levels,
         decimation=zoom,
         peak_hold=peak_hold,
+        mode=mode,
+        volume=volume,
+        offset_hz=offset,
+        squelch_dbfs=squelch,
+        enable_audio=not args.no_audio,
         settings=settings,
     )
 

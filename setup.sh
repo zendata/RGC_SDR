@@ -7,7 +7,6 @@
 #
 # Usage:
 #   ./setup.sh           # app + test deps
-#   ./setup.sh --all     # also install P3 extras (scipy, sounddevice)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -27,12 +26,7 @@ echo "Upgrading pip ..."
 pip install -q --upgrade pip
 
 echo "Installing app + test dependencies ..."
-pip install -q numpy PyQt6 pyqtgraph pytest
-
-if [ "${1:-}" = "--all" ]; then
-  echo "Installing P3 extras (scipy, sounddevice) ..."
-  pip install -q scipy sounddevice
-fi
+pip install -q numpy PyQt6 pyqtgraph scipy sounddevice pytest
 
 echo
 echo "Checking for the SoapySDR bindings ..."

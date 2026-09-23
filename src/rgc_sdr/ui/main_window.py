@@ -13,8 +13,10 @@ import time
 import pyqtgraph as pg
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from ..audio import AudioSink, audio_available
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
+from ..dsp.demod import MODE_SPECS, MODES
 from ..dsp.spectrum import SpectrumAnalyzer
 from ..settings import Settings, Snapshot
 from .spectrum_view import SpectrumView
@@ -39,6 +41,11 @@ class MainWindow(QtWidgets.QMainWindow):
         levels: tuple[float, float] | None = None,
         decimation: int = 1,
         peak_hold: bool = True,
+        mode: str = "off",
+        volume: float = 0.4,
+        offset_hz: float = 0.0,
+        squelch_dbfs: float | None = None,
+        enable_audio: bool = True,
         settings: Settings | None = None,
         parent=None,
     ) -> None:
@@ -60,6 +67,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._levels_explicit = levels is not None
         self._levels = levels if levels is not None else (-120.0, -60.0)
         self._initial_peak_hold = bool(peak_hold)
+        self._initial_mode = mode if mode in MODES else "off"
+        self._initial_volume = float(volume)
+        self._initial_offset = float(offset_hz)
+        self._initial_squelch = squelch_dbfs
+        # Audio is optional: without a usable device the rest of the app still works.
+        self._audio_ok = bool(enable_audio) and audio_available()
+        self.audio: AudioSink | None = None
         self._rows_pushed = 0
         self._frames = 0
         self._fps_mark = time.perf_counter()
@@ -100,6 +114,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_timer.setInterval(800)
         self._save_timer.timeout.connect(self._save_state)
 
+        if self._initial_mode != "off":
+            self.set_mode(self._initial_mode)
+        self._update_passband()
+
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_frame)
@@ -114,8 +132,71 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.setSpacing(4)
         outer.addWidget(self._build_tuning_row())
         outer.addWidget(self._build_display_row())
+        outer.addWidget(self._build_audio_row())
         outer.addWidget(self._build_memory_row())
         return bar
+
+    def _build_audio_row(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+
+        row.addWidget(QtWidgets.QLabel("Audio"))
+        self._mode_combo = QtWidgets.QComboBox()
+        self._mode_combo.addItem("Off", "off")
+        for name in MODES:
+            self._mode_combo.addItem(name.upper(), name)
+        self._mode_combo.setCurrentIndex(
+            max(0, self._mode_combo.findData(self._initial_mode))
+        )
+        self._mode_combo.currentIndexChanged.connect(self._on_mode_changed)
+        row.addWidget(self._mode_combo)
+
+        row.addWidget(QtWidgets.QLabel("Vol"))
+        self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self._volume_slider.setRange(0, 100)
+        self._volume_slider.setValue(int(self._initial_volume * 100))
+        self._volume_slider.setFixedWidth(110)
+        self._volume_slider.valueChanged.connect(self._on_volume_changed)
+        row.addWidget(self._volume_slider)
+
+        row.addWidget(QtWidgets.QLabel("Offset"))
+        self._offset_spin = QtWidgets.QDoubleSpinBox()
+        self._offset_spin.setDecimals(2)
+        self._offset_spin.setSuffix(" kHz")
+        self._offset_spin.setSingleStep(1.0)
+        self._offset_spin.setToolTip(
+            "Listen this far from the tuned centre, without moving the radio"
+        )
+        self._offset_spin.setValue(self._initial_offset / 1e3)
+        self._offset_spin.valueChanged.connect(self._on_offset_changed)
+        row.addWidget(self._offset_spin)
+
+        self._squelch_check = QtWidgets.QCheckBox("Squelch")
+        self._squelch_check.setChecked(self._initial_squelch is not None)
+        self._squelch_check.toggled.connect(self._on_squelch_changed)
+        row.addWidget(self._squelch_check)
+
+        self._squelch_spin = QtWidgets.QDoubleSpinBox()
+        self._squelch_spin.setRange(-160.0, 0.0)
+        self._squelch_spin.setDecimals(0)
+        self._squelch_spin.setSuffix(" dBFS")
+        self._squelch_spin.setValue(
+            self._initial_squelch if self._initial_squelch is not None else -100.0
+        )
+        self._squelch_spin.valueChanged.connect(self._on_squelch_changed)
+        row.addWidget(self._squelch_spin)
+
+        if not self._audio_ok:
+            self._mode_combo.setEnabled(False)
+            note = QtWidgets.QLabel("no audio device")
+            note.setEnabled(False)
+            row.addWidget(note)
+
+        row.addStretch(1)
+        self._update_offset_range()
+        self._sync_squelch_enabled()
+        return box
 
     def _build_tuning_row(self) -> QtWidgets.QWidget:
         """Frequency and sample rate, both driven by probed capabilities."""
@@ -327,6 +408,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.set_center_marker(actual)
         self.waterfall.clear_history()
         self._apply_geometry()
+        if self.audio is not None:
+            self.audio.reset()   # in-flight audio belongs to the old frequency
+        self._update_passband()
         if not from_spin or abs(actual - hz) > 1.0:
             # Clamped to a tunable range, or tuned from a click: reflect reality.
             self._freq_spin.blockSignals(True)
@@ -341,6 +425,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.reset()
         self.waterfall.clear_history()
         self._apply_geometry()
+        self._update_offset_range()
+        if self.audio is not None:
+            # The chain's decimation and audio rate both derive from the sample rate.
+            self.audio.restart()
+        self._update_passband()
         self._schedule_save()
 
     def set_decimation(self, factor: int) -> None:
@@ -350,6 +439,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.waterfall.clear_history()
         self._apply_geometry()
         self._rows_pushed = 0
+        self._update_offset_range()
 
     def _on_zoom_changed(self) -> None:
         self.set_decimation(self._zoom_combo.currentData())
@@ -360,6 +450,99 @@ class MainWindow(QtWidgets.QMainWindow):
         self._zoom_combo.blockSignals(True)
         self._zoom_combo.setCurrentText(f"{self.decimator.factor}x")
         self._zoom_combo.blockSignals(False)
+
+    # -- audio -------------------------------------------------------------
+
+    @property
+    def mode(self) -> str:
+        return self._mode_combo.currentData() or "off"
+
+    def _update_offset_range(self) -> None:
+        """Offset can only reach the edges of what is actually being received."""
+        limit = self.effective_rate / 2.0 / 1e3
+        self._offset_spin.setRange(-limit, limit)
+
+    def _sync_squelch_enabled(self) -> None:
+        mode = self.mode
+        capable = mode in MODE_SPECS and MODE_SPECS[mode].squelch_capable
+        self._squelch_check.setEnabled(capable)
+        self._squelch_spin.setEnabled(capable and self._squelch_check.isChecked())
+
+    def _squelch_value(self) -> float | None:
+        if not self._squelch_check.isChecked():
+            return None
+        return float(self._squelch_spin.value())
+
+    def _update_passband(self) -> None:
+        mode = self.mode
+        if mode == "off" or mode not in MODE_SPECS:
+            self.spectrum.clear_passband()
+            return
+        spec = MODE_SPECS[mode]
+        centre = self.source.center_freq + self._offset_spin.value() * 1e3
+        if mode in ("usb", "lsb"):
+            # One-sided: shade only the sideband actually being demodulated.
+            half = spec.bandwidth_hz
+            lower = centre if mode == "usb" else centre - half
+            self.spectrum.set_passband(lower + half / 2.0, half)
+        else:
+            self.spectrum.set_passband(centre, spec.bandwidth_hz)
+
+    def set_mode(self, mode: str) -> None:
+        """Start, stop or switch demodulation.
+
+        The display side always follows the chosen mode, even when audio cannot be
+        started: seeing the channel width and offset on the spectrum is useful in its own
+        right, and the status bar explains why nothing is audible.
+        """
+        if mode == "off":
+            if self.audio is not None:
+                self.audio.stop()
+                self.audio = None
+        elif not self._audio_ok:
+            self._status.showMessage("no audio device available", 4000)
+        elif self.audio is None:
+            sink = AudioSink(
+                self.source, mode=mode,
+                offset_hz=self._offset_spin.value() * 1e3,
+                volume=self._volume_slider.value() / 100.0,
+                squelch_dbfs=self._squelch_value(),
+            )
+            try:
+                sink.start()
+                self.audio = sink
+            except Exception as exc:
+                self._status.showMessage(f"could not start audio: {exc}", 6000)
+        else:
+            try:
+                self.audio.set_mode(mode)
+            except Exception as exc:
+                self._status.showMessage(f"could not switch mode: {exc}", 6000)
+
+        self._sync_squelch_enabled()
+        self._update_passband()
+
+    def _on_mode_changed(self) -> None:
+        self.set_mode(self.mode)
+        self._schedule_save()
+
+    def _on_volume_changed(self, value: int) -> None:
+        if self.audio is not None:
+            self.audio.set_volume(value / 100.0)
+        self._schedule_save()
+
+    def _on_offset_changed(self, khz: float) -> None:
+        if self.audio is not None:
+            self.audio.set_offset(khz * 1e3)
+            self.audio.reset()
+        self._update_passband()
+        self._schedule_save()
+
+    def _on_squelch_changed(self, *_args) -> None:
+        self._sync_squelch_enabled()
+        if self.audio is not None:
+            self.audio.set_squelch(self._squelch_value())
+        self._schedule_save()
 
     # -- memories ----------------------------------------------------------
 
@@ -376,6 +559,10 @@ class MainWindow(QtWidgets.QMainWindow):
             max_db=self._levels[1] if explicit else None,
             agc=self._agc_check.isChecked() if self._agc_check is not None else False,
             peak_hold=self._peak_check.isChecked(),
+            mode=self.mode,
+            volume=self._volume_slider.value() / 100.0,
+            offset_hz=self._offset_spin.value() * 1e3,
+            squelch_dbfs=self._squelch_value(),
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -418,7 +605,28 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._agc_check is not None:
             self._agc_check.setChecked(snap.agc)
 
+        self._volume_slider.blockSignals(True)
+        self._volume_slider.setValue(int(snap.volume * 100))
+        self._volume_slider.blockSignals(False)
+        self._squelch_check.blockSignals(True)
+        self._squelch_check.setChecked(snap.squelch_dbfs is not None)
+        self._squelch_check.blockSignals(False)
+        if snap.squelch_dbfs is not None:
+            self._squelch_spin.blockSignals(True)
+            self._squelch_spin.setValue(snap.squelch_dbfs)
+            self._squelch_spin.blockSignals(False)
+        self._update_offset_range()
+        self._offset_spin.blockSignals(True)
+        self._offset_spin.setValue(snap.offset_hz / 1e3)
+        self._offset_spin.blockSignals(False)
+
         self._retune(snap.freq_hz)
+
+        wanted = snap.mode if snap.mode in MODES else "off"
+        self._mode_combo.blockSignals(True)
+        self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(wanted)))
+        self._mode_combo.blockSignals(False)
+        self.set_mode(wanted)
 
     def _refresh_memories(self) -> None:
         self._memory_combo.blockSignals(True)
@@ -614,12 +822,29 @@ class MainWindow(QtWidgets.QMainWindow):
             f"ovf {stats.get('overflows', 0)}  "
             f"to {stats.get('timeouts', 0)}  "
             f"err {stats.get('errors', 0)}"
+            + self._audio_status()
         )
+
+    def _audio_status(self) -> str:
+        if self.audio is None:
+            return ""
+        a = self.audio.stats
+        text = (f"  |  {self.mode.upper()} {a['audio_rate'] / 1e3:.1f} kHz"
+                f"  agc x{a['agc_gain']:.0f}"
+                f"  ur {int(a['underrun_samples'])}")
+        if a["lost_iq"]:
+            text += f"  lost {int(a['lost_iq'])}"
+        if a["muted_blocks"]:
+            text += f"  sq {int(a['muted_blocks'])}"
+        return text
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
         self._timer.stop()
         self._save_timer.stop()
         self._save_state()   # immediately, not debounced: there is no later
+        if self.audio is not None:
+            self.audio.stop()
+            self.audio = None
         self.source.stop()
         super().closeEvent(event)
 

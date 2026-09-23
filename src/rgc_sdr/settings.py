@@ -54,6 +54,12 @@ class Snapshot:
     max_db: float | None = None
     agc: bool = True
     peak_hold: bool = True
+    #: "off" or one of dsp.demod.MODES.
+    mode: str = "off"
+    volume: float = 0.4
+    offset_hz: float = 0.0
+    #: None means squelch disabled.
+    squelch_dbfs: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -73,6 +79,8 @@ class Snapshot:
 
     def describe(self) -> str:
         text = f"{self.freq_hz / 1e6:.4f} MHz"
+        if self.mode and self.mode != "off":
+            text += f" {self.mode.upper()}"
         if self.decimation > 1:
             text += f" ({self.decimation}x)"
         return text

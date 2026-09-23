@@ -102,6 +102,12 @@ def qapp():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+def window_for(src, **kw):
+    """MainWindow with audio off: tests must not open a real output device."""
+    kw.setdefault("enable_audio", False)
+    return MainWindow(src, **kw)
+
+
 def _pump(app, window, frames):
     """Render exactly `frames` frames.
 
@@ -571,4 +577,151 @@ def test_snapshot_round_trip_through_the_window(qapp):
     assert snap.decimation == 4
     assert snap.fft_size == 2048
     assert snap.freq_hz == pytest.approx(win.source.center_freq)
+    win.close()
+
+
+# -- audio controls ----------------------------------------------------------
+
+def test_mode_defaults_to_off_and_starts_no_audio(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win.mode == "off"
+    assert win.audio is None
+    win.close()
+
+
+def test_mode_combo_offers_off_plus_every_mode(qapp):
+    from src.rgc_sdr.dsp.demod import MODES as DEMOD_MODES
+
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win._mode_combo.count() == len(DEMOD_MODES) + 1
+    assert win._mode_combo.itemData(0) == "off"
+    win.close()
+
+
+def test_mode_is_refused_without_an_audio_device(qapp):
+    """No device must degrade gracefully, not raise or half-start a sink."""
+    win = window_for(StubSource(_caps()), fft_size=1024, enable_audio=False)
+    win.set_mode("am")
+    assert win.audio is None
+    assert "audio" in win._status.currentMessage().lower()
+    win.close()
+
+
+def test_passband_appears_for_am_and_hides_when_off(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._update_passband()
+    assert win.spectrum._passband.isVisible()
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (hi - lo) == pytest.approx(9e3, abs=1.0)
+    assert (lo + hi) / 2 == pytest.approx(7.1e6, abs=1.0)
+
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
+    win._update_passband()
+    assert not win.spectrum._passband.isVisible()
+    win.close()
+
+
+def test_passband_follows_the_offset(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._offset_spin.setValue(20.0)          # kHz
+    lo, hi = win.spectrum._passband.getRegion()
+    assert (lo + hi) / 2 == pytest.approx(7.1e6 + 20e3, abs=1.0)
+    win.close()
+
+
+def test_ssb_passband_is_one_sided(qapp):
+    """USB sits above the carrier and LSB below; a symmetric band would mislead."""
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    lo, hi = win.spectrum._passband.getRegion()
+    assert lo == pytest.approx(7.1e6, abs=1.0)
+    assert hi > lo
+
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("lsb"))
+    lo, hi = win.spectrum._passband.getRegion()
+    assert hi == pytest.approx(7.1e6, abs=1.0)
+    assert lo < hi
+    win.close()
+
+
+def test_offset_range_tracks_the_visible_span(qapp):
+    win = window_for(StubSource(_caps(), rate=768e3), fft_size=1024)
+    assert win._offset_spin.maximum() == pytest.approx(384.0)   # kHz
+    win._zoom_combo.setCurrentText("8x")
+    assert win._offset_spin.maximum() == pytest.approx(48.0)
+    win.close()
+
+
+def test_squelch_only_enabled_for_modes_that_support_it(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    assert not win._squelch_check.isEnabled()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    assert win._squelch_check.isEnabled()
+    win.close()
+
+
+def test_squelch_value_is_none_when_unchecked(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    win._squelch_check.setChecked(False)
+    assert win._squelch_value() is None
+    win._squelch_check.setChecked(True)
+    win._squelch_spin.setValue(-95.0)
+    assert win._squelch_value() == pytest.approx(-95.0)
+    win.close()
+
+
+def test_audio_settings_round_trip_through_a_snapshot(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("lsb"))
+    win._volume_slider.setValue(65)
+    win._offset_spin.setValue(-12.5)
+    snap = win.current_snapshot()
+    assert snap.mode == "lsb"
+    assert snap.volume == pytest.approx(0.65)
+    assert snap.offset_hz == pytest.approx(-12.5e3)
+    win.close()
+
+
+def test_audio_settings_are_restored_from_a_memory(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = window_for(StubSource(_caps()), fft_size=1024, settings=settings)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._volume_slider.setValue(30)
+    win._offset_spin.setValue(3.5)
+    win.save_memory("cw spot")
+
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
+    win._volume_slider.setValue(90)
+    win._offset_spin.setValue(0.0)
+
+    assert win.recall_memory("cw spot") is True
+    assert win.mode == "usb"
+    assert win._volume_slider.value() == 30
+    assert win._offset_spin.value() == pytest.approx(3.5)
+    win.close()
+
+
+def test_mode_persists_across_a_restart(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    first = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    first._mode_combo.setCurrentIndex(first._mode_combo.findData("nbfm"))
+    first._squelch_check.setChecked(True)
+    first._squelch_spin.setValue(-88.0)
+    first.close()
+
+    saved = Settings.load(path).last
+    assert saved.mode == "nbfm"
+    assert saved.squelch_dbfs == pytest.approx(-88.0)
+
+
+def test_retune_resets_nothing_when_audio_is_off(qapp):
+    """Guard: the retune path must not assume a sink exists."""
+    win = window_for(StubSource(_caps()), fft_size=1024, fps=25)
+    _pump(qapp, win, 2)
+    win.waterfall.frequencySelected.emit(12e6)        # must not raise
+    assert win.source.center_freq == pytest.approx(12e6)
     win.close()

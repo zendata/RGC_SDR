@@ -137,6 +137,11 @@ class _Ring:
         self._buf = np.zeros(capacity, dtype=dtype)
         self._write = 0
         self._filled = 0
+        # Monotonic count of samples ever written, so a sequential reader can hold an
+        # absolute cursor and tell whether it has been lapped. `_valid_from` marks where
+        # usable data starts after a clear (retune), since the count never rewinds.
+        self._total = 0
+        self._valid_from = 0
         self._lock = threading.Lock()
 
     @property
@@ -148,9 +153,20 @@ class _Ring:
             return self._filled
 
     def clear(self) -> None:
+        """Discard the contents without disturbing the write position.
+
+        `_write` is deliberately left alone: SequentialReader maps an absolute sample
+        index to `index % capacity`, and rewinding the pointer to 0 breaks that, so a
+        reader resyncing after a retune would be handed pre-retune samples.
+        """
         with self._lock:
-            self._write = 0
             self._filled = 0
+            self._valid_from = self._total
+
+    @property
+    def total_written(self) -> int:
+        with self._lock:
+            return self._total
 
     def write(self, block: np.ndarray) -> None:
         n = block.size
@@ -158,11 +174,18 @@ class _Ring:
         if n == 0:
             return
         if n >= cap:
-            # Block larger than the ring: keep only its newest `cap` samples.
+            # Block larger than the ring: keep only its newest `cap` samples, placed
+            # where their absolute indices require so `index % capacity` stays true.
             with self._lock:
-                self._buf[:] = block[-cap:]
-                self._write = 0
+                self._total += n
+                start = self._total % cap
+                tail = block[-cap:]
+                split = cap - start
+                self._buf[start:] = tail[:split]
+                self._buf[:start] = tail[split:]
+                self._write = start
                 self._filled = cap
+                self._valid_from = self._total - cap
             return
         with self._lock:
             end = self._write + n
@@ -174,6 +197,7 @@ class _Ring:
                 self._buf[: end - cap] = block[split:]
             self._write = end % cap
             self._filled = min(cap, self._filled + n)
+            self._total += n
 
     def read_latest(self, n: int) -> np.ndarray:
         """Newest `n` samples in chronological order, or fewer if not yet available."""
@@ -190,6 +214,61 @@ class _Ring:
             out[:split] = self._buf[start:]
             out[split:] = self._buf[: n - split]
             return out
+
+
+class SequentialReader:
+    """Gapless reader over a ring, for a continuous consumer such as audio.
+
+    `read_latest` is lossy on purpose: the display only ever wants the newest frame, and
+    skipping is invisible. Audio cannot skip -- every dropped sample is an audible click --
+    so this keeps its own absolute cursor and advances it one block at a time. If the
+    writer laps it (the consumer fell behind, or a retune cleared the ring) it resyncs to
+    the oldest still-valid sample and counts what it lost, rather than reading stale or
+    torn data.
+    """
+
+    def __init__(self, ring: "_Ring") -> None:
+        self._ring = ring
+        self._cursor = ring.total_written
+        self.lost = 0
+
+    def available(self) -> int:
+        ring = self._ring
+        with ring._lock:
+            self._resync_locked()
+            return max(0, ring._total - self._cursor)
+
+    def _resync_locked(self) -> None:
+        """Move the cursor forward if it points at data that is gone. Caller holds lock."""
+        ring = self._ring
+        oldest = max(ring._valid_from, ring._total - ring._filled)
+        if self._cursor < oldest:
+            self.lost += oldest - self._cursor
+            self._cursor = oldest
+
+    def read(self, n: int) -> np.ndarray:
+        """Next `n` samples in order, or empty if that many are not yet available."""
+        ring = self._ring
+        cap = ring._buf.size
+        with ring._lock:
+            self._resync_locked()
+            if ring._total - self._cursor < n:
+                return np.empty(0, dtype=ring._buf.dtype)
+            start = self._cursor % cap
+            if start + n <= cap:
+                out = ring._buf[start : start + n].copy()
+            else:
+                split = cap - start
+                out = np.empty(n, dtype=ring._buf.dtype)
+                out[:split] = ring._buf[start:]
+                out[split:] = ring._buf[: n - split]
+            self._cursor += n
+            return out
+
+    def skip_to_latest(self) -> None:
+        ring = self._ring
+        with ring._lock:
+            self._cursor = ring._total
 
 
 class IQSource(ABC):
@@ -482,3 +561,7 @@ class SoapyIQSource(IQSource):
 
     def read_latest(self, n: int) -> np.ndarray:
         return self._ring.read_latest(n)
+
+    def sequential_reader(self) -> SequentialReader:
+        """A gapless reader for audio. Independent of the display's lossy reads."""
+        return SequentialReader(self._ring)
