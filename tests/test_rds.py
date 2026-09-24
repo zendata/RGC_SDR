@@ -157,6 +157,36 @@ def test_station_name_is_not_shown_until_complete():
 
 def test_version_b_groups_are_handled():
     info = StationInfo()
-    b = (2 << 12) | (1 << 11) | (10 << 5) | 0
-    info.apply([0xC202, b, 0xC202, (ord("H") << 8) | ord("i")])
-    assert info.radio_text.startswith("Hi")
+    for segment, pair in enumerate(("Hi", "\r ")):
+        b = (2 << 12) | (1 << 11) | (10 << 5) | segment
+        info.apply([0xC202, b, 0xC202, (ord(pair[0]) << 8) | ord(pair[1])])
+    assert info.radio_text == "Hi"
+
+
+def test_partial_radio_text_is_not_shown():
+    """Half a message on screen reads as garbage; show it only once complete."""
+    groups = rt_groups(0xC202, "Now playing on Triple M Melbourne")
+    info = StationInfo()
+    for a, b, c, d in groups[:-1]:
+        info.apply([a, b, c, d])
+    assert info.radio_text == ""
+    info.apply(list(groups[-1]))
+    assert info.radio_text == "Now playing on Triple M Melbourne"
+
+
+def test_the_previous_message_stays_up_while_the_next_arrives():
+    info = StationInfo()
+    for g in rt_groups(0xC202, "First message", ab=0):
+        info.apply(list(g))
+    for g in rt_groups(0xC202, "Second message here", ab=1)[:2]:
+        info.apply(list(g))
+    assert info.radio_text == "First message"
+
+
+def test_a_missing_segment_keeps_the_message_back():
+    info = StationInfo()
+    groups = rt_groups(0xC202, "Complete sentence please")
+    for i, g in enumerate(groups):
+        if i != 2:
+            info.apply(list(g))
+    assert info.radio_text == ""

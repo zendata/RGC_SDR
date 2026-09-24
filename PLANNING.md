@@ -603,13 +603,16 @@ now tests the pilot's **phase coherence** -- a real pilot is a steady tone (1.00
 wanders (0.094). The tests had only checked a clean mono signal, never noise.
 
 **RDS** (`dsp/rds.py`). The 57 kHz subcarrier is regenerated as the cube of the pilot
-phasor, since the standard locks it to the third harmonic; the remaining fixed phase is
-found by squaring the BPSK signal. A biphase matched filter and an early-late gate recover
+phasor, since the standard locks it to the third harmonic. A small Costas-style loop then
+tracks what remains (squaring the BPSK signal removes the data), because on air the lock
+is not guaranteed -- see below. A biphase matched filter and an early-late gate recover
 the 1187.5 bit/s clock -- a per-bit loop, cheap at that rate. Blocks are synchronised only
 when two consecutive blocks carry the right offsets in sequence, so a chance match cannot
 start it. Decodes the station name (group 0), radio text (group 2, with the A/B flag),
-programme type (European RDS table) and PI. No error correction yet: bad blocks are
-dropped.
+programme type (the RDS table used in Europe and Australia) and PI. No error correction
+yet: bad blocks are dropped. Radio text is shown only once every segment up to the end
+marker has arrived, and the previous message stays up meanwhile -- shown piecemeal it read
+as fragments like "el  oo".
 
 The CRC constants were checked against an independent source rather than only against an
 encoder written alongside the decoder, which could share a misunderstanding. IEC 62106's
@@ -618,12 +621,19 @@ one that reproduces all five values -- the standard writes them bit-reversed, wi
 generator reversed to match -- which confirms the polynomial and all five offset words.
 
 **De-emphasis corrected to 50 us.** It was 75 us, the Americas standard. The receiver is
-in Europe, where that over-cuts the treble.
+in Melbourne, Australia, where that over-cuts the treble.
 
-**Not yet verified on air.** With no antenna connected the strongest FM stations were only
-1-4 dB above the noise, far below FM's ~10 dB threshold; the stereo detector now correctly
-reports them as mono and RDS correctly never synchronises. Stereo and RDS are verified
-end to end on FM-modulated synthetic broadcasts built to the standard.
+**Verified on air** (2026-09-25, Triple M, 105.1 MHz Melbourne, antenna connected): stereo
+detected (pilot coherence 1.000), station name "TRIPLE M", programme type Rock Music.
+But 45% of RDS blocks failed and the radio text never completed in 20 seconds. A 20 s IQ
+recording showed why: the squared subcarrier had a spectral line at 13.9 Hz, i.e. the
+station's RDS carrier sits about 7 Hz off three times its pilot. The fixed phase estimate
+could not follow it, so the bit polarity flipped several times a second. Tracking the
+carrier took the block error rate from 45% to 0.1%: station name in 0.8 s, full radio text
+("Melbourne: 22.5c, Tomorrow: Rain...") in 11 s. Clock-loop gain and matched-filter shape
+had been tried first and made no difference -- measure the carrier before tuning the
+clock. With no antenna, stations 1-4 dB above noise are correctly reported as mono with
+no RDS.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

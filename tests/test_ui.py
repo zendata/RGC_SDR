@@ -2318,7 +2318,7 @@ class FakeFmSink:
         if ps:
             info.ps = list(ps.ljust(8))
             info.ps_seen = {0, 1, 2, 3}
-        info.rt = list(text.ljust(64)[:64])
+        info.rt_complete = text
         info.pty = pty
         info.pi = pi
         self.rds = info

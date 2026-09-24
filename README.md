@@ -155,8 +155,10 @@ use, and any underruns.
 
 **WBFM** is decoded in **stereo** when the station sends a pilot, with **RDS**: the info
 line at the top right shows STEREO or MONO, the station name, programme type and radio
-text (hover for the PI code). Untick **Stereo** for mono, which is quieter on a weak
-station. De-emphasis is 50 us, the European standard.
+text (hover for the PI code). The station name usually appears within a second or two;
+the radio text is shown only once the whole message has arrived, which takes about 10
+seconds. Untick **Stereo** for mono, which is quieter on a weak
+station. De-emphasis is 50 us, the standard in Australia and Europe.
 
 SSB is a proper single-sideband filter, measured at over 30 dB rejection of the opposite
 sideband.

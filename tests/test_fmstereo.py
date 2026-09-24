@@ -127,9 +127,10 @@ def rds_waveform(groups, n, fs=MPX_RATE, start_bit=0.37):
     return np.where(first_half, symbol, -symbol)
 
 
-def with_rds(mpx, groups, fs=MPX_RATE, level=0.04):
+def with_rds(mpx, groups, fs=MPX_RATE, level=0.04, offset_hz=0.0):
     t = np.arange(mpx.size) / fs
-    return mpx + level * rds_waveform(groups, mpx.size, fs) * np.sin(3 * 2 * np.pi * PILOT_HZ * t)
+    carrier = np.sin(2 * np.pi * (3 * PILOT_HZ + offset_hz) * t)
+    return mpx + level * rds_waveform(groups, mpx.size, fs) * carrier
 
 
 def rds_through_stereo(mpx, block=8192):
@@ -164,6 +165,18 @@ def test_rds_survives_noise():
     n = int(MPX_RATE * len(groups) * 104 / BIT_RATE)
     mpx = with_rds(multiplex(n, left_hz=1000), groups) + 0.01 * rng.standard_normal(n)
     assert rds_through_stereo(mpx).info.ps_name == "NOISY FM"
+
+
+@pytest.mark.parametrize("offset_hz", [7.0, -12.0])
+def test_rds_whose_carrier_is_not_locked_to_the_pilot(offset_hz):
+    """Triple M Melbourne's subcarrier sits about 7 Hz off 3 x pilot; a fixed phase
+    estimate lost half its blocks. The carrier loop has to follow the drift."""
+    groups = (ps_groups(0xC202, "RGC SDR") + rt_groups(0xC202, "Hello from RGC")) * 4
+    seconds = len(groups) * 104 / BIT_RATE
+    mpx = with_rds(multiplex(int(MPX_RATE * seconds), left_hz=1000), groups, offset_hz=offset_hz)
+    rds = rds_through_stereo(mpx)
+    assert rds.info.radio_text == "Hello from RGC"
+    assert rds.assembler.bad_blocks <= 2, f"{rds.assembler.bad_blocks} bad blocks"
 
 
 def test_no_station_name_is_invented_without_rds():

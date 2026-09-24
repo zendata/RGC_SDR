@@ -41,7 +41,7 @@ CW_PITCHES: tuple[float, ...] = (400.0, 450.0, 500.0, 550.0, 600.0, 700.0, 800.0
 
 #: FM broadcast de-emphasis. 50 us is the standard in Europe, Africa, Asia and
 #: Australia; the Americas and South Korea use 75 us. The chain used 75 us until the
-#: receiver was found to be in Europe, where that over-cuts the treble.
+#: receiver was found to be in Australia (Melbourne), where that over-cuts the treble.
 DEEMPHASIS_S = 50e-6
 
 #: The FM multiplex must reach 57 kHz for RDS, so it is kept at 150 kHz or more.
