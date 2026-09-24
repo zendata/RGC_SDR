@@ -44,6 +44,18 @@ python -m src.rgc_sdr --help                 # all options
 saved on exit and restored next launch. Any flag you pass overrides just that one setting;
 `--no-restore` ignores the saved state for one run, and `--forget` clears it.
 
+### Choosing the radio
+
+The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy
+R2/Mini, HackRF One, RTL-SDR and ADALM-Pluto — and says which are connected. Pick one and
+the window rebuilds for it: its frequency range and sample rates, and whatever gain stages,
+AGC and bias-tee it actually has. The HF+ has none of those, so none are shown.
+
+Radios need their SoapySDR driver. `python -m src.rgc_sdr --list` shows what is installed,
+connected, and how to install what isn't (`brew install soapyrtlsdr` for an RTL-SDR; the
+Airspy R2 and Pluto drivers must be built from source). The app starts on the radio you
+used last, or whichever is plugged in.
+
 ### Tuning
 
 - **Click** anywhere on the spectrum or the waterfall to tune there. A dotted line marks

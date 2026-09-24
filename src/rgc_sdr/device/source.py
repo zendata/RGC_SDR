@@ -70,6 +70,20 @@ class GainElement:
 
 
 @dataclass(frozen=True)
+class SettingInfo:
+    """An on/off driver setting, such as a bias-tee.
+
+    Setting names differ between drivers, so rather than hardcode each one the UI offers
+    whatever boolean settings the driver itself advertises.
+    """
+
+    key: str
+    name: str
+    description: str = ""
+    default: bool = False
+
+
+@dataclass(frozen=True)
 class DeviceCaps:
     """What a radio can actually do, probed from the driver.
 
@@ -88,6 +102,8 @@ class DeviceCaps:
     # Probed, not assumed: libairspyhf ties IF bandwidth to sample rate and may expose
     # nothing here, while other radios offer a list. Empty means "no bandwidth control".
     bandwidths: tuple[float, ...] = ()
+    #: Boolean driver settings (bias-tee and the like), offered as checkboxes.
+    settings: tuple[SettingInfo, ...] = ()
 
     def default_sample_rate(self, prefer: float = 768e3) -> float:
         """Pick `prefer` if offered, else the highest rate at or below it, else the lowest."""
@@ -321,6 +337,13 @@ class IQSource(ABC):
         """
         raise NotImplementedError
 
+    #: The profile of the radio behind this source, when it is a known one.
+    profile = None
+
+    def close(self) -> None:
+        """Release the underlying device. Stops streaming first."""
+        self.stop()
+
     def __enter__(self):
         self.start()
         return self
@@ -357,8 +380,12 @@ class SoapyIQSource(IQSource):
             spec += f",serial={serial}"
         self._dev = SoapySDR.Device(spec)
 
-        self._caps = self._probe_caps(driver)
-        self._rate = float(sample_rate or self._caps.default_sample_rate())
+        from .profiles import profile_for, refine_caps
+
+        self.profile = profile_for(driver)
+        self._caps = refine_caps(self._probe_caps(driver), self.profile)
+        prefer = self.profile.default_rate if self.profile else 768e3
+        self._rate = float(sample_rate or self._caps.default_sample_rate(prefer))
         self._dev.setSampleRate(SOAPY_RX, 0, self._rate)
         # Read back: the driver may quantise to a supported rate.
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
@@ -392,7 +419,7 @@ class SoapyIQSource(IQSource):
     # -- capability probing -------------------------------------------------
 
     def _probe_caps(self, driver: str) -> DeviceCaps:
-        d = self._dev
+        d, S = self._dev, self._soapy
 
         def _safe(fn, default):
             try:
@@ -433,6 +460,20 @@ class SoapyIQSource(IQSource):
                 except Exception:
                     has_agc = False
 
+        settings = []
+        for arg in _safe(lambda: d.getSettingInfo(), ()):
+            try:
+                if arg.type != S.ArgInfo.BOOL:
+                    continue
+                settings.append(SettingInfo(
+                    str(arg.key), str(arg.name or arg.key), str(arg.description or ""),
+                    str(arg.value).strip().lower() == "true",
+                ))
+            except Exception:
+                continue
+
+        # Rates reported only as a continuous range (Pluto does this) come back empty
+        # from listSampleRates; the profile fills that gap in refine_caps.
         info = _safe(lambda: d.getHardwareInfo(), {})
         info = dict(info) if info else {}
         return DeviceCaps(
@@ -445,6 +486,7 @@ class SoapyIQSource(IQSource):
             has_agc=has_agc,
             formats=tuple(str(f) for f in _safe(lambda: d.getStreamFormats(SOAPY_RX, 0), ())),
             bandwidths=bandwidths,
+            settings=tuple(settings),
         )
 
     # -- IQSource ----------------------------------------------------------
@@ -539,6 +581,16 @@ class SoapyIQSource(IQSource):
         except Exception:
             return False
 
+    def read_setting(self, key: str) -> bool:
+        try:
+            return str(self._dev.readSetting(key)).strip().lower() == "true"
+        except Exception:
+            return False
+
+    def write_setting(self, key: str, enabled: bool) -> None:
+        """Set a boolean driver setting such as a bias-tee."""
+        self._dev.writeSetting(key, "true" if enabled else "false")
+
     def set_gain(self, name: str, db: float) -> None:
         """Set a named gain element. airspyhf exposes none; HackRF and others do."""
         self._dev.setGain(SOAPY_RX, 0, name, float(db))
@@ -594,6 +646,8 @@ class SoapyIQSource(IQSource):
                 self._errors += 1
 
     def stop(self) -> None:
+        if self._dev is None:
+            return
         self._running.clear()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
@@ -607,6 +661,23 @@ class SoapyIQSource(IQSource):
 
     def read_latest(self, n: int) -> np.ndarray:
         return self._ring.read_latest(n)
+
+    def close(self) -> None:
+        """Stop streaming and release the USB device.
+
+        stop() alone leaves the device open until the object is garbage collected, and a
+        second open of the same radio then fails with "Unable to open" -- which is what
+        switching back to a radio would do.
+        """
+        self.stop()
+        dev, self._dev = self._dev, None
+        if dev is not None:
+            # The binding's own close(), not Device.unmake(): its destructor calls
+            # close() too, and unmaking behind its back made that a double free.
+            try:
+                dev.close()
+            except Exception:
+                pass
 
     def sequential_reader(self) -> SequentialReader:
         """A gapless reader for audio. Independent of the display's lossy reads."""

@@ -15,6 +15,12 @@ import pyqtgraph as pg
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..audio import AudioSink, audio_available
+from ..device.profiles import (
+    PROFILES,
+    availability,
+    profile_for,
+    starting_frequency,
+)
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
 from ..dsp.demod import BANDWIDTH_PRESETS, CW_PITCHES, MODE_SPECS, MODES
@@ -43,6 +49,26 @@ ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 FRAME_INPUT_BUDGET = 0.6
 
 
+class DeviceCombo(QtWidgets.QComboBox):
+    """SDR selector that refreshes connection status each time it opens.
+
+    Radios get plugged in and out while the application runs, so a status worked out at
+    startup would go stale.
+    """
+
+    aboutToShow = QtCore.pyqtSignal()
+
+    def showPopup(self) -> None:  # noqa: N802  (Qt naming)
+        self.aboutToShow.emit()
+        super().showPopup()
+
+
+def _open_soapy(driver: str, centre_hz: float) -> IQSource:
+    from ..device.source import SoapyIQSource
+
+    return SoapyIQSource(driver=driver, center_freq=centre_hz)
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -66,10 +92,16 @@ class MainWindow(QtWidgets.QMainWindow):
         enable_audio: bool = True,
         recordings_dir=None,
         settings: Settings | None = None,
+        source_factory=None,
+        availability_fn=None,
         parent=None,
     ) -> None:
         super().__init__(parent=parent)
         self.source = source
+        #: Opens a radio by Soapy driver key. Injectable so tests can switch devices
+        #: without hardware.
+        self._source_factory = source_factory or _open_soapy
+        self._availability_fn = availability_fn or availability
         self.fps = max(1, int(fps))
         self.analyzer = SpectrumAnalyzer(fft_size=fft_size)
         self.decimator = Decimator(decimation)
@@ -136,6 +168,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._status = self.statusBar()
         self._build_scanner_dock()
+        self._apply_device_profile()
         self._apply_geometry()
         self.spectrum.set_center_marker(source.center_freq)
 
@@ -159,6 +192,175 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_frame)
         self._timer.start(int(1000 / self.fps))
+
+    # -- SDR selection -----------------------------------------------------
+
+    def current_device_key(self) -> str:
+        profile = getattr(self.source, "profile", None) or profile_for(self.source.caps.driver)
+        return profile.key if profile else self.source.caps.driver
+
+    def _refresh_device_list(self) -> None:
+        """List every supported radio, saying which are connected, and select ours."""
+        entries = self._availability_fn()
+        current = self.current_device_key()
+        combo = self._device_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for entry in entries:
+            profile = entry.profile
+            label = profile.label
+            if profile.key != current and not entry.connected:
+                label += f"  \u2014 {entry.status}"
+            combo.addItem(label, profile.key)
+            tip = [f"{profile.label}: {profile.describe_ranges()}"]
+            if profile.notes:
+                tip.append(profile.notes)
+            if not entry.installed:
+                tip.append(f"Install: {profile.install}")
+            combo.setItemData(combo.count() - 1, "\n".join(tip),
+                              QtCore.Qt.ItemDataRole.ToolTipRole)
+        index = combo.findData(current)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+        combo.blockSignals(False)
+
+    def _refresh_freq_range(self) -> None:
+        caps = self.source.caps
+        lo = min((r.min_hz for r in caps.freq_ranges), default=0.0) / 1e6
+        hi = max((r.max_hz for r in caps.freq_ranges), default=6000.0) / 1e6
+        self._freq_spin.blockSignals(True)
+        self._freq_spin.setRange(lo, hi)
+        self._freq_spin.setValue(self.source.center_freq / 1e6)
+        self._freq_spin.blockSignals(False)
+        self._freq_spin.setToolTip(f"Tunable: {caps.describe_ranges()}")
+
+    def _refresh_rates(self) -> None:
+        rates = sorted(self.source.caps.sample_rates, reverse=True)
+        combo = self._rate_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for rate in rates:
+            label = f"{rate / 1e3:g} kS/s" if rate < 1e6 else f"{rate / 1e6:g} MS/s"
+            combo.addItem(label, rate)
+        index = combo.findData(self.source.sample_rate)
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+        visible = len(rates) > 1
+        self._rate_label.setVisible(visible)
+        combo.setVisible(visible)
+
+    def _refresh_hw_bandwidths(self) -> None:
+        widths = sorted(self.source.caps.bandwidths)
+        combo = self._bw_combo
+        combo.blockSignals(True)
+        combo.clear()
+        for bw in widths:
+            combo.addItem(f"{bw / 1e3:g} kHz", bw)
+        combo.blockSignals(False)
+        self._hw_bw_label.setVisible(bool(widths))
+        combo.setVisible(bool(widths))
+
+    def _on_hw_bandwidth_changed(self) -> None:
+        width = self._bw_combo.currentData()
+        if width is not None:
+            self.source.set_bandwidth(width)
+
+    def _rebuild_device_controls(self) -> None:
+        layout = self._device_slot_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        box = self._build_device_controls()
+        layout.addWidget(box)
+        caps = self.source.caps
+        has_any = bool(caps.has_agc or caps.gain_elements or getattr(caps, "settings", ()))
+        self._device_slot.setVisible(has_any)
+
+    def _apply_device_profile(self) -> None:
+        """Make the window match the radio: everything device-specific in one place."""
+        caps = self.source.caps
+        self.setWindowTitle(f"RGC_SDR - {caps.label or caps.driver}")
+        self._refresh_device_list()
+        self._refresh_freq_range()
+        self._refresh_rates()
+        self._refresh_hw_bandwidths()
+        self._rebuild_device_controls()
+        if hasattr(self, "scanner_panel"):
+            self.scanner_panel.set_coverage(caps.freq_ranges)
+
+    def _on_device_chosen(self, index: int) -> None:
+        key = self._device_combo.itemData(index)
+        if key and key != self.current_device_key():
+            self.switch_device(key)
+
+    def switch_device(self, key: str) -> bool:
+        """Change to another radio. Returns False, leaving the current one, on failure."""
+        profile = profile_for(key)
+        if profile is None:
+            return False
+        entry = {a.profile.key: a for a in self._availability_fn()}.get(key)
+        if entry is None or not entry.connected:
+            if entry is not None and entry.installed:
+                reason = "is not connected. Plug it in and choose it again."
+            else:
+                reason = f"needs its driver installed first: {profile.install}."
+            self._status.showMessage(f"{profile.label} {reason}", 10000)
+            self._refresh_device_list()      # put the selector back on the live radio
+            return False
+
+        previous_mode = self.mode
+        if self.scanner is not None:
+            self.stop_scan()
+        self._stop_zerobeat()
+        self.stop_audio_recording("changing radio")
+        self.stop_iq_recording("changing radio")
+        self.set_mode("off")
+        self._timer.stop()
+
+        old = self.source
+        old_driver, old_freq = old.caps.driver, old.center_freq
+        centre = starting_frequency(profile, old_freq)
+        try:
+            old.close()
+        except Exception:
+            pass
+
+        switched = True
+        try:
+            new = self._source_factory(profile.driver, centre)
+            new.start()
+        except Exception as exc:
+            switched = False
+            self._status.showMessage(f"could not open {profile.label}: {exc}", 10000)
+            try:
+                # Better the radio we had than a window with nothing behind it.
+                new = self._source_factory(old_driver, old_freq)
+                new.start()
+            except Exception:
+                new = old
+
+        self.source = new
+        self.spectrum.reset()
+        self.waterfall.clear_history()
+        self._rows_pushed = 0
+        if not self._levels_explicit:
+            # Different radios sit at very different levels, so refit the colours.
+            self._auto_pending = True
+        self._apply_device_profile()
+        self._apply_geometry()
+        self.spectrum.set_center_marker(self.source.center_freq)
+        self._update_offset_range()
+        self._timer.start(int(1000 / self.fps))
+        if previous_mode != "off":
+            self.set_mode(previous_mode)
+        if switched:
+            self.settings.device = profile.key
+            self._save_state()
+            self._status.showMessage(
+                f"now using {profile.label} at {self.source.center_freq / 1e6:.4f} MHz", 5000
+            )
+        return switched
 
     # -- scanner -----------------------------------------------------------
 
@@ -201,6 +403,7 @@ class MainWindow(QtWidgets.QMainWindow):
             threshold_db=panel.threshold_db,
             stop_on_signal=panel.stop_on_signal,
             min_sightings=panel.min_sightings,
+            dc_guard_hz=5e3 if getattr(self.source.profile, "dc_offset", False) else 1.5e3,
         )
 
     def _on_scan_config_changed(self) -> None:
@@ -465,18 +668,25 @@ class MainWindow(QtWidgets.QMainWindow):
         box = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
-        caps = self.source.caps
+
+        row.addWidget(QtWidgets.QLabel("SDR"))
+        self._device_combo = DeviceCombo()
+        # Sized to the radio names, not to "ADALM-Pluto -- driver not installed": the
+        # status text is for the open list, and would otherwise widen the whole row.
+        self._device_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._device_combo.setMinimumContentsLength(16)
+        self._device_combo.view().setMinimumWidth(320)
+        self._device_combo.aboutToShow.connect(self._refresh_device_list)
+        self._device_combo.activated.connect(self._on_device_chosen)
+        row.addWidget(self._device_combo)
 
         row.addWidget(QtWidgets.QLabel("Freq"))
         self._freq_spin = QtWidgets.QDoubleSpinBox()
         self._freq_spin.setDecimals(6)
         self._freq_spin.setSuffix(" MHz")
-        lo = min((r.min_hz for r in caps.freq_ranges), default=0.0) / 1e6
-        hi = max((r.max_hz for r in caps.freq_ranges), default=6000.0) / 1e6
-        self._freq_spin.setRange(lo, hi)
-        self._freq_spin.setValue(self.source.center_freq / 1e6)
         self._freq_spin.setKeyboardTracking(False)
-        self._freq_spin.setToolTip(f"Tunable: {caps.describe_ranges()}")
         self._freq_spin.valueChanged.connect(
             lambda mhz: self._retune(mhz * 1e6, from_spin=True)
         )
@@ -508,32 +718,21 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._snap_check)
         self._on_step_changed()
 
-        if len(caps.sample_rates) > 1:
-            row.addWidget(QtWidgets.QLabel("Rate"))
-            self._rate_combo = QtWidgets.QComboBox()
-            for rate in sorted(caps.sample_rates, reverse=True):
-                self._rate_combo.addItem(f"{rate / 1e3:g} kS/s", rate)
-            self._rate_combo.setCurrentText(f"{self.source.sample_rate / 1e3:g} kS/s")
-            self._rate_combo.currentIndexChanged.connect(self._on_rate_changed)
-            row.addWidget(self._rate_combo)
-        else:
-            self._rate_combo = None
+        # Rate and hardware bandwidth always exist but are hidden when the radio has
+        # nothing to choose between; switching radios repopulates them.
+        self._rate_label = QtWidgets.QLabel("Rate")
+        row.addWidget(self._rate_label)
+        self._rate_combo = QtWidgets.QComboBox()
+        self._rate_combo.currentIndexChanged.connect(self._on_rate_changed)
+        row.addWidget(self._rate_combo)
 
-        # No bandwidth control: measured 2026-09-23, the airspyhf driver reports
-        # listBandwidths() == () and getBandwidthRange() == [], and setBandwidth() is
-        # silently accepted while getBandwidth() stays 0.0. Built only if a driver
-        # actually offers options.
-        if caps.bandwidths:
-            row.addWidget(QtWidgets.QLabel("BW"))
-            self._bw_combo = QtWidgets.QComboBox()
-            for bw in sorted(caps.bandwidths):
-                self._bw_combo.addItem(f"{bw / 1e3:g} kHz", bw)
-            self._bw_combo.currentIndexChanged.connect(
-                lambda: self.source.set_bandwidth(self._bw_combo.currentData())
-            )
-            row.addWidget(self._bw_combo)
-        else:
-            self._bw_combo = None
+        # Hardware IF bandwidth. The Airspy HF+ offers none (measured: listBandwidths() is
+        # empty and setBandwidth() is silently ignored), so it stays hidden there.
+        self._hw_bw_label = QtWidgets.QLabel("IF BW")
+        row.addWidget(self._hw_bw_label)
+        self._bw_combo = QtWidgets.QComboBox()
+        self._bw_combo.currentIndexChanged.connect(self._on_hw_bandwidth_changed)
+        row.addWidget(self._bw_combo)
 
         row.addWidget(QtWidgets.QLabel("Zoom"))
         self._zoom_combo = QtWidgets.QComboBox()
@@ -546,8 +745,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_changed)
         row.addWidget(self._zoom_combo)
 
-        row.addSpacing(12)
-        row.addWidget(self._build_device_controls())
+        # Gain and driver settings, rebuilt whenever the radio changes. Empty for the
+        # Airspy HF+, and then it takes no space at all rather than saying so.
+        self._device_slot = QtWidgets.QWidget()
+        self._device_slot_layout = QtWidgets.QHBoxLayout(self._device_slot)
+        self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
+        row.addWidget(self._device_slot)
         row.addStretch(1)
 
         # Decoded CW, right-aligned so the newest characters sit against the edge and
@@ -685,10 +888,20 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             row.addWidget(spin)
 
-        if not caps.has_agc and not caps.gain_elements:
-            label = QtWidgets.QLabel("no gain controls")
-            label.setEnabled(False)
-            row.addWidget(label)
+        # Boolean driver settings -- bias-tee and the like -- as the driver names them.
+        for setting in getattr(caps, "settings", ()):
+            check = QtWidgets.QCheckBox(setting.name)
+            check.setToolTip(setting.description or setting.key)
+            reader = getattr(self.source, "read_setting", None)
+            check.setChecked(bool(reader(setting.key)) if reader else setting.default)
+            writer = getattr(self.source, "write_setting", None)
+            if writer is not None:
+                check.toggled.connect(lambda on, key=setting.key: writer(key, on))
+            row.addWidget(check)
+
+        # Nothing to control: say nothing. A "no gain controls" label only takes space
+        # from things that matter.
+        box.setVisible(row.count() > 0)
         return box
 
     def _make_level_spin(self, value: float) -> QtWidgets.QDoubleSpinBox:
@@ -808,7 +1021,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._schedule_save()
 
     def _on_rate_changed(self) -> None:
-        if self._rate_combo is None:
+        if self._rate_combo.currentData() is None:
             return
         self.source.set_sample_rate(self._rate_combo.currentData())
         self.spectrum.reset()
@@ -1260,10 +1473,12 @@ class MainWindow(QtWidgets.QMainWindow):
         Rate first: changing it restarts the stream, which would otherwise undo the
         frequency and zoom set afterwards.
         """
-        if self._rate_combo is not None and snap.sample_rate != self.source.sample_rate:
+        if self._rate_combo.count() > 1 and snap.sample_rate != self.source.sample_rate:
             self.source.set_sample_rate(snap.sample_rate)
             self._rate_combo.blockSignals(True)
-            self._rate_combo.setCurrentText(f"{self.source.sample_rate / 1e3:g} kS/s")
+            index = self._rate_combo.findData(self.source.sample_rate)
+            if index >= 0:
+                self._rate_combo.setCurrentIndex(index)
             self._rate_combo.blockSignals(False)
 
         if snap.fft_size != self.analyzer.fft_size and snap.fft_size in FFT_SIZES:
@@ -1568,7 +1783,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.audio is not None:
             self.audio.stop()
             self.audio = None
-        self.source.stop()
+        self.source.close()
         super().closeEvent(event)
 
 
@@ -1596,4 +1811,5 @@ def run(source: IQSource, debug_gestures: bool = False, **kwargs) -> int:
     try:
         return app.exec()
     finally:
-        source.stop()
+        # The window may have switched radios, so close the one it ended up with.
+        window.source.close()

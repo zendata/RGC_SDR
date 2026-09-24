@@ -244,6 +244,19 @@ class ScannerPanel(QtWidgets.QWidget):
         self._confirm_spin.setValue(int(min_sightings))
         self._confirm_spin.blockSignals(False)
 
+    def set_coverage(self, freq_ranges) -> None:
+        """Grey out band presets this radio cannot tune."""
+        model = self._preset_combo.model()
+        for row in range(1, self._preset_combo.count()):
+            data = self._preset_combo.itemData(row)
+            if not data:
+                continue
+            start, end, _ = data
+            covered = any(r.contains(start) and r.contains(end) for r in freq_ranges)
+            item = model.item(row)
+            if item is not None:
+                item.setEnabled(covered)
+
     # -- display -----------------------------------------------------------
 
     def set_running(self, running: bool) -> None:

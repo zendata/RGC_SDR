@@ -541,6 +541,44 @@ as they arrive, so the first character is judged against a locked estimate ("PAR
 Decodes cleanly from 12 to 35 wpm, with digits, slashes and added noise. The first
 character after enabling CW can be clipped while the threshold primes, as with any decoder.
 
+## 7k. Choosing the SDR
+
+An **SDR** selector at the start of the tuning row lists the supported radios — Airspy HF+,
+Airspy R2/Mini, HackRF One, RTL-SDR and ADALM-Pluto — each marked connected, not
+connected, or driver not installed, re-checked every time the list opens.
+
+**Profiles, not per-radio code.** `device/profiles.py` holds what probing cannot tell us:
+the name, how to install the driver, a sensible starting rate and frequency, and whether
+the radio has a DC spike. Probing stays the authority once a radio is open. The profile
+only fills gaps — Pluto reports its rates as a continuous range, so `listSampleRates` is
+empty — and applies this application's ceiling.
+
+**The ceiling is measured.** The NumPy audio chain takes 22% of a core at 6 MS/s, 37% at 10
+and 74% at 20, so nothing above 10 MS/s is offered even where the hardware can do it
+(HackRF reaches 20). Defaults sit at or below 4 MS/s.
+
+**The window follows the radio.** Frequency range, rate list, hardware IF bandwidth, gain
+stages, AGC and boolean driver settings (bias-tee and similar, taken from whatever the
+driver advertises rather than hardcoded names) are rebuilt on every switch. A section with
+nothing in it is hidden rather than labelled: the HF+ has no gain controls, so none appear.
+Scanner presets outside the radio's coverage are greyed out, and radios with a DC spike
+(HackRF, RTL-SDR, Pluto) get a wider scanner guard around the centre.
+
+**Switching is careful.** Scanning, recording, zero beat and audio are stopped first, the
+old radio is *closed* — stop() alone left the USB device claimed until garbage collection,
+so switching back failed with "Unable to open" — and the new one opened at the current
+frequency if it can tune it, or at a useful default if not (7.1 MHz is below an
+RTL-SDR's range). If the new radio fails to open, the previous one is reopened. The
+audio mode is restored afterwards and the choice remembered for next launch. An
+unconnected radio is refused with the reason, including the install command when the
+driver is missing.
+
+**Only the Airspy HF+ is verified on hardware.** The other four are exercised through
+their profiles with stand-in sources: 44 tests cover the table, availability and every
+switching path, but real gain names, settings and rate lists will only be confirmed when
+each radio is attached. Installed here: Soapy modules for the HF+ and HackRF. Missing:
+`brew install soapyrtlsdr`; SoapyAirspy and SoapyPlutoSDR are not in Homebrew core.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

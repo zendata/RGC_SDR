@@ -379,23 +379,25 @@ def test_rate_combo_offers_every_supported_rate_and_applies_it(qapp):
     win.close()
 
 
-def test_no_rate_combo_when_only_one_rate(qapp):
-    win = MainWindow(StubSource(_caps(sample_rates=(768e3,))), fft_size=1024)
-    assert win._rate_combo is None
+def test_rate_selector_is_hidden_when_there_is_only_one_rate(qapp):
+    """Nothing to choose, so it takes no space -- but it still exists, because switching
+    to a radio with several rates repopulates it."""
+    win = window_for(StubSource(_caps(sample_rates=(768e3,))), fft_size=1024)
+    assert win._rate_combo.isHidden()
+    assert win._rate_label.isHidden()
     win.close()
-
 
 def test_no_bandwidth_control_for_airspyhf(qapp):
     """Capability-driven: this driver reports no bandwidth options, so none is shown."""
-    win = MainWindow(StubSource(_caps(bandwidths=())), fft_size=1024)
-    assert win._bw_combo is None
+    win = window_for(StubSource(_caps(bandwidths=())), fft_size=1024)
+    assert win._bw_combo.isHidden()
+    assert win._hw_bw_label.isHidden()
     win.close()
-
 
 def test_bandwidth_control_appears_when_the_driver_offers_options(qapp):
     src = StubSource(_caps(driver="hackrf", bandwidths=(1.75e6, 2.5e6, 3.5e6)))
     win = MainWindow(src, fft_size=1024)
-    assert win._bw_combo is not None and win._bw_combo.count() == 3
+    assert not win._bw_combo.isHidden() and win._bw_combo.count() == 3
     win._bw_combo.setCurrentText("2500 kHz")
     assert src.bandwidth_set == pytest.approx(2.5e6)
     win.close()
@@ -1605,14 +1607,14 @@ def test_snap_keeps_nudges_on_the_grid(qapp):
 
 
 def test_no_gain_controls_shown_when_agc_is_not_honoured(qapp):
-    """The Airspy claims AGC and ignores it, so verification leaves nothing to show."""
+    """The Airspy claims AGC and ignores it, so there is nothing to show -- and nothing
+    is shown, rather than a "no gain controls" label taking up the row."""
     win = window_for(StubSource(_caps(has_agc=False)), fft_size=1024)
-    box = win._build_device_controls()
     assert win._agc_check is None
-    labels = [c.text() for c in box.children() if isinstance(c, QtWidgets.QLabel)]
-    assert any("no gain" in t for t in labels)
+    assert win._device_slot.isHidden()
+    labels = [w.text() for w in win.findChildren(QtWidgets.QLabel)]
+    assert not any("no gain" in t for t in labels)
     win.close()
-
 
 def test_snapping_a_typed_frequency_updates_the_box(qapp):
     """The box must not keep showing what was typed while the radio sits elsewhere."""
@@ -2022,4 +2024,250 @@ def test_cw_line_is_blank_when_nothing_has_been_decoded(qapp):
 def test_cw_line_is_right_aligned_so_it_grows_leftwards(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
     assert win._cw_label.alignment() & QtCore.Qt.AlignmentFlag.AlignRight
+    win.close()
+
+
+# -- choosing the SDR --------------------------------------------------------
+
+from src.rgc_sdr.device.profiles import (  # noqa: E402
+    Availability,
+    PROFILES,
+    caps_from_profile,
+    profile_for,
+)
+from src.rgc_sdr.device.source import SettingInfo  # noqa: E402
+
+
+class ProfiledStub(StubSource):
+    """A stand-in for any supported radio, built from its profile."""
+
+    def __init__(self, key, centre, settings=()):
+        profile = profile_for(key)
+        caps = caps_from_profile(profile)
+        if settings:
+            from dataclasses import replace
+            caps = replace(caps, settings=tuple(settings))
+        super().__init__(caps, rate=profile.default_rate, center=centre)
+        self.profile = profile
+        self.closed = False
+        self.started = False
+        self.written = {}
+
+    def start(self):
+        self.started = True
+
+    def close(self):
+        self.closed = True
+
+    def read_setting(self, key):
+        return self.written.get(key, False)
+
+    def write_setting(self, key, enabled):
+        self.written[key] = enabled
+
+
+def fleet(connected=("airspyhf", "hackrf", "rtlsdr", "plutosdr", "airspy")):
+    """Availability as if these radios were plugged in."""
+    def lister():
+        return [Availability(p, p.key in connected, p.key in connected) for p in PROFILES]
+    return lister
+
+
+def switching_window(connected=("airspyhf", "hackrf", "rtlsdr", "plutosdr", "airspy"),
+                     start="airspyhf", settings=None, fail=()):
+    opened = []
+
+    def factory(driver, centre):
+        if driver in fail:
+            raise RuntimeError(f"{driver} would not open")
+        src = ProfiledStub(driver, centre,
+                           settings=(SettingInfo("biastee", "Bias-T", "Antenna power"),)
+                           if driver in ("hackrf", "rtlsdr") else ())
+        opened.append(src)
+        return src
+
+    first = ProfiledStub(start, profile_for(start).default_freq)
+    win = window_for(first, fft_size=1024, fps=25, source_factory=factory,
+                     availability_fn=fleet(connected), settings=settings)
+    return win, first, opened
+
+
+def test_sdr_selector_lists_every_supported_radio(qapp):
+    win, _, _ = switching_window()
+    keys = [win._device_combo.itemData(i) for i in range(win._device_combo.count())]
+    assert set(keys) == {p.key for p in PROFILES}
+    assert win._device_combo.currentData() == "airspyhf"
+    win.close()
+
+
+def test_selector_says_which_radios_are_unavailable(qapp):
+    win, _, _ = switching_window(connected=("airspyhf",))
+    labels = {win._device_combo.itemData(i): win._device_combo.itemText(i)
+              for i in range(win._device_combo.count())}
+    assert "not connected" in labels["hackrf"] or "not installed" in labels["hackrf"]
+    assert labels["airspyhf"] == "Airspy HF+"
+    win.close()
+
+
+def test_airspy_hf_shows_no_gain_section_at_all(qapp):
+    win, _, _ = switching_window()
+    assert win._device_slot.isHidden()
+    assert not any("no gain" in w.text() for w in win.findChildren(QtWidgets.QLabel))
+    win.close()
+
+
+def test_switching_to_hackrf_brings_up_its_gain_stages(qapp):
+    win, first, opened = switching_window()
+    assert win.switch_device("hackrf") is True
+    assert win.current_device_key() == "hackrf"
+    assert not win._device_slot.isHidden()
+    names = {w.text() for w in win._device_slot.findChildren(QtWidgets.QLabel)}
+    assert {"AMP", "LNA", "VGA"} <= names
+    spins = win._device_slot.findChildren(QtWidgets.QDoubleSpinBox)
+    assert len(spins) == 3
+    assert "HackRF" in win.windowTitle()
+    win.close()
+
+
+def test_switching_offers_the_new_radios_rates(qapp):
+    win, _, _ = switching_window()
+    win.switch_device("hackrf")
+    rates = [win._rate_combo.itemData(i) for i in range(win._rate_combo.count())]
+    assert set(rates) == set(profile_for("hackrf").sample_rates)
+    assert not win._rate_combo.isHidden()
+    assert any("MS/s" in win._rate_combo.itemText(i) for i in range(win._rate_combo.count()))
+    win.close()
+
+
+def test_switching_back_to_the_hf_plus_hides_the_gain_section_again(qapp):
+    win, _, _ = switching_window()
+    win.switch_device("hackrf")
+    assert not win._device_slot.isHidden()
+    win.switch_device("airspyhf")
+    assert win._device_slot.isHidden()
+    win.close()
+
+
+def test_driver_settings_become_checkboxes(qapp):
+    """A bias-tee, or whatever the driver advertises, appears without per-radio code."""
+    win, _, opened = switching_window()
+    win.switch_device("rtlsdr")
+    checks = {c.text(): c for c in win._device_slot.findChildren(QtWidgets.QCheckBox)}
+    assert "Bias-T" in checks
+    checks["Bias-T"].setChecked(True)
+    assert opened[-1].written["biastee"] is True
+    win.close()
+
+
+def test_frequency_is_kept_when_the_new_radio_can_tune_it(qapp):
+    win, first, _ = switching_window()
+    win._freq_spin.setValue(7.1)
+    win.switch_device("hackrf")                 # 1 MHz - 6 GHz covers 7.1 MHz
+    assert win.source.center_freq == pytest.approx(7.1e6)
+    win.close()
+
+
+def test_frequency_moves_somewhere_useful_when_it_cannot(qapp):
+    win, _, _ = switching_window()
+    win._freq_spin.setValue(7.1)
+    win.switch_device("rtlsdr")                 # starts at 24 MHz
+    assert win.source.center_freq == pytest.approx(profile_for("rtlsdr").default_freq)
+    assert win._freq_spin.minimum() >= 24.0 - 1e-6
+    win.close()
+
+
+def test_the_old_radio_is_released(qapp):
+    """Otherwise switching back to it fails with 'Unable to open'."""
+    win, first, _ = switching_window()
+    win.switch_device("hackrf")
+    assert first.closed
+    win.close()
+
+
+def test_an_unconnected_radio_is_refused_and_the_current_one_kept(qapp):
+    win, first, opened = switching_window(connected=("airspyhf",))
+    assert win.switch_device("hackrf") is False
+    assert win.source is first and not first.closed
+    assert opened == []
+    assert win._device_combo.currentData() == "airspyhf"
+    assert "hackrf" not in win._status.currentMessage().lower() or \
+        "connected" in win._status.currentMessage() or "install" in win._status.currentMessage()
+    win.close()
+
+
+def test_a_missing_driver_explains_how_to_install_it(qapp):
+    win, _, _ = switching_window(connected=("airspyhf",))
+    win.switch_device("rtlsdr")
+    assert "soapyrtlsdr" in win._status.currentMessage()
+    win.close()
+
+
+def test_a_radio_that_fails_to_open_falls_back_to_the_previous_one(qapp):
+    win, first, opened = switching_window(fail=("hackrf",))
+    assert win.switch_device("hackrf") is False
+    assert win.source.caps.driver == "airspyhf"
+    assert "could not open" in win._status.currentMessage()
+    win.close()
+
+
+def test_audio_mode_survives_a_switch(qapp):
+    win, _, _ = switching_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win.switch_device("hackrf")
+    assert win.mode == "am"
+    win.close()
+
+
+def test_a_scan_is_stopped_by_a_switch(qapp, tmp_path):
+    win, _, _ = switching_window(settings=Settings(tmp_path / "s.json"))
+    win.scanner_panel.apply_config(118e6, 137e6, 25e3, 10.0, True)
+    win.start_scan()
+    assert win.scanner is not None
+    win.switch_device("hackrf")
+    assert win.scanner is None
+    win.close()
+
+
+def test_the_chosen_radio_is_remembered(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win, _, _ = switching_window(settings=Settings(path))
+    win.switch_device("hackrf")
+    win.close()
+    assert Settings.load(path).device == "hackrf"
+
+
+def test_scanner_presets_outside_the_radio_are_greyed_out(qapp):
+    """The RTL-SDR starts at 24 MHz, so medium wave and 40 m are not offered."""
+    win, _, _ = switching_window()
+    win.switch_device("rtlsdr")
+    combo = win.scanner_panel._preset_combo
+    model = combo.model()
+    enabled = {combo.itemText(i): model.item(i).isEnabled() for i in range(1, combo.count())}
+    assert enabled["MW broadcast"] is False
+    assert enabled["40 m amateur"] is False
+    assert enabled["Airband (VHF AM)"] is True
+    win.close()
+
+
+def test_scanner_steps_further_round_dc_on_spiky_radios(qapp, tmp_path):
+    win, _, _ = switching_window(settings=Settings(tmp_path / "s.json"))
+    assert win._scan_config().dc_guard_hz == pytest.approx(1.5e3)   # HF+: no spike
+    win.switch_device("hackrf")
+    assert win._scan_config().dc_guard_hz == pytest.approx(5e3)
+    win.close()
+
+
+def test_choosing_the_current_radio_again_does_nothing(qapp):
+    win, first, opened = switching_window()
+    win._on_device_chosen(win._device_combo.findData("airspyhf"))
+    assert opened == [] and not first.closed
+    win.close()
+
+
+def test_sdr_selector_does_not_widen_the_row_with_status_text(qapp):
+    win, _, _ = switching_window(connected=("airspyhf",))
+    win.resize(1400, 800)
+    win.show()
+    qapp.processEvents()
+    assert win._device_combo.width() < 260
     win.close()

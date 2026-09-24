@@ -25,7 +25,9 @@ DEFAULT_FREQ = 7.1e6
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="rgc_sdr", description="Live SDR spectrum and waterfall.")
     p.add_argument("--list", action="store_true", help="list attached SDRs and exit")
-    p.add_argument("--driver", default="airspyhf", help="SoapySDR driver key (default: airspyhf)")
+    p.add_argument("--driver", default=None,
+                   help="SoapySDR driver key, e.g. airspyhf, hackrf, rtlsdr, plutosdr "
+                        "(default: the radio used last, else whichever is connected)")
     p.add_argument("--serial", default=None, help="device serial, when several are attached")
     p.add_argument("--freq", type=float, default=None, help="centre frequency in Hz")
     p.add_argument("--rate", type=float, default=None, help="sample rate in Hz")
@@ -72,13 +74,37 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def list_devices() -> int:
-    devices = enumerate_devices()
-    if not devices:
-        print("No SDR devices found. Check the USB connection and Soapy modules.")
-        return 1
-    for i, d in enumerate(devices):
-        print(f"[{i}] " + ", ".join(f"{k}={v}" for k, v in sorted(d.items())))
-    return 0
+    """Every supported radio, whether its driver is installed and whether it is attached."""
+    from .device.profiles import availability
+
+    entries = availability()
+    width = max(len(e.profile.label) for e in entries)
+    for entry in entries:
+        line = f"  {entry.profile.label:<{width}}  {entry.status:<21}"
+        if entry.connected and entry.serial:
+            line += f" serial {entry.serial}"
+        elif not entry.installed:
+            line += f" install: {entry.profile.install}"
+        print(line)
+    return 0 if any(e.connected for e in entries) else 1
+
+
+def choose_driver(requested: str | None, remembered: str | None) -> str:
+    """The radio to open: as asked, else as last used if present, else whatever is."""
+    if requested:
+        return requested
+    from .device.profiles import availability, profile_for
+
+    entries = availability()
+    connected = [e.profile for e in entries if e.connected]
+    if remembered:
+        profile = profile_for(remembered)
+        if profile is not None and profile in connected:
+            return profile.driver
+    if connected:
+        return connected[0].driver
+    remembered_profile = profile_for(remembered) if remembered else None
+    return remembered_profile.driver if remembered_profile else "airspyhf"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -147,16 +173,17 @@ def main(argv: list[str] | None = None) -> int:
     else:
         levels = None
 
+    driver = choose_driver(args.driver, settings.device)
     try:
         source = SoapyIQSource(
-            driver=args.driver, serial=args.serial, sample_rate=rate,
+            driver=driver, serial=args.serial, sample_rate=rate,
             center_freq=freq, agc=agc,
         )
     except SoapyUnavailable as exc:
         print(exc, file=sys.stderr)
         return 2
     except Exception as exc:
-        print(f"Could not open driver={args.driver}: {exc}", file=sys.stderr)
+        print(f"Could not open driver={driver}: {exc}", file=sys.stderr)
         print("Run with --list to see attached devices.", file=sys.stderr)
         return 2
 

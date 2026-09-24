@@ -186,6 +186,8 @@ class Settings:
         #: Channels the scanner must skip on later passes.
         self.lockout: set[float] = set()
         self.scan = ScanSettings()
+        #: The radio last used, by profile key.
+        self.device: str | None = None
 
     # -- persistence -------------------------------------------------------
 
@@ -227,6 +229,8 @@ class Settings:
                     continue
 
         settings.scan = ScanSettings.from_dict(raw.get("scan"))
+        device = raw.get("device")
+        settings.device = str(device) if isinstance(device, str) and device else None
         return settings
 
     def save(self) -> None:
@@ -240,6 +244,7 @@ class Settings:
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),
+            "device": self.device,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = None

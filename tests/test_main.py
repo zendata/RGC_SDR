@@ -21,7 +21,7 @@ def test_the_module_imports():
 def test_parser_builds_and_accepts_no_arguments():
     args = entry.build_parser().parse_args([])
     assert args.freq is None            # so saved state can supply it
-    assert args.driver == "airspyhf"
+    assert args.driver is None          # so the remembered or connected radio is used
     assert args.debug_gestures is False
 
 
@@ -143,3 +143,34 @@ def test_run_accepts_every_keyword_main_passes_it():
                  "squelch_dbfs", "bandwidth_hz", "step_hz", "enable_audio",
                  "recordings_dir", "settings"):
         assert name in window_params, f"main() passes {name}, MainWindow does not accept it"
+
+
+def test_choose_driver_honours_an_explicit_request():
+    assert entry.choose_driver("hackrf", "airspyhf") == "hackrf"
+
+
+def test_choose_driver_prefers_the_remembered_radio_when_present(monkeypatch):
+    from src.rgc_sdr.device import profiles
+
+    def fake(devices=None, modules=None):
+        return [profiles.Availability(p, True, p.key in ("airspyhf", "hackrf"))
+                for p in profiles.PROFILES]
+    monkeypatch.setattr(profiles, "availability", fake)
+    assert entry.choose_driver(None, "hackrf") == "hackrf"
+
+
+def test_choose_driver_falls_back_to_what_is_connected(monkeypatch):
+    """The remembered radio may have been unplugged since last time."""
+    from src.rgc_sdr.device import profiles
+
+    def fake(devices=None, modules=None):
+        return [profiles.Availability(p, True, p.key == "airspyhf") for p in profiles.PROFILES]
+    monkeypatch.setattr(profiles, "availability", fake)
+    assert entry.choose_driver(None, "hackrf") == "airspyhf"
+
+
+def test_list_shows_every_supported_radio(capsys):
+    entry.list_devices()
+    out = capsys.readouterr().out
+    for name in ("Airspy HF+", "HackRF", "RTL-SDR", "Pluto"):
+        assert name in out
