@@ -89,6 +89,7 @@ class MainWindow(QtWidgets.QMainWindow):
         step_hz: float = 10e3,
         snap: bool = False,
         pitch_hz: float = 500.0,
+        stereo: bool = True,
         enable_audio: bool = True,
         recordings_dir=None,
         settings: Settings | None = None,
@@ -125,6 +126,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._initial_step_hz = float(step_hz)
         self._initial_snap = bool(snap)
         self._initial_pitch = float(pitch_hz)
+        self._initial_stereo = bool(stereo)
         self._initial_bandwidth = bandwidth_hz
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
@@ -182,7 +184,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
         self._sync_pitch_visible()
-        self._sync_cw_label()
+        self._sync_mode_extras()
         self._update_passband()
 
         self._zerobeat_timer = QtCore.QTimer(self)
@@ -605,6 +607,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pitch_combo.currentIndexChanged.connect(self._on_pitch_changed)
         row.addWidget(self._pitch_combo)
 
+        self._stereo_check = QtWidgets.QCheckBox("Stereo")
+        self._stereo_check.setChecked(self._initial_stereo)
+        self._stereo_check.setToolTip(
+            "Decode stereo when the station sends it.\n"
+            "Untick for mono, which is quieter on a weak station."
+        )
+        self._stereo_check.toggled.connect(self._on_stereo_toggled)
+        row.addWidget(self._stereo_check)
+
         row.addWidget(QtWidgets.QLabel("Vol"))
         self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._volume_slider.setRange(0, 100)
@@ -753,20 +764,21 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._device_slot)
         row.addStretch(1)
 
-        # Decoded CW, right-aligned so the newest characters sit against the edge and
-        # the line grows leftwards as it fills.
-        self._cw_label = QtWidgets.QLabel("")
+        # The info line: decoded Morse in CW, stereo status and RDS in broadcast FM.
+        # Right-aligned, so decoded CW sits against the edge and grows leftwards.
+        self._info_label = QtWidgets.QLabel("")
         mono = QtGui.QFont("Menlo")
         mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
-        mono.setPointSizeF(max(10.0, self._cw_label.font().pointSizeF()))
-        self._cw_label.setFont(mono)
-        self._cw_label.setMinimumWidth(430)
-        self._cw_label.setAlignment(
+        mono.setPointSizeF(max(10.0, self._info_label.font().pointSizeF()))
+        self._info_label.setFont(mono)
+        self._info_label.setMinimumWidth(430)
+        self._info_label.setMaximumWidth(620)
+        self._info_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
         )
-        self._cw_label.setStyleSheet("color: #8ee6a0;")
-        self._cw_label.setToolTip("Decoded CW: the last 50 characters received")
-        row.addWidget(self._cw_label)
+        self._info_label.setStyleSheet("color: #8ee6a0;")
+        self._info_label.setToolTip("Decoded CW, or stereo status and RDS for broadcast FM")
+        row.addWidget(self._info_label)
         return box
 
     def _build_memory_row(self) -> QtWidgets.QWidget:
@@ -1115,6 +1127,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 bandwidth_hz=self.bandwidth_hz(),
                 pitch_hz=self.pitch_hz,
             )
+            sink.set_force_mono(not self._stereo_check.isChecked())
             try:
                 sink.start()
                 sink.set_muted(self.muted)
@@ -1131,7 +1144,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_bandwidths()
         self._sync_zerobeat_enabled()
         self._sync_pitch_visible()
-        self._sync_cw_label()
+        self._sync_mode_extras()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
@@ -1142,25 +1155,70 @@ class MainWindow(QtWidgets.QMainWindow):
     def pitch_hz(self) -> float:
         return float(self._pitch_combo.currentData() or 500.0)
 
-    def _sync_cw_label(self) -> None:
-        """Only CW has anything to decode, so the line only appears there."""
-        show = self.mode == "cw"
-        self._cw_label.setVisible(show)
-        if not show:
-            self._cw_label.setText("")
+    def _sync_mode_extras(self) -> None:
+        """Show only what the current mode can use.
 
-    def _update_cw_text(self) -> None:
-        if self.mode != "cw" or self.audio is None:
+        Pitch, zero beat and decoded Morse belong to CW; the stereo switch belongs to
+        broadcast FM; the info line serves both.
+        """
+        mode = self.mode
+        self._zerobeat_button.setVisible(mode == "cw")
+        self._stereo_check.setVisible(mode == "wbfm")
+        show = mode in ("cw", "wbfm")
+        self._info_label.setVisible(show)
+        if not show:
+            self._info_label.setText("")
+            self._info_label.setToolTip("")
+
+    def _update_info_line(self) -> None:
+        if self.audio is None:
             return
-        text = self.audio.cw_text
-        wpm = self.audio.cw_wpm
-        self._cw_label.setText(f"{text}   [{wpm:.0f} wpm]" if text else "")
+        if self.mode == "cw":
+            text = self.audio.cw_text
+            wpm = self.audio.cw_wpm
+            self._info_label.setText(f"{text}   [{wpm:.0f} wpm]" if text else "")
+        elif self.mode == "wbfm":
+            self._show_broadcast_info()
+
+    def _show_broadcast_info(self) -> None:
+        """STEREO or MONO, then the RDS station name, programme type and radio text."""
+        rds = self.audio.rds
+        parts = ["STEREO" if self.audio.stereo else "MONO"]
+        detail = []
+        if rds is not None:
+            if rds.ps_name:
+                parts.append(rds.ps_name)
+            if rds.pty_name:
+                parts.append(rds.pty_name)
+            if rds.pi is not None:
+                detail.append(f"PI {rds.pi:04X}")
+            if rds.radio_text:
+                detail.append(rds.radio_text)
+        text = "  \u00b7  ".join(parts)
+        if rds is not None and rds.radio_text:
+            text += "   " + rds.radio_text
+        # Elided rather than allowed to widen the row: radio text runs to 64 characters.
+        metrics = QtGui.QFontMetrics(self._info_label.font())
+        width = max(100, self._info_label.maximumWidth() - 8)
+        self._info_label.setText(
+            metrics.elidedText(text, QtCore.Qt.TextElideMode.ElideRight, width)
+        )
+        self._info_label.setToolTip("\n".join(["  \u00b7  ".join(parts)] + detail))
+
+    # Kept for callers and tests written before the line served FM as well.
+    _sync_cw_label = _sync_mode_extras
+    _update_cw_text = _update_info_line
 
     def _sync_pitch_visible(self) -> None:
         """Only CW has a beat note, so only CW shows the control."""
         show = self.mode == "cw"
         self._pitch_label.setVisible(show)
         self._pitch_combo.setVisible(show)
+
+    def _on_stereo_toggled(self, enabled: bool) -> None:
+        if self.audio is not None:
+            self.audio.set_force_mono(not enabled)
+        self._schedule_save()
 
     def _on_pitch_changed(self) -> None:
         if self.audio is not None:
@@ -1248,8 +1306,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # -- CW zero beat ------------------------------------------------------
 
     def _sync_zerobeat_enabled(self) -> None:
-        """Only meaningful in CW: every other mode has no beat note to centre."""
-        self._zerobeat_button.setEnabled(self.mode == "cw")
+        """Only meaningful in CW: every other mode has no beat note to centre, so the
+        button is hidden rather than greyed out (see _sync_mode_extras)."""
+        self._zerobeat_button.setVisible(self.mode == "cw")
 
     def _start_zerobeat(self) -> None:
         if self.mode != "cw":
@@ -1363,7 +1422,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._status.showMessage("choose an audio mode before recording audio", 4000)
             return None
         name = timestamp_name(self.source.center_freq, ".wav", self.mode)
-        recorder = AudioRecorder(self.recordings_dir / name, self.audio.audio_rate)
+        recorder = AudioRecorder(self.recordings_dir / name, self.audio.audio_rate,
+                                 channels=self.audio.channels)
         try:
             recorder.start()
         except OSError as exc:
@@ -1465,6 +1525,7 @@ class MainWindow(QtWidgets.QMainWindow):
             step_hz=self.step_hz,
             snap=self.snap_enabled,
             pitch_hz=self.pitch_hz,
+            stereo=self._stereo_check.isChecked(),
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -1530,6 +1591,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._snap_check.blockSignals(True)
         self._snap_check.setChecked(snap.snap)
         self._snap_check.blockSignals(False)
+        self._stereo_check.blockSignals(True)
+        self._stereo_check.setChecked(snap.stereo)
+        self._stereo_check.blockSignals(False)
         pitch_index = self._pitch_combo.findData(snap.pitch_hz)
         if pitch_index >= 0:
             self._pitch_combo.blockSignals(True)
@@ -1713,7 +1777,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
         self._update_smeter(dbfs, freqs)
-        self._update_cw_text()
+        self._update_info_line()
         self._scan_frame(freqs, dbfs)
         self._rows_pushed += 1
 

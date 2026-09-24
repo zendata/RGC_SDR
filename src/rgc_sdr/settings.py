@@ -68,6 +68,8 @@ class Snapshot:
     snap: bool = False
     #: CW beat-note pitch.
     pitch_hz: float = 500.0
+    #: Broadcast FM in stereo when the station sends it; False forces mono.
+    stereo: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)

@@ -24,7 +24,9 @@ FS = 768e3
 
 
 def peak_freq(audio, rate, ignore_below_hz=50.0):
-    """Frequency of the strongest audio component."""
+    """Frequency of the strongest audio component. Stereo is averaged to mono."""
+    if audio.ndim == 2:
+        audio = audio.mean(axis=1)
     window = np.hanning(audio.size)
     spectrum = np.abs(np.fft.rfft(audio * window))
     freqs = np.fft.rfftfreq(audio.size, 1.0 / rate)

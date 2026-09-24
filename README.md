@@ -153,8 +153,13 @@ Audio is continuous and independent of the display: the waterfall may drop frame
 audio path never skips samples. The status bar reports the audio rate, the AGC gain in
 use, and any underruns.
 
-WBFM is mono. SSB is a proper single-sideband filter, measured at over 30 dB rejection of
-the opposite sideband.
+**WBFM** is decoded in **stereo** when the station sends a pilot, with **RDS**: the info
+line at the top right shows STEREO or MONO, the station name, programme type and radio
+text (hover for the PI code). Untick **Stereo** for mono, which is quieter on a weak
+station. De-emphasis is 50 us, the European standard.
+
+SSB is a proper single-sideband filter, measured at over 30 dB rejection of the opposite
+sideband.
 
 ### Scanner
 

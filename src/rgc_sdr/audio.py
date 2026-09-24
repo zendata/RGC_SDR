@@ -53,8 +53,11 @@ class AudioFifo:
     because the sink stopped draining. Either one is a real fault worth surfacing.
     """
 
-    def __init__(self, capacity: int) -> None:
+    def __init__(self, capacity: int, channels: int = 1) -> None:
         self._capacity = int(capacity)
+        #: 1 holds plain sample arrays; 2 holds (frames, 2) stereo blocks. Capacity and
+        #: counts are in frames either way.
+        self.channels = int(channels)
         self._blocks: deque[np.ndarray] = deque()
         self._size = 0
         self._lock = threading.Lock()
@@ -75,27 +78,28 @@ class AudioFifo:
             self._size = 0
 
     def push(self, block: np.ndarray) -> None:
-        if block.size == 0:
+        if len(block) == 0:
             return
         with self._lock:
             self._blocks.append(block)
-            self._size += block.size
+            self._size += len(block)
             while self._size > self._capacity and self._blocks:
                 oldest = self._blocks.popleft()
-                self._size -= oldest.size
-                self.dropped_samples += oldest.size
+                self._size -= len(oldest)
+                self.dropped_samples += len(oldest)
 
     def pull(self, n: int) -> np.ndarray:
-        """Exactly `n` samples, padding with silence if starved."""
-        out = np.zeros(n, dtype=np.float32)
+        """Exactly `n` frames, padding with silence if starved."""
+        shape = (n,) if self.channels == 1 else (n, self.channels)
+        out = np.zeros(shape, dtype=np.float32)
         filled = 0
         with self._lock:
             while filled < n and self._blocks:
                 block = self._blocks[0]
-                take = min(n - filled, block.size)
+                take = min(n - filled, len(block))
                 out[filled : filled + take] = block[:take]
                 filled += take
-                if take == block.size:
+                if take == len(block):
                     self._blocks.popleft()
                 else:
                     self._blocks[0] = block[take:]
@@ -134,6 +138,7 @@ class AudioSink:
         self._bandwidth = bandwidth_hz
         self._pitch = pitch_hz
         self._muted = False
+        self._force_mono = False
 
         self._chain: DemodChain | None = None
         self._reader = None
@@ -251,6 +256,25 @@ class AudioSink:
             self.restart()
 
     @property
+    def channels(self) -> int:
+        """1, or 2 for broadcast FM, which is always delivered as stereo."""
+        return self._chain.channels if self._chain else 1
+
+    @property
+    def stereo(self) -> bool:
+        return bool(self._chain and self._chain.stereo)
+
+    @property
+    def rds(self):
+        return self._chain.rds if self._chain else None
+
+    def set_force_mono(self, mono: bool) -> None:
+        self._force_mono = bool(mono)
+        with self._lock:
+            if self._chain is not None:
+                self._chain.force_mono = self._force_mono
+
+    @property
     def cw_text(self) -> str:
         return self._cw_text
 
@@ -292,6 +316,7 @@ class AudioSink:
             return
         with self._lock:
             self._chain = self._build_chain()
+            self._chain.force_mono = self._force_mono
             if self._mode == "cw":
                 self._sampler = EnvelopeSampler(ENVELOPE_DECIM)
                 self._decoder = CwDecoder(self._chain.if_rate / ENVELOPE_DECIM)
@@ -301,9 +326,10 @@ class AudioSink:
         self._reader = self.source.sequential_reader()
         self._fifo = AudioFifo(self.blocksize * self.buffer_blocks)
 
+        self._fifo = AudioFifo(self.blocksize * self.buffer_blocks, self.channels)
         self._stream = self._sd.OutputStream(
             samplerate=self._chain.audio_rate,
-            channels=1,
+            channels=self.channels,
             dtype="float32",
             blocksize=self.blocksize,
             device=self.device,
@@ -346,7 +372,11 @@ class AudioSink:
     # -- the two hot paths -------------------------------------------------
 
     def _callback(self, outdata, frames, time_info, status) -> None:
-        outdata[:, 0] = self._fifo.pull(frames)
+        block = self._fifo.pull(frames)
+        if block.ndim == 1:
+            outdata[:, 0] = block
+        else:
+            outdata[:] = block
         self._wake.set()          # room has been freed; let the worker refill
 
     def _pump(self) -> None:

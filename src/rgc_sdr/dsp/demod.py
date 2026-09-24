@@ -16,6 +16,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .decimate import StreamDecimator, lowpass_taps
+from .filters import Fir, bandpass_taps, fir_length_for  # noqa: F401  (re-exported)
 
 #: Modes the UI offers, in the order the roadmap introduces them.
 MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw")
@@ -25,7 +26,7 @@ MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw")
 BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "am": (3e3, 4.5e3, 6e3, 9e3, 12e3, 16e3),
     "nbfm": (6e3, 8e3, 12.5e3, 16e3, 25e3),
-    "wbfm": (100e3, 150e3, 200e3),
+    "wbfm": (150e3, 180e3, 200e3, 250e3),
     "usb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
     "lsb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
     # CW filters are narrow: the signal is an on/off carrier, so bandwidth buys nothing
@@ -36,6 +37,15 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
 #: Beat-note pitches offered for CW, in Hz. Operator preference varies a lot, and a
 #: pitch that suits one pair of ears is fatiguing to another.
 CW_PITCHES: tuple[float, ...] = (400.0, 450.0, 500.0, 550.0, 600.0, 700.0, 800.0)
+
+
+#: FM broadcast de-emphasis. 50 us is the standard in Europe, Africa, Asia and
+#: Australia; the Americas and South Korea use 75 us. The chain used 75 us until the
+#: receiver was found to be in Europe, where that over-cuts the treble.
+DEEMPHASIS_S = 50e-6
+
+#: The FM multiplex must reach 57 kHz for RDS, so it is kept at 150 kHz or more.
+MPX_TARGET_HZ = 150e3
 
 
 @dataclass(frozen=True)
@@ -61,12 +71,13 @@ MODE_SPECS: dict[str, ModeSpec] = {
         bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3,
         audio_cutoff_hz=3.4e3, squelch_capable=True,
     ),
-    # Broadcast FM. 150 kHz rather than the nominal 180: the decimation cascade's own
-    # anti-alias filters retain about +/-0.41 of the output rate, so 180 kHz would sit in
-    # the transition band. Mono only -- no stereo pilot decoding.
+    # Broadcast FM, in stereo with RDS. The IF runs at 300 kHz or more so a full 200 kHz
+    # channel fits inside the decimation cascade's passband (it keeps about +/-0.41 of the
+    # output rate); the stereo subcarrier and RDS live in the upper part of the
+    # multiplex, and a narrower channel strips them first.
     "wbfm": ModeSpec(
-        bandwidth_hz=150e3, if_target_hz=160e3, audio_target_hz=44e3,
-        deviation_hz=75e3, deemphasis_s=75e-6, audio_cutoff_hz=15e3,
+        bandwidth_hz=200e3, if_target_hz=300e3, audio_target_hz=44e3,
+        deviation_hz=75e3, deemphasis_s=DEEMPHASIS_S, audio_cutoff_hz=15e3,
         squelch_capable=True,
     ),
     "usb": ModeSpec(bandwidth_hz=2.7e3, if_target_hz=48e3),
@@ -75,14 +86,6 @@ MODE_SPECS: dict[str, ModeSpec] = {
     # over a long session, and it is selectable anyway.
     "cw": ModeSpec(bandwidth_hz=500.0, if_target_hz=48e3, pitch_hz=500.0),
 }
-
-
-def fir_length_for(cutoff: float, minimum: int = 31, maximum: int = 511) -> int:
-    """Odd tap count giving a transition band proportional to the cutoff."""
-    transition = max(cutoff * 0.35, 0.004)
-    n = int(4.0 / transition)
-    n = max(minimum, min(maximum, n))
-    return n | 1
 
 
 class Mixer:
@@ -117,48 +120,10 @@ class Mixer:
         return iq * np.exp(1j * phase).astype(np.complex128)
 
 
-class Fir:
-    """Stateful FIR. Taps may be complex, for a single-sideband filter."""
-
-    def __init__(self, taps: np.ndarray) -> None:
-        self._taps = np.asarray(taps)
-        self._history: np.ndarray | None = None
-
-    @property
-    def taps(self) -> np.ndarray:
-        return self._taps
-
-    def reset(self) -> None:
-        self._history = None
-
-    def process(self, x: np.ndarray) -> np.ndarray:
-        if x.size == 0:
-            return x
-        dtype = np.result_type(x.dtype, self._taps.dtype)
-        if self._history is None:
-            self._history = np.zeros(self._taps.size - 1, dtype=dtype)
-        padded = np.concatenate([self._history.astype(dtype), x.astype(dtype)])
-        self._history = padded[-(self._taps.size - 1) :]
-        return np.convolve(padded, self._taps, mode="valid")
-
-
 def channel_taps(bandwidth_hz: float, sample_rate: float) -> np.ndarray:
     """Real low-pass keeping +/- bandwidth/2 of a complex signal."""
     cutoff = min(bandwidth_hz / 2.0 / sample_rate, 0.49)
     return lowpass_taps(cutoff, fir_length_for(cutoff))
-
-
-def bandpass_taps(centre_hz: float, bandwidth_hz: float, sample_rate: float) -> np.ndarray:
-    """Complex band-pass covering centre +/- bandwidth/2.
-
-    Complex, and therefore asymmetric: a real low-pass passes mirror-image frequencies
-    either side of zero, which is exactly what must not happen when one sideband or one
-    audio pitch is wanted.
-    """
-    half = min(bandwidth_hz / 2.0 / sample_rate, 0.24)
-    taps = lowpass_taps(half, fir_length_for(half))
-    n = np.arange(taps.size) - (taps.size - 1) / 2.0
-    return taps * np.exp(2j * np.pi * (centre_hz / sample_rate) * n)
 
 
 def sideband_taps(bandwidth_hz: float, sample_rate: float, upper: bool) -> np.ndarray:
@@ -366,19 +331,48 @@ class DemodChain:
             else None
         )
 
+        #: 2 for broadcast FM, which is always delivered as stereo -- duplicated mono when
+        #: the station sends no pilot -- so the audio stream never changes shape mid-way.
+        self.channels = 2 if mode == "wbfm" else 1
+        self._stereo = None
+        self._rds = None
+        audio_source_rate = self.if_rate
+        if mode == "wbfm":
+            from .fmstereo import StereoDecoder
+            from .rds import RdsDemodulator
+
+            self.mpx_decim = self._pick_factor(self.if_rate, MPX_TARGET_HZ)
+            self.mpx_rate = self.if_rate / self.mpx_decim
+            self._mpx_decimator = StreamDecimator(self.mpx_decim)
+            self._stereo = StereoDecoder(self.mpx_rate)
+            self._rds = RdsDemodulator(self.mpx_rate)
+            audio_source_rate = self.mpx_rate
+            # De-emphasis belongs on left and right, *after* the stereo matrix. On the
+            # whole multiplex it would flatten the 38 kHz subcarrier and the RDS with it.
+            self._deemph_pair = [
+                Deemphasis(self.mpx_rate, self.spec.deemphasis_s) for _ in range(2)
+            ]
+            self._deemph = None
+
         self.audio_decim = 1
         if self.spec.audio_target_hz is not None:
-            self.audio_decim = self._pick_factor(self.if_rate, self.spec.audio_target_hz)
+            self.audio_decim = self._pick_factor(audio_source_rate, self.spec.audio_target_hz)
         self._audio_decimator = StreamDecimator(self.audio_decim)
-        self.audio_rate = self.if_rate / self.audio_decim
+        self.audio_rate = audio_source_rate / self.audio_decim
+        if mode == "wbfm":
+            self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
 
         self._agc = AudioAgc() if agc else None
 
         cutoff = self.spec.audio_cutoff_hz
         self._audio_fir = None
+        self._audio_fir_pair = None
         if cutoff is not None and cutoff < self.audio_rate / 2.0:
             c = cutoff / self.audio_rate
             self._audio_fir = Fir(lowpass_taps(c, fir_length_for(c)))
+            if mode == "wbfm":
+                self._audio_fir_pair = [Fir(lowpass_taps(c, fir_length_for(c)))
+                                        for _ in range(2)]
 
         self.muted_blocks = 0
         #: The most recent channel-filtered block, complex. CW decoding needs the
@@ -442,7 +436,8 @@ class DemodChain:
 
     def input_for_audio(self, n_audio: int) -> int:
         """Input IQ samples needed for roughly `n_audio` output samples."""
-        return int(n_audio * self.if_decim * self.audio_decim)
+        mpx = getattr(self, "mpx_decim", 1)
+        return int(n_audio * self.if_decim * mpx * self.audio_decim)
 
     def reset(self) -> None:
         """Drop all filter state. Call on retune: the history is a different signal."""
@@ -458,6 +453,15 @@ class DemodChain:
             self._audio_fir.reset()
         if self._agc is not None:
             self._agc.reset()
+        if self._stereo is not None:
+            mono = self._stereo.force_mono
+            self._stereo.reset()
+            self._stereo.force_mono = mono
+            self._rds.reset()
+            self._mpx_decimator.reset()
+            for part in (*self._deemph_pair, *self._audio_decimator_pair,
+                         *(self._audio_fir_pair or ())):
+                part.reset()
 
     def process(self, iq: np.ndarray) -> np.ndarray:
         if iq.size == 0:
@@ -483,6 +487,17 @@ class DemodChain:
             and self.channel_dbfs < self.squelch_dbfs
         )
 
+        if self.mode == "wbfm":
+            audio = self._broadcast_fm(channel)
+            if audio.size == 0:
+                return np.zeros((0, 2), dtype=np.float32)
+            if squelched:
+                self.muted_blocks += 1
+                return np.zeros(audio.shape, dtype=np.float32)
+            if self._agc is not None:
+                audio = self._agc.process(audio)     # one gain for both channels
+            return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
+
         if self._detector is not None:
             audio = self._detector.process(channel)
         else:
@@ -505,6 +520,44 @@ class DemodChain:
             audio = self._agc.process(audio)
 
         return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
+
+    def _broadcast_fm(self, channel: np.ndarray) -> np.ndarray:
+        """Discriminate, split the multiplex into left and right, and read the RDS."""
+        mpx = self._detector.process(channel)
+        mpx = self._mpx_decimator.process(mpx)
+        if mpx.size == 0:
+            return np.zeros((0, 2))
+        stereo = self._stereo.process(mpx)
+        self._rds.process(stereo.mpx, stereo.pilot)
+        sides = []
+        for i, side in enumerate((stereo.left, stereo.right)):
+            side = self._deemph_pair[i].process(side)
+            if self.audio_decim > 1:
+                side = self._audio_decimator_pair[i].process(side)
+            if self._audio_fir_pair is not None:
+                side = self._audio_fir_pair[i].process(side)
+            sides.append(side)
+        n = min(sides[0].size, sides[1].size)
+        return np.column_stack([sides[0][:n], sides[1][:n]])
+
+    @property
+    def stereo(self) -> bool:
+        """True when a broadcast FM station's pilot is present and stereo is in use."""
+        return bool(self._stereo is not None and self._stereo.stereo)
+
+    @property
+    def force_mono(self) -> bool:
+        return bool(self._stereo is not None and self._stereo.force_mono)
+
+    @force_mono.setter
+    def force_mono(self, value: bool) -> None:
+        if self._stereo is not None:
+            self._stereo.force_mono = bool(value)
+
+    @property
+    def rds(self):
+        """Decoded RDS for broadcast FM, else None."""
+        return self._rds.info if self._rds is not None else None
 
     @property
     def agc_gain(self) -> float:

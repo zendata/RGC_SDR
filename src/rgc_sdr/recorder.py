@@ -126,18 +126,21 @@ class AudioRecorder(_ThreadedWriter):
     anywhere without conversion.
     """
 
-    def __init__(self, path: Path, sample_rate: float, queue_blocks: int = 64) -> None:
+    def __init__(
+        self, path: Path, sample_rate: float, queue_blocks: int = 64, channels: int = 1
+    ) -> None:
         super().__init__(path, queue_blocks)
         self.sample_rate = int(round(sample_rate))
+        self.channels = int(channels)
         self._wav: wave.Wave_write | None = None
 
     @property
     def seconds_recorded(self) -> float:
-        return self.bytes_written / 2.0 / max(self.sample_rate, 1)
+        return self.bytes_written / 2.0 / self.channels / max(self.sample_rate, 1)
 
     def _open(self) -> None:
         self._wav = wave.open(str(self.path), "wb")
-        self._wav.setnchannels(1)
+        self._wav.setnchannels(self.channels)
         self._wav.setsampwidth(2)
         self._wav.setframerate(self.sample_rate)
 
@@ -150,7 +153,8 @@ class AudioRecorder(_ThreadedWriter):
 
     def _write(self, block: np.ndarray) -> int:
         samples = np.clip(block, -1.0, 1.0)
-        pcm = (samples * 32767.0).astype("<i2")
+        # (frames, 2) stereo is C-ordered, so its bytes are already interleaved L,R,L,R.
+        pcm = np.ascontiguousarray((samples * 32767.0).astype("<i2"))
         self._wav.writeframes(pcm.tobytes())
         return pcm.nbytes
 

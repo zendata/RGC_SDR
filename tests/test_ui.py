@@ -1665,13 +1665,14 @@ class AbsoluteToneSource(StubSource):
         return block
 
 
-def test_zero_beat_is_only_enabled_in_cw(qapp):
+def test_zero_beat_is_only_shown_in_cw(qapp):
+    """Hidden, not greyed out: it means nothing in any other mode."""
     win = window_for(StubSource(_caps()), fft_size=1024)
-    assert not win._zerobeat_button.isEnabled()
+    assert win._zerobeat_button.isHidden()
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
-    assert win._zerobeat_button.isEnabled()
+    assert not win._zerobeat_button.isHidden()
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
-    assert not win._zerobeat_button.isEnabled()
+    assert win._zerobeat_button.isHidden()
     win.close()
 
 
@@ -1967,18 +1968,18 @@ def test_cw_line_only_appears_in_cw_mode(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
     win.show()
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
-    assert not win._cw_label.isVisible()
+    assert not win._info_label.isVisible()
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
-    assert win._cw_label.isVisible()
+    assert win._info_label.isVisible()
     win.close()
 
 
 def test_cw_line_is_cleared_when_leaving_cw(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
-    win._cw_label.setText("CQ CQ DE G4ABC")
+    win._info_label.setText("CQ CQ DE G4ABC")
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
-    assert win._cw_label.text() == ""
+    assert win._info_label.text() == ""
     win.close()
 
 
@@ -1997,8 +1998,8 @@ def test_cw_line_shows_decoded_text_and_speed(qapp):
     win.audio = FakeSink()
     try:
         win._update_cw_text()
-        assert "CQ CQ DE G4ABC K" in win._cw_label.text()
-        assert "22 wpm" in win._cw_label.text()
+        assert "CQ CQ DE G4ABC K" in win._info_label.text()
+        assert "22 wpm" in win._info_label.text()
     finally:
         win.audio = None
     win.close()
@@ -2015,7 +2016,7 @@ def test_cw_line_is_blank_when_nothing_has_been_decoded(qapp):
     win.audio = Silent()
     try:
         win._update_cw_text()
-        assert win._cw_label.text() == ""
+        assert win._info_label.text() == ""
     finally:
         win.audio = None
     win.close()
@@ -2023,7 +2024,7 @@ def test_cw_line_is_blank_when_nothing_has_been_decoded(qapp):
 
 def test_cw_line_is_right_aligned_so_it_grows_leftwards(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
-    assert win._cw_label.alignment() & QtCore.Qt.AlignmentFlag.AlignRight
+    assert win._info_label.alignment() & QtCore.Qt.AlignmentFlag.AlignRight
     win.close()
 
 
@@ -2271,3 +2272,103 @@ def test_sdr_selector_does_not_widen_the_row_with_status_text(qapp):
     qapp.processEvents()
     assert win._device_combo.width() < 260
     win.close()
+
+
+# -- mode-specific controls and the broadcast FM info line -------------------
+
+from src.rgc_sdr.dsp.rds import StationInfo  # noqa: E402
+
+
+def _visible_in(win, mode):
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData(mode))
+    return {
+        "pitch": not win._pitch_combo.isHidden(),
+        "zerobeat": not win._zerobeat_button.isHidden(),
+        "info": not win._info_label.isHidden(),
+        "stereo": not win._stereo_check.isHidden(),
+    }
+
+
+@pytest.mark.parametrize("mode", ["off", "am", "nbfm", "usb", "lsb"])
+def test_cw_and_fm_extras_are_hidden_in_other_modes(qapp, mode):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    shown = _visible_in(win, mode)
+    assert not any(shown.values()), f"{mode} shows {[k for k, v in shown.items() if v]}"
+    win.close()
+
+
+def test_cw_shows_pitch_zero_beat_and_decoded_text_only(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert _visible_in(win, "cw") == {"pitch": True, "zerobeat": True,
+                                       "info": True, "stereo": False}
+    win.close()
+
+
+def test_wbfm_shows_stereo_and_the_info_line_only(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert _visible_in(win, "wbfm") == {"pitch": False, "zerobeat": False,
+                                         "info": True, "stereo": True}
+    win.close()
+
+
+class FakeFmSink:
+    def __init__(self, stereo=True, ps="BBC R2", text="", pty=10, pi=0xC202):
+        self.stereo = stereo
+        info = StationInfo()
+        if ps:
+            info.ps = list(ps.ljust(8))
+            info.ps_seen = {0, 1, 2, 3}
+        info.rt = list(text.ljust(64)[:64])
+        info.pty = pty
+        info.pi = pi
+        self.rds = info
+
+
+def test_info_line_shows_stereo_and_station_name(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win.audio = FakeFmSink(stereo=True, ps="BBC R2", text="Now playing: Test")
+    try:
+        win._update_info_line()
+        text = win._info_label.text()
+        assert text.startswith("STEREO")
+        assert "BBC R2" in text and "Pop Music" in text
+        assert "Now playing" in text
+        assert "PI C202" in win._info_label.toolTip()
+    finally:
+        win.audio = None
+    win.close()
+
+
+def test_info_line_says_mono_without_a_pilot(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win.audio = FakeFmSink(stereo=False, ps="")
+    try:
+        win._update_info_line()
+        assert win._info_label.text().startswith("MONO")
+    finally:
+        win.audio = None
+    win.close()
+
+
+def test_long_radio_text_is_elided_not_allowed_to_widen_the_row(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win.audio = FakeFmSink(text="X" * 64)
+    try:
+        win._update_info_line()
+        metrics = QtGui.QFontMetrics(win._info_label.font())
+        assert metrics.horizontalAdvance(win._info_label.text()) <= win._info_label.maximumWidth()
+    finally:
+        win.audio = None
+    win.close()
+
+
+def test_stereo_choice_is_remembered(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win = window_for(StubSource(_caps()), fft_size=1024, settings=Settings(path))
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win._stereo_check.setChecked(False)
+    win.close()
+    assert Settings.load(path).last.stereo is False

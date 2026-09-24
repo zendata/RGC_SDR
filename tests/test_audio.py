@@ -504,3 +504,19 @@ def test_sink_does_not_decode_outside_cw():
         assert sink.cw_wpm == 0.0
     finally:
         sink.stop()
+
+
+def test_fifo_carries_stereo_frames():
+    fifo = AudioFifo(100, channels=2)
+    fifo.push(np.column_stack([np.ones(10), -np.ones(10)]).astype(np.float32))
+    assert len(fifo) == 10
+    out = fifo.pull(4)
+    assert out.shape == (4, 2)
+    assert np.all(out[:, 0] == 1.0) and np.all(out[:, 1] == -1.0)
+
+
+def test_stereo_fifo_pads_with_stereo_silence():
+    fifo = AudioFifo(100, channels=2)
+    out = fifo.pull(6)
+    assert out.shape == (6, 2) and not out.any()
+    assert fifo.underrun_samples == 6

@@ -223,3 +223,18 @@ def test_iq_recorder_is_independent_of_display_reads(tmp_path):
     rec.stop()
     raw = np.fromfile(tmp_path / "c.cf32", dtype=np.complex64)
     assert np.all(np.diff(raw.real) == 1.0), "recording has a discontinuity"
+
+
+def test_stereo_audio_records_as_a_two_channel_wav(tmp_path):
+    path = tmp_path / "s.wav"
+    rec = AudioRecorder(path, 48000, channels=2)
+    rec.start()
+    frames = np.column_stack([np.full(4800, 0.5), np.full(4800, -0.5)]).astype(np.float32)
+    rec.submit(frames)
+    assert wait_for(lambda: rec.bytes_written >= frames.size * 2)
+    rec.stop()
+    with wave.open(str(path), "rb") as w:
+        assert w.getnchannels() == 2 and w.getnframes() == 4800
+        data = np.frombuffer(w.readframes(4800), dtype="<i2").reshape(-1, 2)
+    assert data[:, 0].min() > 16000 and data[:, 1].max() < -16000
+    assert rec.seconds_recorded == pytest.approx(0.1, abs=0.001)
