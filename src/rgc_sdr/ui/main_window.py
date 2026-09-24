@@ -149,6 +149,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
         self._sync_pitch_visible()
+        self._sync_cw_label()
         self._update_passband()
 
         self._zerobeat_timer = QtCore.QTimer(self)
@@ -548,6 +549,21 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addSpacing(12)
         row.addWidget(self._build_device_controls())
         row.addStretch(1)
+
+        # Decoded CW, right-aligned so the newest characters sit against the edge and
+        # the line grows leftwards as it fills.
+        self._cw_label = QtWidgets.QLabel("")
+        mono = QtGui.QFont("Menlo")
+        mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        mono.setPointSizeF(max(10.0, self._cw_label.font().pointSizeF()))
+        self._cw_label.setFont(mono)
+        self._cw_label.setMinimumWidth(430)
+        self._cw_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self._cw_label.setStyleSheet("color: #8ee6a0;")
+        self._cw_label.setToolTip("Decoded CW: the last 50 characters received")
+        row.addWidget(self._cw_label)
         return box
 
     def _build_memory_row(self) -> QtWidgets.QWidget:
@@ -902,6 +918,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_bandwidths()
         self._sync_zerobeat_enabled()
         self._sync_pitch_visible()
+        self._sync_cw_label()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
@@ -911,6 +928,20 @@ class MainWindow(QtWidgets.QMainWindow):
     @property
     def pitch_hz(self) -> float:
         return float(self._pitch_combo.currentData() or 500.0)
+
+    def _sync_cw_label(self) -> None:
+        """Only CW has anything to decode, so the line only appears there."""
+        show = self.mode == "cw"
+        self._cw_label.setVisible(show)
+        if not show:
+            self._cw_label.setText("")
+
+    def _update_cw_text(self) -> None:
+        if self.mode != "cw" or self.audio is None:
+            return
+        text = self.audio.cw_text
+        wpm = self.audio.cw_wpm
+        self._cw_label.setText(f"{text}   [{wpm:.0f} wpm]" if text else "")
 
     def _sync_pitch_visible(self) -> None:
         """Only CW has a beat note, so only CW shows the control."""
@@ -1467,6 +1498,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
         self._update_smeter(dbfs, freqs)
+        self._update_cw_text()
         self._scan_frame(freqs, dbfs)
         self._rows_pushed += 1
 

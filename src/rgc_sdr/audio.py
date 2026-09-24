@@ -20,6 +20,7 @@ import numpy as np
 
 from .device.source import IQSource
 from .dsp.demod import MODES, DemodChain
+from .dsp.morse import ENVELOPE_DECIM, CwDecoder, EnvelopeSampler
 
 _SOUNDDEVICE_HINT = (
     "sounddevice is not installed, so audio is unavailable. Install with:\n"
@@ -143,6 +144,12 @@ class AudioSink:
         self._wake = threading.Event()
         self._lock = threading.Lock()
         self._chain_errors = 0
+        self._sampler: EnvelopeSampler | None = None
+        self._decoder: CwDecoder | None = None
+        #: Decoded CW, as a plain string so the UI can read it without a lock. String
+        #: assignment is atomic, so a reader sees one version or the next, never a
+        #: half-built line.
+        self._cw_text = ""
         #: Optional tap, called on the worker thread with every produced audio block.
         #: Used for recording; must not block, or it becomes a dropout.
         self.on_audio = None
@@ -243,6 +250,15 @@ class AudioSink:
         if self.running:
             self.restart()
 
+    @property
+    def cw_text(self) -> str:
+        return self._cw_text
+
+    @property
+    def cw_wpm(self) -> float:
+        decoder = self._decoder
+        return decoder.wpm if decoder is not None else 0.0
+
     def reset(self) -> None:
         """Drop filter state and buffered audio: called on retune.
 
@@ -253,6 +269,12 @@ class AudioSink:
             if self._chain is not None:
                 self._chain.reset()
         self._fifo.clear()
+        # Decoded text belongs to the station that was being received.
+        if self._decoder is not None:
+            self._decoder.reset()
+            self._cw_text = ""
+        if self._sampler is not None:
+            self._sampler.reset()
         if self._reader is not None:
             self._reader.skip_to_latest()
 
@@ -270,6 +292,12 @@ class AudioSink:
             return
         with self._lock:
             self._chain = self._build_chain()
+            if self._mode == "cw":
+                self._sampler = EnvelopeSampler(ENVELOPE_DECIM)
+                self._decoder = CwDecoder(self._chain.if_rate / ENVELOPE_DECIM)
+            else:
+                self._sampler = self._decoder = None
+        self._cw_text = ""
         self._reader = self.source.sequential_reader()
         self._fifo = AudioFifo(self.blocksize * self.buffer_blocks)
 
@@ -347,6 +375,14 @@ class AudioSink:
                 # Never let a DSP error kill audio silently or spin the thread.
                 self._chain_errors += 1
                 continue
+            decoder, sampler = self._decoder, self._sampler
+            if decoder is not None and sampler is not None:
+                try:
+                    decoder.feed(sampler.process(chain.last_channel))
+                    self._cw_text = decoder.text
+                except Exception:
+                    self._chain_errors += 1
+
             # The recorder is fed before muting: muting is a choice about the room,
             # not about the recording, and a silent file would be a nasty surprise.
             tap = self.on_audio
@@ -377,4 +413,5 @@ class AudioSink:
             "channel_dbfs": chain.channel_dbfs if chain else -200.0,
             "chain_errors": self._chain_errors,
             "muted": self._muted,
+            "cw_wpm": self.cw_wpm,
         }

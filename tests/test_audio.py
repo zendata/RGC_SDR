@@ -366,3 +366,141 @@ def test_unmute_restores_output():
     assert sink.muted is True
     sink.set_muted(False)
     assert sink.muted is False
+
+
+# -- CW decoding in the sink -------------------------------------------------
+
+@audio_only
+def test_sink_decodes_cw_it_receives():
+    """End to end: a keyed carrier through the real sink comes out as text."""
+    import time
+
+    from src.rgc_sdr.audio import AudioSink
+    from src.rgc_sdr.device.source import DeviceCaps, FreqRange, IQSource
+    from src.rgc_sdr.dsp.morse import text_to_morse
+
+    class MorseSource(IQSource):
+        """Keys a carrier with a repeating message."""
+
+        def __init__(self, text="CQ TEST", wpm=20.0, fs=768e3):
+            self._ring = _Ring(2_000_000)
+            self._fs = fs
+            self._phase = 0
+            dot = int(1.2 / wpm * fs)
+            plan = [(False, dot * 6)]
+            for symbol in text_to_morse(text):
+                if symbol == ".":
+                    plan += [(True, dot), (False, dot)]
+                elif symbol == "-":
+                    plan += [(True, 3 * dot), (False, dot)]
+                else:
+                    plan += [(False, 2 * dot)]
+            plan.append((False, dot * 8))
+            self._plan = plan
+            self._index = 0
+
+        @property
+        def caps(self):
+            return DeviceCaps("stub", "stub", "", (768e3,), (FreqRange(1e3, 30e6),),
+                              (), False, ("CF32",))
+
+        @property
+        def sample_rate(self):
+            return self._fs
+
+        @property
+        def center_freq(self):
+            return 7.02e6
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def read_latest(self, n):
+            return self._ring.read_latest(n)
+
+        def sequential_reader(self):
+            return SequentialReader(self._ring)
+
+        @property
+        def finished(self):
+            return self._index >= len(self._plan)
+
+        def pump(self):
+            """Write one keying element and return how long it represents.
+
+            The caller paces itself by that duration. Writing faster than real time
+            overruns the ring and the sink's reader gets lapped, which garbles the very
+            timing the decoder depends on.
+            """
+            on, count = self._plan[self._index]
+            self._index += 1
+            t = (self._phase + np.arange(count)) / self._fs
+            self._phase += count
+            block = (0.3 * np.exp(2j * np.pi * 0.0 * t)) if on else np.zeros(count, complex)
+            self._ring.write(block.astype(np.complex64))
+            return count / self._fs
+
+    # VVV first, as an operator tunes up: the decoder starts mid-stream and its very
+    # first element is clipped while the threshold primes, so the steady state is what
+    # matters here. Decoding itself is covered thoroughly in test_morse.py.
+    src = MorseSource(text="VVV CQ TEST")
+    # Prime a little so the stream is never starved at startup.
+    lead = sum(src.pump() for _ in range(2))
+    sink = AudioSink(src, mode="cw", volume=0.05, blocksize=512)
+    sink.start()
+    try:
+        deadline = time.time() + 20.0
+        while not src.finished and time.time() < deadline:
+            time.sleep(src.pump())          # paced at real time
+        # Let the tail work through the chain.
+        end = time.time() + 2.0
+        while time.time() < end and "CQ TEST" not in sink.cw_text:
+            time.sleep(0.05)
+        assert "CQ TEST" in sink.cw_text, f"decoded {sink.cw_text!r}"
+        assert sink.cw_wpm > 5.0
+        assert sink.stats["chain_errors"] == 0
+    finally:
+        sink.stop()
+
+
+@audio_only
+def test_sink_does_not_decode_outside_cw():
+    from src.rgc_sdr.audio import AudioSink
+    from src.rgc_sdr.device.source import DeviceCaps, FreqRange, IQSource
+
+    class Quiet(IQSource):
+        @property
+        def caps(self):
+            return DeviceCaps("s", "s", "", (768e3,), (FreqRange(1e3, 30e6),),
+                              (), False, ("CF32",))
+
+        @property
+        def sample_rate(self):
+            return 768e3
+
+        @property
+        def center_freq(self):
+            return 7.02e6
+
+        def start(self):
+            pass
+
+        def stop(self):
+            pass
+
+        def read_latest(self, n):
+            return np.zeros(0, dtype=np.complex64)
+
+        def sequential_reader(self):
+            return SequentialReader(_Ring(1000))
+
+    sink = AudioSink(Quiet(), mode="am")
+    sink.start()
+    try:
+        assert sink.cw_text == ""
+        assert sink.cw_wpm == 0.0
+    finally:
+        sink.stop()

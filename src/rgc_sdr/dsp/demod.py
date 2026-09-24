@@ -381,6 +381,9 @@ class DemodChain:
             self._audio_fir = Fir(lowpass_taps(c, fir_length_for(c)))
 
         self.muted_blocks = 0
+        #: The most recent channel-filtered block, complex. CW decoding needs the
+        #: envelope of this rather than the audio, which carries the beat note.
+        self.last_channel = np.zeros(0, dtype=np.complex128)
 
     def _mix_offset(self) -> float:
         """Mixer shift, which for CW puts the carrier at the wanted audio pitch."""
@@ -468,6 +471,7 @@ class DemodChain:
         if channel.size == 0:
             return np.zeros(0, dtype=np.float32)
 
+        self.last_channel = channel
         # Measured after the channel filter, so it is the level of the signal actually
         # being listened to rather than of everything in the span.
         power = float(np.mean(np.abs(channel) ** 2))

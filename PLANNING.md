@@ -518,6 +518,29 @@ following a stale link crashed. The suite now destroys each test's windows
 shared-axis link on the way out, which is correct teardown for the application too. The
 suite also got faster, and stopped depending on test order.
 
+## 7j. CW decoder
+
+A rolling line of decoded Morse sits top right in CW mode, holding the last 50
+characters and the estimated speed. It decodes the *envelope* of the CW channel filter,
+not the audio, which removes the beat note and leaves only the keying.
+
+The threshold comes from a 1.5 s rolling window of envelope percentiles. Estimating it per
+block (21 ms, shorter than one dot) made a dash look like an unkeyed carrier and produced a
+stream of E's.
+
+The dot length is found by splitting recent marks *and gaps* into two clusters. The gap
+between elements of a character is exactly one dot, so marks and gaps share a large
+one-unit population whatever the text. Two earlier estimators failed on measurable cases:
+an EMA dragged itself the wrong way from a bad start, and a low percentile of marks climbed
+into the dash cluster on dash-heavy text ("CQ" read as "CX"). Runs under 0.4 of the current
+estimate are ignored, because one 10 ms filter transient once became the whole low cluster
+and turned "SOS" into "U OS". Elements are classified when the character ends rather than
+as they arrive, so the first character is judged against a locked estimate ("PARIS" at
+35 wpm no longer reads "FARIS").
+
+Decodes cleanly from 12 to 35 wpm, with digits, slashes and added noise. The first
+character after enabling CW can be clipped while the threshold primes, as with any decoder.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

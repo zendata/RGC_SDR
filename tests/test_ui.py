@@ -1957,3 +1957,69 @@ def test_the_spectrum_follows_the_preserved_zoom(qapp):
     assert slo == pytest.approx(wlo, abs=500.0)
     assert shi == pytest.approx(whi, abs=500.0)
     win.close()
+
+
+# -- decoded CW line ---------------------------------------------------------
+
+def test_cw_line_only_appears_in_cw_mode(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win.show()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert not win._cw_label.isVisible()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    assert win._cw_label.isVisible()
+    win.close()
+
+
+def test_cw_line_is_cleared_when_leaving_cw(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._cw_label.setText("CQ CQ DE G4ABC")
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    assert win._cw_label.text() == ""
+    win.close()
+
+
+def test_cw_line_shows_decoded_text_and_speed(qapp):
+    """The label renders whatever the sink has decoded."""
+    class Decoding(StubSource):
+        pass
+
+    win = window_for(Decoding(_caps()), fft_size=1024, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+
+    class FakeSink:
+        cw_text = "CQ CQ DE G4ABC K"
+        cw_wpm = 22.0
+
+    win.audio = FakeSink()
+    try:
+        win._update_cw_text()
+        assert "CQ CQ DE G4ABC K" in win._cw_label.text()
+        assert "22 wpm" in win._cw_label.text()
+    finally:
+        win.audio = None
+    win.close()
+
+
+def test_cw_line_is_blank_when_nothing_has_been_decoded(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024, fps=25)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+
+    class Silent:
+        cw_text = ""
+        cw_wpm = 0.0
+
+    win.audio = Silent()
+    try:
+        win._update_cw_text()
+        assert win._cw_label.text() == ""
+    finally:
+        win.audio = None
+    win.close()
+
+
+def test_cw_line_is_right_aligned_so_it_grows_leftwards(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win._cw_label.alignment() & QtCore.Qt.AlignmentFlag.AlignRight
+    win.close()
