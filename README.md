@@ -10,25 +10,33 @@ See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardwa
 Real hardware only — there is no simulated device mode, by design
 ([PLANNING.md](PLANNING.md) §1).
 
-## Requirements
+## Installing on a new Mac
 
-The native SoapySDR stack comes from Homebrew, not pip:
-
-```bash
-brew install soapysdr soapyairspyhf soapyhackrf
-./tools/install_drivers.sh        # Airspy R2/Mini and ADALM-Pluto, built from source
-```
-
-The Airspy R2 and Pluto drivers are not in Homebrew; `tools/install_drivers.sh` builds
-them (and libiio v0.25 and libad9361 for the Pluto) into `/opt/homebrew`. Check with
-`SoapySDRUtil --info`: the factories should list airspy, airspyhf, hackrf and plutosdr.
-
-Then the Python side:
+One script does everything -- Xcode Command Line Tools, Homebrew, the SDR drivers, the
+Python environment, the tests and the Desktop icon:
 
 ```bash
-./setup.sh
-source .venv/bin/activate
+git clone https://github.com/zendata/RGC_SDR.git ~/Code/RGC_SDR
+cd ~/Code/RGC_SDR && ./install.sh
 ```
+
+Apple silicon, macOS 11 or later; about 10-20 minutes the first time, and it asks for
+your password once (Homebrew). If the Command Line Tools are missing, macOS opens a dialog
+to install them; run `./install.sh` again when that finishes. It is safe to re-run.
+
+What it does, if you would rather do it by hand:
+
+1. `xcode-select --install`, then [Homebrew](https://brew.sh).
+2. `brew install soapysdr soapyhackrf airspy airspyhf libusb cmake pkgconf`
+3. `./tools/install_drivers.sh` -- the Airspy HF+, Airspy R2/Mini and ADALM-Pluto
+   drivers are not in Homebrew, so this builds SoapyAirspyHF, SoapyAirspy and (with
+   libiio v0.25 and libad9361) SoapyPlutoSDR into `/opt/homebrew`. `SoapySDRUtil --info`
+   should then list airspy, airspyhf, hackrf and plutosdr.
+4. `./setup.sh` -- the `.venv`, made with the Homebrew Python that SoapySDR's bindings
+   are built for, with those bindings linked in (they are not on PyPI).
+5. `./tools/make_app.sh` -- the "VK3RQ Super SDR" icon on the Desktop.
+
+An RTL-SDR also needs `brew install soapyrtlsdr`.
 
 ## Usage
 

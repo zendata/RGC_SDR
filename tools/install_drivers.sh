@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build and install the SoapySDR drivers Homebrew does not ship: Airspy R2/Mini and
-# ADALM-Pluto. (Airspy HF+ and HackRF come from Homebrew; see README.)
+# Build and install the SoapySDR drivers Homebrew does not ship: Airspy HF+, Airspy
+# R2/Mini and ADALM-Pluto. (HackRF's comes from Homebrew: brew install soapyhackrf.)
 #
-#   ./tools/install_drivers.sh            # both
-#   ./tools/install_drivers.sh airspy     # or just one: airspy | pluto
+#   ./tools/install_drivers.sh            # all three
+#   ./tools/install_drivers.sh airspyhf   # or just one: airspyhf | airspy | pluto
 #
 # Everything installs under /opt/homebrew, next to SoapySDR, so its module loader finds
 # the drivers. Measured 2026-09-25 on macOS/arm64; three things had to be got right:
@@ -33,6 +33,11 @@ build() {   # build <dir> <git url> <branch or ""> [extra cmake args...]
   cmake --build "$WORK/$dir/build" -j 8
   cmake --install "$WORK/$dir/build"
 }
+
+if [ "$WHICH" = all ] || [ "$WHICH" = airspyhf ]; then
+  brew install airspyhf
+  build SoapyAirspyHF https://github.com/pothosware/SoapyAirspyHF.git ""
+fi
 
 if [ "$WHICH" = all ] || [ "$WHICH" = airspy ]; then
   brew install airspy

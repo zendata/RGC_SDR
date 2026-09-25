@@ -35,7 +35,7 @@ from src.rgc_sdr.device.source import enumerate_devices
 sys.exit(0 if enumerate_devices() else 1)' >/dev/null 2>&1; then
   notify "No SDR detected.
 
-Plug in the Airspy HF+ and try again."
+Plug in a radio (Airspy HF+, Airspy R2, HackRF, RTL-SDR or Pluto) and try again."
   exit 1
 fi
 
