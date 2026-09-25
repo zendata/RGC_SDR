@@ -327,3 +327,18 @@ def test_unflushed_retune_keeps_the_buffer_and_discards_nothing(sdr_devices):
         src.set_center_freq(14.2e6, flush=True)
         time.sleep(0.4)
         assert src.stats["dropped"] > before
+
+
+
+def test_direction_constant_is_receive():
+    """SOAPY_RX was once 0, which is SOAPY_SDR_TX. The Airspy HF+ driver ignores the
+    direction, so nothing showed until a HackRF opened a transmit stream and every read
+    failed with NOT_SUPPORTED."""
+    from src.rgc_sdr.device.source import SOAPY_RX
+    try:
+        import SoapySDR
+    except ImportError:
+        assert SOAPY_RX == 1
+        return
+    assert SOAPY_RX == SoapySDR.SOAPY_SDR_RX
+    assert SOAPY_RX != SoapySDR.SOAPY_SDR_TX

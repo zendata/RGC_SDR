@@ -42,6 +42,12 @@ def test_profile_defaults_are_self_consistent(profile):
     assert profile.install
     for gain in profile.gain_elements:
         assert gain.max_db > gain.min_db
+    stages = {g.name: g for g in profile.gain_elements}
+    for name, db in profile.default_gains:
+        assert name in stages, f"default for unknown gain {name}"
+        g = stages[name]
+        assert g.min_db <= db <= g.max_db
+        assert (db - g.min_db) % g.step_db == 0, f"{name} {db} dB is off its step"
 
 
 def test_no_rate_above_the_dsp_ceiling_is_the_default():

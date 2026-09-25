@@ -262,6 +262,7 @@ class MainWindow(QtWidgets.QMainWindow):
         combo.blockSignals(False)
         self._hw_bw_label.setVisible(bool(widths))
         combo.setVisible(bool(widths))
+        self._sync_radio_row()
 
     def _on_hw_bandwidth_changed(self) -> None:
         width = self._bw_combo.currentData()
@@ -279,6 +280,7 @@ class MainWindow(QtWidgets.QMainWindow):
         caps = self.source.caps
         has_any = bool(caps.has_agc or caps.gain_elements or getattr(caps, "settings", ()))
         self._device_slot.setVisible(has_any)
+        self._sync_radio_row()
 
     def _apply_device_profile(self) -> None:
         """Make the window match the radio: everything device-specific in one place."""
@@ -584,10 +586,41 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
         outer.addWidget(self._build_tuning_row())
+        outer.addWidget(self._build_radio_row())
         outer.addWidget(self._build_display_row())
         outer.addWidget(self._build_audio_row())
         outer.addWidget(self._build_memory_row())
         return bar
+
+    def _build_radio_row(self) -> QtWidgets.QWidget:
+        """The radio's own settings: IF bandwidth, gain stages, bias-tee.
+
+        A row of its own because a HackRF's three gains and bias-tee pushed the tuning
+        row off the side of the screen. Hidden entirely for a radio with nothing to set.
+        """
+        self._radio_row = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(self._radio_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QtWidgets.QLabel("Radio"))
+
+        self._hw_bw_label = QtWidgets.QLabel("IF BW")
+        row.addWidget(self._hw_bw_label)
+        self._bw_combo = QtWidgets.QComboBox()
+        self._bw_combo.currentIndexChanged.connect(self._on_hw_bandwidth_changed)
+        row.addWidget(self._bw_combo)
+
+        # Gain and driver settings, rebuilt whenever the radio changes.
+        self._device_slot = QtWidgets.QWidget()
+        self._device_slot_layout = QtWidgets.QHBoxLayout(self._device_slot)
+        self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
+        row.addWidget(self._device_slot)
+        row.addStretch(1)
+        return self._radio_row
+
+    def _sync_radio_row(self) -> None:
+        self._radio_row.setVisible(
+            not self._bw_combo.isHidden() or not self._device_slot.isHidden()
+        )
 
     def _build_audio_row(self) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
@@ -755,14 +788,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rate_combo.currentIndexChanged.connect(self._on_rate_changed)
         row.addWidget(self._rate_combo)
 
-        # Hardware IF bandwidth. The Airspy HF+ offers none (measured: listBandwidths() is
-        # empty and setBandwidth() is silently ignored), so it stays hidden there.
-        self._hw_bw_label = QtWidgets.QLabel("IF BW")
-        row.addWidget(self._hw_bw_label)
-        self._bw_combo = QtWidgets.QComboBox()
-        self._bw_combo.currentIndexChanged.connect(self._on_hw_bandwidth_changed)
-        row.addWidget(self._bw_combo)
-
         row.addWidget(QtWidgets.QLabel("Zoom"))
         self._zoom_combo = QtWidgets.QComboBox()
         for factor in ZOOM_FACTORS:
@@ -779,12 +804,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_button.setToolTip("Show or hide the scanner")
         row.addWidget(self._scan_button)
 
-        # Gain and driver settings, rebuilt whenever the radio changes. Empty for the
-        # Airspy HF+, and then it takes no space at all rather than saying so.
-        self._device_slot = QtWidgets.QWidget()
-        self._device_slot_layout = QtWidgets.QHBoxLayout(self._device_slot)
-        self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
-        row.addWidget(self._device_slot)
         row.addStretch(1)
         return box
 
@@ -914,6 +933,17 @@ class MainWindow(QtWidgets.QMainWindow):
             row.addWidget(self._agc_check)
 
         for element in caps.gain_elements:
+            if element.step_db and element.max_db - element.min_db == element.step_db:
+                # Two values only -- the HackRF's AMP is 0 or 14 dB -- so it is a switch.
+                check = QtWidgets.QCheckBox(element.name)
+                check.setToolTip(f"{element.name}: +{element.max_db - element.min_db:g} dB")
+                check.setChecked(self.source.get_gain(element.name) > element.min_db)
+                check.toggled.connect(
+                    lambda on, e=element: self.source.set_gain(
+                        e.name, e.max_db if on else e.min_db)
+                )
+                row.addWidget(check)
+                continue
             row.addWidget(QtWidgets.QLabel(element.name))
             spin = QtWidgets.QDoubleSpinBox()
             spin.setRange(element.min_db, element.max_db)

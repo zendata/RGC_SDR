@@ -17,8 +17,11 @@ from dataclasses import dataclass
 import numpy as np
 
 # SoapySDR direction/error constants, redeclared so this module imports without the
-# bindings present (they are only needed to actually open a device).
-SOAPY_RX = 0
+# bindings present (they are only needed to actually open a device). TX is 0 and RX is
+# 1 (SOAPY_SDR_TX / SOAPY_SDR_RX). This was once 0: the Airspy HF+ driver ignores the
+# direction so nothing showed, but the HackRF opened a *transmit* stream, every read
+# failed with NOT_SUPPORTED, and the gains offered were its TX gains.
+SOAPY_RX = 1
 ERR_TIMEOUT = -1
 ERR_OVERFLOW = -4
 
@@ -395,6 +398,10 @@ class SoapyIQSource(IQSource):
 
         if agc is not None and self._caps.has_agc:
             self._dev.setGainMode(SOAPY_RX, 0, bool(agc))
+        names = {g.name for g in self._caps.gain_elements}
+        for name, db in (self.profile.default_gains if self.profile else ()):
+            if name in names:
+                self._dev.setGain(SOAPY_RX, 0, name, float(db))
 
         self._read_size = int(read_size)
         self._buffer_seconds = float(buffer_seconds)

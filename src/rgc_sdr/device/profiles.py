@@ -47,6 +47,8 @@ class SdrProfile:
     module: str
     install: str
     notes: str = ""
+    #: Gains to start from, where the driver's own defaults are measurably poor.
+    default_gains: tuple[tuple[str, float], ...] = ()
 
     def covers(self, hz: float) -> bool:
         return any(r.contains(hz) for r in self.freq_ranges)
@@ -116,6 +118,11 @@ PROFILES: tuple[SdrProfile, ...] = (
         module="HackRFSupport",
         install="brew install soapyhackrf",
         notes="Up to 20 MS/s in hardware; capped at 10 here for the NumPy DSP.",
+        # Measured 2026-09-25 on Melbourne FM: the driver's LNA 16 / VGA 16 left
+        # stations 10 dB over the floor, too weak for stereo. LNA 32 / VGA 30 gave
+        # 25-27 dB, stereo and RDS on The Fox and SmoothFM, and IQ peaks near 0.16 --
+        # plenty of headroom. AMP off: it added nothing but floor.
+        default_gains=(("LNA", 32.0), ("VGA", 30.0)),
     ),
     SdrProfile(
         key="rtlsdr",

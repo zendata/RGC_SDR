@@ -2124,10 +2124,37 @@ def test_switching_to_hackrf_brings_up_its_gain_stages(qapp):
     assert win.current_device_key() == "hackrf"
     assert not win._device_slot.isHidden()
     names = {w.text() for w in win._device_slot.findChildren(QtWidgets.QLabel)}
-    assert {"AMP", "LNA", "VGA"} <= names
+    assert {"LNA", "VGA"} <= names
     spins = win._device_slot.findChildren(QtWidgets.QDoubleSpinBox)
-    assert len(spins) == 3
+    assert len(spins) == 2
+    # AMP is 0 or 14 dB and nothing between, so it is a switch rather than a spinbox.
+    checks = {c.text(): c for c in win._device_slot.findChildren(QtWidgets.QCheckBox)}
+    assert "AMP" in checks
     assert "HackRF" in win.windowTitle()
+    win.close()
+
+
+def test_radio_settings_have_their_own_row(qapp):
+    """A HackRF's gains pushed the tuning row off the screen; they live below it now."""
+    win, _, _ = switching_window()
+    assert win._radio_row.isHidden()                 # the HF+ has nothing to set
+    win.switch_device("hackrf")
+    assert not win._radio_row.isHidden()
+    assert win._device_slot.parentWidget() is win._radio_row
+    assert win._device_slot.parentWidget() is not win._freq_spin.parentWidget()
+    win.switch_device("airspyhf")
+    assert win._radio_row.isHidden()
+    win.close()
+
+
+def test_amp_switch_sets_zero_or_full_gain(qapp):
+    win, _, opened = switching_window()
+    win.switch_device("hackrf")
+    amp = {c.text(): c for c in win._device_slot.findChildren(QtWidgets.QCheckBox)}["AMP"]
+    amp.setChecked(True)
+    assert win.source.gain == ("AMP", 14.0)
+    amp.setChecked(False)
+    assert win.source.gain == ("AMP", 0.0)
     win.close()
 
 

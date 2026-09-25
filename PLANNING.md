@@ -62,6 +62,22 @@ Three consequences that shape the design:
 3. **Signal levels are very low** (floor ≈ −111 dBFS), so sensible default colour limits and an
    auto-fit control matter more than they would on a strong-signal receiver.
 
+**Correction (2026-09-25): the app probed the transmit direction.** `SOAPY_RX` was declared
+as 0, which in SoapySDR is `SOAPY_SDR_TX` (RX is 1). The Airspy HF+ driver ignores the
+direction, so nothing showed until a HackRF was attached: it opened a *transmit* stream,
+every `readStream` returned −5 (NOT_SUPPORTED, ~500 000 errors/s, zero samples), and the
+gains offered were its TX pair (VGA 0–47, AMP). The gain-element and bandwidth rows above
+were read through the app's probe and **need re-measuring on the HF+** with the correct
+direction; the AGC row came from a test that already used `SOAPY_SDR_RX` and stands.
+
+**HackRF One, measured 2026-09-25** (`n_250817` firmware): RX gains LNA 0–40 dB (step 8),
+VGA 0–62 (step 2), AMP 0/14; no AGC; rates 1–10 MS/s offered; 4 MS/s streams with zero
+errors. The driver's default LNA 16 / VGA 16 left Melbourne FM only ~10 dB over the floor,
+too weak for stereo; LNA 32 / VGA 30 (now the profile default) gave 25–27 dB, stereo on
+all stations and RDS on The Fox (540 good / 5 bad blocks) and SmoothFM (546 / 0). It has a
+**DC spike at the tuned centre**: listening there, the pilot coherence was 0.09 (no
+stereo); 400 kHz off centre, 0.43 at the same gain.
+
 ## 4. Device access & multi-SDR support
 SoapySDR is the abstraction seam. Future radios (HackRF is already installed) must work without
 touching DSP or UI code, so:
