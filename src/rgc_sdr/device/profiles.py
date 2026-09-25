@@ -97,7 +97,7 @@ PROFILES: tuple[SdrProfile, ...] = (
         bias_tee=True,
         dc_offset=False,
         module="airspySupport",
-        install="brew install airspy, then SoapyAirspy (not in Homebrew core)",
+        install="./tools/install_drivers.sh airspy (SoapyAirspy is not in Homebrew)",
         notes="The R2 offers 2.5 and 10 MS/s, the Mini 3 and 6.",
     ),
     SdrProfile(
@@ -165,7 +165,7 @@ PROFILES: tuple[SdrProfile, ...] = (
         bias_tee=False,
         dc_offset=True,
         module="PlutoSDRSupport",
-        install="build libiio, libad9361 and SoapyPlutoSDR from source (none are in Homebrew core)",
+        install="./tools/install_drivers.sh pluto (builds libiio, libad9361, SoapyPlutoSDR)",
         notes="325-3800 MHz as shipped; 70-6000 MHz with the well-known firmware change.",
     ),
 )

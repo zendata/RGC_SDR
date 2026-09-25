@@ -613,7 +613,7 @@ driver is missing.
 their profiles with stand-in sources: 44 tests cover the table, availability and every
 switching path, but real gain names, settings and rate lists will only be confirmed when
 each radio is attached. Installed here: Soapy modules for the HF+ and HackRF. Missing:
-`brew install soapyrtlsdr`; SoapyAirspy and SoapyPlutoSDR are not in Homebrew core.
+`brew install soapyrtlsdr`; SoapyAirspy and SoapyPlutoSDR are not in Homebrew core and are built by `tools/install_drivers.sh` (installed 2026-09-25: libiio v0.25 -- SoapyPlutoSDR needs the v0 API -- libad9361, an install rpath so the module loads, and frameworks ignored because an old libiio 1.x `iio.framework` shadows the v0 library).
 
 ## 7l. FM stereo and RDS
 

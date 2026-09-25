@@ -15,8 +15,13 @@ Real hardware only — there is no simulated device mode, by design
 The native SoapySDR stack comes from Homebrew, not pip:
 
 ```bash
-brew install soapysdr soapyairspyhf
+brew install soapysdr soapyairspyhf soapyhackrf
+./tools/install_drivers.sh        # Airspy R2/Mini and ADALM-Pluto, built from source
 ```
+
+The Airspy R2 and Pluto drivers are not in Homebrew; `tools/install_drivers.sh` builds
+them (and libiio v0.25 and libad9361 for the Pluto) into `/opt/homebrew`. Check with
+`SoapySDRUtil --info`: the factories should list airspy, airspyhf, hackrf and plutosdr.
 
 Then the Python side:
 
