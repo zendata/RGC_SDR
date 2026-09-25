@@ -699,18 +699,18 @@ with **no RF path**:
   keyed (half duplex); stops on a mode change, a radio change, closing the window, and
   after a **3-minute timeout**.
 
-**Before any RF: interlocks the Soapy `IQSink` must enforce.** Transmitting needs an
-amateur licence (ACMA, Australia) and only on the bands and modes that licence allows; the
-HackRF will happily transmit on broadcast, aviation or emergency frequencies, so the app
-must not.
-1. A callsign in settings, and the licence level, which selects the allowed bands.
-2. TX refused outside those bands, checked against the *signal's* occupied bandwidth, not
-   just its centre.
-3. Default TX gain at minimum; the HackRF's harmonics are strong, so a band-pass filter
-   between it and the antenna is required on air -- the UI should say so.
-4. Half duplex: stop the receive stream, open the transmit one, and the reverse on
-   unkey; unkey on any error, and on the existing timeout.
-5. WBFM transmit into a dummy load only: it is a broadcast mode, not an amateur one.
+**Transmitting (2026-09-25).** The owner, VK3RQ, uses TX in-house for receiver testing
+and asked for **no band, mode or power limits**; none are applied. `device/sink.
+SoapyIQSink` transmits through the device the receiver has open: on the half-duplex
+HackRF it stops the receive stream, sets TX rate/frequency/gains and activates a TX
+stream, and on unkey closes it and restarts receive (SoapyHackRF re-applies each
+direction's settings on activation). The TX LO sits 200 kHz above the frequency and the
+signal is shifted down onto it, keeping LO leakage off the signal. What remains is
+operational: TX gains start at minimum (VGA 0, AMP off) and are saved per radio; tuning,
+rate, radio, IF bandwidth and memories are locked while keyed (the RX and TX paths share
+one synthesizer and amp); the 3-minute timeout stays. Tested against a recording
+stand-in device; **the first real key-up is the owner's** -- the harness refused to let
+the assistant key the radio.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

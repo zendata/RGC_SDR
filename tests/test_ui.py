@@ -2728,3 +2728,112 @@ def test_space_while_typing_a_name_is_just_a_space(qapp, monkeypatch):
     _space(win, qapp, focus=edit)
     assert not win.transmitting
     win.close()
+
+
+# -- the TX button driving a transmit sink ------------------------------------------
+
+class RecordingSink:
+    def __init__(self, freq, rate, gains):
+        self.center_freq, self.sample_rate, self.gains = freq, rate, dict(gains)
+        self.keyed = False
+        self.gain_changes = []
+
+    def start(self):
+        self.keyed = True
+
+    def write(self, iq):
+        return iq.size
+
+    def stop(self):
+        self.keyed = False
+
+    def set_gain(self, name, db):
+        self.gain_changes.append((name, db))
+
+
+def sink_window():
+    """A HackRF stand-in that can open a (recording) transmit sink."""
+    win, first, opened = switching_window(start="hackrf")
+    sinks = []
+
+    def open_tx_sink(freq, rate, gains):
+        sinks.append(RecordingSink(freq, rate, gains))
+        return sinks[-1]
+
+    first.open_tx_sink = open_tx_sink
+    win._transmitter_factory = lambda mode: Transmitter(mode, mic=FakeMic(), sink=open_tx_sink(
+        win.listen_freq, 2.4e6, dict(win._tx_gains)))
+    return win, sinks
+
+
+def test_tx_gain_controls_appear_for_a_radio_that_transmits(qapp):
+    win, _ = tx_window(start="hackrf")
+    labels = {w.text() for w in win._tx_slot.findChildren(QtWidgets.QLabel)}
+    checks = {c.text() for c in win._tx_slot.findChildren(QtWidgets.QCheckBox)}
+    assert "TX VGA" in labels and "TX AMP" in checks
+    assert not win._tx_slot.isHidden()
+    assert win._tx_gains == {"VGA": 0.0, "AMP": 0.0}          # a low first transmission
+    win.switch_device("airspyhf")
+    assert win._tx_slot.isHidden()
+    win.close()
+
+
+def test_tx_goes_out_on_the_listening_frequency_with_the_set_gains(qapp):
+    win, sinks = sink_window()
+    win._freq_spin.setValue(146.5)
+    win._offset_spin.setValue(25.0)
+    win._set_tx_gain("VGA", 20.0)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    win._tx_button.click()
+    sink = sinks[-1]
+    assert sink.keyed
+    assert sink.center_freq == pytest.approx(146.525e6)
+    assert sink.gains["VGA"] == 20.0
+    assert "TX 146.5250 MHz" in win._audio_status()
+    win._set_tx_gain("VGA", 30.0)                                  # live while keyed
+    assert sink.gain_changes == [("VGA", 30.0)]
+    win._tx_button.click()
+    assert not sink.keyed
+    win.close()
+
+
+def test_tuning_is_locked_while_transmitting(qapp):
+    win, sinks = sink_window()
+    win._freq_spin.setValue(146.5)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._tx_button.click()
+    assert not win._freq_spin.isEnabled() and not win._device_combo.isEnabled()
+    win._retune(147.0e6)                                           # e.g. a click on the spectrum
+    assert win.source.center_freq == pytest.approx(146.5e6)
+    assert "stop TX" in win._status.currentMessage()
+    win._tx_button.click()
+    assert win._freq_spin.isEnabled()
+    win._retune(147.0e6)
+    assert win.source.center_freq == pytest.approx(147.0e6)
+    win.close()
+
+
+def test_tx_gains_are_remembered_per_radio(qapp, tmp_path):
+    win, _, _ = switching_window(start="hackrf", settings=Settings(tmp_path / "s.json"))
+    win._set_tx_gain("VGA", 17.0)
+    win.switch_device("airspyhf")
+    win.switch_device("hackrf")
+    assert win._tx_gains["VGA"] == 17.0
+    win.close()
+
+
+def test_the_default_transmitter_opens_the_radios_sink(qapp, monkeypatch):
+    import src.rgc_sdr.ui.main_window as mw
+
+    monkeypatch.setattr(mw, "Transmitter",
+                        lambda mode, sink=None: Transmitter(mode, mic=FakeMic(), sink=sink))
+    win, sinks = sink_window()
+    win._transmitter_factory = win._make_transmitter
+    win._freq_spin.setValue(146.5)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._tx_button.click()
+    assert sinks and sinks[-1].keyed
+    assert sinks[-1].sample_rate == pytest.approx(2.4e6)
+    assert not win.transmitter.dry_run
+    win._tx_button.click()
+    win.close()

@@ -167,16 +167,22 @@ station. De-emphasis is 50 us, the standard in Australia and Europe.
 SSB is a proper single-sideband filter, measured at over 30 dB rejection of the opposite
 sideband.
 
-### Transmit (groundwork)
+### Transmit
 
-The red **TX** button -- click it, or press the **space bar** -- runs the transmit chain:
-the MacBook Air Microphone is modulated in the current mode (AM, NBFM, WBFM, USB or LSB;
-not CW) and its level shown in the status bar. **Nothing is radiated yet**: it is a dry
-run, marked "TX dry run, no RF". The receiver is muted while TX is on, and TX switches
-itself off after three minutes, on a mode or radio change, or when the window closes. It
-is only enabled for radios with a transmitter (the HackRF). The first press asks macOS
-for microphone permission. See PLANNING.md section 7m for what is still needed before it
-transmits.
+The red **TX** button -- click it, or press the **space bar** -- transmits on the
+frequency you are listening to (tuned frequency plus Offset), with audio from the MacBook
+Air Microphone, in AM, NBFM, WBFM, USB or LSB (not CW). The mic level and TX frequency
+show in the status bar. It is enabled only for radios with a transmitter (the HackRF).
+
+- **TX gains** are on the Radio row (TX VGA, TX AMP), saved per radio. They start at
+  minimum; raise them as needed. They can be changed while transmitting.
+- The HackRF is half duplex, so the receiver stops while TX is on and comes back on
+  release. Tuning, rate, radio and memories are locked while keyed.
+- TX switches itself off after **three minutes**, on a mode or radio change, and when
+  the window closes.
+- No band, mode or power limits are applied: this is for in-house receiver testing
+  (VK3RQ). The HackRF's harmonics are strong -- use a dummy load or a filter.
+- The first press asks macOS for microphone permission.
 
 ### Scanner
 

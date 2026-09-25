@@ -34,7 +34,7 @@ from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from ..dsp.modulate import TX_MODES
-from ..transmit import TX_TIMEOUT_S, Transmitter
+from ..transmit import TX_IQ_RATE, TX_TIMEOUT_S, Transmitter
 from .smeter import SMeter
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
@@ -142,8 +142,11 @@ class MainWindow(QtWidgets.QMainWindow):
         super().__init__(parent=parent)
         self.source = source
         #: Builds a Transmitter for a mode. Injectable so tests never open the microphone.
-        self._transmitter_factory = transmitter_factory or Transmitter
+        self._transmitter_factory = transmitter_factory or self._make_transmitter
         self.transmitter: Transmitter | None = None
+        #: Transmit gains for the current radio, by stage. Start at each stage's minimum:
+        #: a low first transmission, raised by the user as wanted.
+        self._tx_gains: dict[str, float] = {}
         #: Opens a radio by Soapy driver key. Injectable so tests can switch devices
         #: without hardware.
         self._source_factory = source_factory or _open_soapy
@@ -352,6 +355,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_rates()
         self._refresh_hw_bandwidths()
         self._rebuild_device_controls()
+        self._reset_tx_gains()
         if hasattr(self, "_tx_button"):
             self._sync_tx_enabled()
         if hasattr(self, "scanner_panel"):
@@ -468,6 +472,7 @@ class MainWindow(QtWidgets.QMainWindow):
             driver_settings=flags,
             min_db=self._levels[0] if explicit else None,
             max_db=self._levels[1] if explicit else None,
+            tx_gains=dict(self._tx_gains),
         )
 
     def apply_radio_hardware(self, radio: RadioSettings) -> None:
@@ -492,6 +497,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.source.set_bandwidth(radio.if_bandwidth_hz)
                 self._if_bw_chosen = True
         self._rebuild_device_controls()       # show what was just set
+        tx = caps.tx
+        if tx is not None:
+            stages = {g.name: g for g in tx.gain_elements}
+            for name, db in radio.tx_gains.items():
+                if name in stages:
+                    self._tx_gains[name] = min(max(db, stages[name].min_db), stages[name].max_db)
+            self._rebuild_tx_controls()
 
     def apply_radio_settings(self, radio: RadioSettings) -> None:
         """Everything saved for this radio: rate, zoom and colour levels as well."""
@@ -770,12 +782,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._device_slot_layout = QtWidgets.QHBoxLayout(self._device_slot)
         self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
         row.addWidget(self._device_slot)
+
+        # Transmit gains, for radios that transmit.
+        self._tx_slot = QtWidgets.QWidget()
+        self._tx_slot_layout = QtWidgets.QHBoxLayout(self._tx_slot)
+        self._tx_slot_layout.setContentsMargins(24, 0, 0, 0)
+        row.addWidget(self._tx_slot)
         row.addStretch(1)
         return self._radio_row
 
     def _sync_radio_row(self) -> None:
         self._radio_row.setVisible(
             not self._bw_combo.isHidden() or not self._device_slot.isHidden()
+            or not self._tx_slot.isHidden()
         )
 
     def _build_audio_row(self) -> QtWidgets.QWidget:
@@ -1215,6 +1234,14 @@ class MainWindow(QtWidgets.QMainWindow):
         of tuning by ear -- so below `fine_tune_limit` the history and the audio are left
         running and only the axis moves.
         """
+        if self.transmitter is not None:
+            # On a half-duplex radio the receiver and transmitter share one synthesizer:
+            # retuning now would move the transmission.
+            self._status.showMessage("stop TX before retuning", 3000)
+            self._freq_spin.blockSignals(True)
+            self._freq_spin.setValue(self.source.center_freq / 1e6)
+            self._freq_spin.blockSignals(False)
+            return
         if not from_scan and self.scanner is not None:
             # A manual tune means the user wants to stay here, so stop sweeping rather
             # than fighting them for the dial.
@@ -1493,15 +1520,80 @@ class MainWindow(QtWidgets.QMainWindow):
             self._tx_button.setToolTip(f"{self.source.caps.label or 'This radio'} cannot transmit")
         else:
             self._tx_button.setToolTip(
-                "Transmit (space bar or click to toggle).\n"
-                "Dry run for now: the microphone is modulated and metered, nothing is "
-                "radiated.\n"
+                "Transmit on the listening frequency (space bar or click to toggle).\n"
+                "Microphone audio, TX gains as set on the Radio row.\n"
                 f"Modes: {', '.join(m.upper() for m in TX_MODES)}. "
                 f"Stops itself after {TX_TIMEOUT_S / 60:.0f} minutes.")
 
     @property
     def transmitting(self) -> bool:
         return self.transmitter is not None
+
+    @property
+    def listen_freq(self) -> float:
+        """Where the receiver is listening, which is where TX goes."""
+        return self.source.center_freq + self._offset_spin.value() * 1e3
+
+    def _make_transmitter(self, mode: str) -> Transmitter:
+        """Microphone -> modulator -> this radio's transmitter, on the listening frequency.
+
+        A source with no transmit path (a test stand-in) gives a dry run instead.
+        """
+        opener = getattr(self.source, "open_tx_sink", None)
+        sink = opener(self.listen_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
+        return Transmitter(mode, sink=sink)
+
+    def _reset_tx_gains(self) -> None:
+        tx = self.source.caps.tx
+        self._tx_gains = {g.name: g.min_db for g in tx.gain_elements} if tx else {}
+        self._rebuild_tx_controls()
+
+    def _set_tx_gain(self, name: str, db: float) -> None:
+        self._tx_gains[name] = float(db)
+        sink = getattr(self.transmitter, "sink", None)
+        if sink is not None:
+            sink.set_gain(name, float(db))      # live, while transmitting
+        self._schedule_save()
+
+    def _rebuild_tx_controls(self) -> None:
+        layout = self._tx_slot_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        tx = self.source.caps.tx
+        if tx is not None and tx.gain_elements:
+            title = QtWidgets.QLabel("TX")
+            title.setStyleSheet("color: #ff4d4d; font-weight: bold;")
+            layout.addWidget(title)
+            for element in tx.gain_elements:
+                value = self._tx_gains.get(element.name, element.min_db)
+                if element.step_db and element.max_db - element.min_db == element.step_db:
+                    check = QtWidgets.QCheckBox(f"TX {element.name}")
+                    check.setToolTip(f"Transmit {element.name}: +{element.max_db:g} dB")
+                    check.setChecked(value > element.min_db)
+                    check.toggled.connect(lambda on, e=element: self._set_tx_gain(
+                        e.name, e.max_db if on else e.min_db))
+                    layout.addWidget(check)
+                    continue
+                layout.addWidget(QtWidgets.QLabel(f"TX {element.name}"))
+                spin = QtWidgets.QDoubleSpinBox()
+                spin.setRange(element.min_db, element.max_db)
+                spin.setSingleStep(element.step_db or 1.0)
+                spin.setSuffix(" dB")
+                spin.setValue(value)
+                spin.setToolTip(f"Transmit {element.name} gain")
+                spin.valueChanged.connect(lambda db, n=element.name: self._set_tx_gain(n, db))
+                layout.addWidget(spin)
+        self._tx_slot.setVisible(tx is not None and bool(tx.gain_elements))
+        self._sync_radio_row()
+
+    def _set_tx_lock(self, locked: bool) -> None:
+        """While keyed, freeze what would move or disturb the transmission."""
+        for widget in (self._freq_spin, self._rate_combo, self._device_combo,
+                       self._offset_spin, self._memory_combo, self._device_slot,
+                       self._bw_combo, self._scan_button):
+            widget.setEnabled(not locked)
 
     def _on_tx_toggled(self, on: bool) -> None:
         if on:
@@ -1526,6 +1618,9 @@ class MainWindow(QtWidgets.QMainWindow):
             refuse(str(exc))
             return
         self.transmitter = tx
+        self._set_tx_lock(True)
+        if self.scanner is not None:
+            self.stop_scan()
         # Half duplex: the receiver goes quiet while transmitting. Muted rather than
         # stopped, so it comes straight back when TX ends.
         if self.audio is not None:
@@ -1535,6 +1630,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tx, self.transmitter = self.transmitter, None
         if tx is not None:
             tx.stop()
+            self._set_tx_lock(False)
         if self.audio is not None:
             self.audio.set_muted(self.muted)
 
@@ -2079,7 +2175,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"TX stopped: {TX_TIMEOUT_S / 60:.0f} minute transmit timeout", 8000)
         iq = self.source.read_latest(self._frame_request())
         if iq.size < self.decimator.input_for_output(self.analyzer.fft_size):
-            self._status.showMessage("waiting for samples...")
+            # A half-duplex radio receives nothing while it transmits.
+            self._status.showMessage(self._tx_status().lstrip(" |") if self.transmitter
+                                     else "waiting for samples...")
             return
 
         decimated = self.decimator.process(iq)
@@ -2136,7 +2234,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return ""
         level = getattr(tx.mic, "level_dbfs", -200.0)
         elapsed = int(tx.elapsed_s)
-        what = "TX dry run, no RF" if tx.dry_run else "TX"
+        what = ("TX dry run, no RF" if tx.dry_run
+                else f"TX {tx.sink.center_freq / 1e6:.4f} MHz")
         return (f"  |  {what}  {tx.mode.upper()}  mic {level:.0f} dBFS"
                 f"  {elapsed // 60}:{elapsed % 60:02d}")
 

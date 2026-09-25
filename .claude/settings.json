@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest -q)",
+      "Bash(.venv/bin/python -)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'Connect the TX button to the HackRF transmitter *)",
+      "Bash(git push *)"
+    ]
+  }
+}
