@@ -48,6 +48,14 @@ DEEMPHASIS_S = 50e-6
 MPX_TARGET_HZ = 150e3
 
 
+#: AM audio level per unit of modulation depth: a 100% modulated peak reaches this.
+AM_AUDIO_GAIN = 0.5
+#: Ceiling on the carrier-referenced gain, so exact silence cannot divide by nothing.
+AM_MAX_GAIN = 1e7
+#: How long the audio AGC holds its gain through a pause before recovering.
+AGC_HANG_S = 0.6
+
+
 @dataclass(frozen=True)
 class ModeSpec:
     """Per-mode plan: how wide the channel is and what rates the chain needs."""
@@ -66,7 +74,7 @@ class ModeSpec:
 
 MODE_SPECS: dict[str, ModeSpec] = {
     # Double-sideband AM broadcast: 9 kHz channel spacing in ITU regions 1 and 3.
-    "am": ModeSpec(bandwidth_hz=9e3, if_target_hz=48e3),
+    "am": ModeSpec(bandwidth_hz=9e3, if_target_hz=48e3, squelch_capable=True),
     "nbfm": ModeSpec(
         bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3,
         audio_cutoff_hz=3.4e3, squelch_capable=True,
@@ -153,6 +161,11 @@ class AmDetector:
     def reset(self) -> None:
         self._dc = None
 
+    @property
+    def carrier(self) -> float:
+        """Smoothed carrier amplitude: the envelope's mean, which the DC blocker removes."""
+        return self._dc or 0.0
+
     def process(self, x: np.ndarray) -> np.ndarray:
         if x.size == 0:
             return np.zeros(0, dtype=np.float64)
@@ -223,24 +236,32 @@ class AudioAgc:
     station is inaudible however high the volume: measured on air, a -103 dBFS AM carrier
     gave an audio RMS of 0.00001. Every real receiver normalises here.
 
-    Asymmetric time constants, as an AGC should be: it backs off quickly when a signal
-    gets louder so it cannot blast, and recovers slowly so a pause does not pump the noise
-    floor up. `max_gain` stops it amplifying pure noise to full scale on a dead channel.
+    Asymmetric, as an AGC should be. It backs off at once when a signal gets louder, so
+    it cannot blast; the change is ramped across the block so it does not click. It then
+    *holds* its gain through a pause (`hang_samples`) before recovering slowly, so the
+    gaps between words do not pump the noise up and make the next word start loud -- the
+    fault heard on SSB speech with an attack of 0.35 per block and no hang. `max_gain`
+    stops it amplifying pure noise to full scale on a dead channel.
+
+    AM does not use this: see DemodChain, which references AM to its carrier instead.
     """
 
     def __init__(
         self,
         target_rms: float = 0.15,
-        attack: float = 0.35,
+        attack: float = 1.0,
         decay: float = 0.02,
         max_gain: float = 20000.0,
         floor_rms: float = 1e-7,
+        hang_samples: int = 0,
     ) -> None:
         self.target_rms = float(target_rms)
         self.attack = float(attack)
         self.decay = float(decay)
         self.max_gain = float(max_gain)
         self.floor_rms = float(floor_rms)
+        self.hang_samples = int(hang_samples)
+        self._hang = 0
         self._gain = 1.0
         self._primed = False
 
@@ -251,6 +272,7 @@ class AudioAgc:
     def reset(self) -> None:
         self._gain = 1.0
         self._primed = False
+        self._hang = 0
 
     def process(self, audio: np.ndarray) -> np.ndarray:
         if audio.size == 0:
@@ -265,11 +287,25 @@ class AudioAgc:
             # audible on a weak signal, which reads as broken rather than as an AGC.
             self._gain = wanted
             self._primed = True
+            self._hang = self.hang_samples
+            return audio * self._gain
+        previous = self._gain
+        if wanted <= self._gain * 1.5:
+            # A signal at (or near) full level: restart the hang, and attack if louder.
+            self._hang = self.hang_samples
+            if wanted < self._gain:
+                self._gain += self.attack * (wanted - self._gain)
+        elif self._hang > 0:
+            # A pause between words: hold, rather than winding the gain up.
+            self._hang -= len(audio)
         else:
-            # Louder than wanted -> attack (fast); quieter -> decay (slow).
-            rate = self.attack if wanted < self._gain else self.decay
-            self._gain += rate * (wanted - self._gain)
-        return audio * self._gain
+            self._gain += self.decay * (wanted - self._gain)
+        if self._gain == previous:
+            return audio * self._gain
+        ramp = np.linspace(previous, self._gain, len(audio), endpoint=True)
+        if audio.ndim == 2:
+            ramp = ramp[:, None]
+        return audio * ramp
 
 
 class DemodChain:
@@ -362,7 +398,14 @@ class DemodChain:
         if mode == "wbfm":
             self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
 
-        self._agc = AudioAgc() if agc else None
+        # AM is levelled by its carrier, which is steady whatever the programme does:
+        # the audio becomes the modulation depth, so a pause cannot wind the gain up and
+        # the next word cannot start loud. Every other mode has no carrier to go by and
+        # uses the audio AGC, holding through pauses of up to AGC_HANG_S.
+        self._carrier_agc = bool(agc) and mode == "am"
+        self._am_gain = 1.0
+        self._agc = (AudioAgc(hang_samples=int(AGC_HANG_S * self.audio_rate))
+                     if agc and not self._carrier_agc else None)
 
         cutoff = self.spec.audio_cutoff_hz
         self._audio_fir = None
@@ -500,6 +543,10 @@ class DemodChain:
 
         if self._detector is not None:
             audio = self._detector.process(channel)
+            if self._carrier_agc:
+                self._am_gain = min(AM_AUDIO_GAIN / max(self._detector.carrier, 1e-30),
+                                    AM_MAX_GAIN)
+                audio = audio * self._am_gain
         else:
             audio = channel.real          # SSB: the sideband filter did the work
 
@@ -561,4 +608,6 @@ class DemodChain:
 
     @property
     def agc_gain(self) -> float:
+        if self._carrier_agc:
+            return self._am_gain
         return self._agc.gain if self._agc is not None else 1.0

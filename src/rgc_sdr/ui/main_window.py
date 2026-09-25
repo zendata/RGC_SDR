@@ -396,6 +396,21 @@ class MainWindow(QtWidgets.QMainWindow):
             | QtCore.Qt.DockWidgetArea.RightDockWidgetArea
         )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._scanner_dock)
+        # Hidden until asked for, with the Scan button; the button and the dock's own
+        # close box stay in step either way round.
+        self._scanner_dock.hide()
+        self._scan_button.setChecked(False)
+        self._scan_button.toggled.connect(self._scanner_dock.setVisible)
+        self._scanner_dock.visibilityChanged.connect(self._on_scanner_visibility)
+
+    def _on_scanner_visibility(self, visible: bool) -> None:
+        # visibilityChanged also fires when the window is minimised or the dock is
+        # tabbed away; only a real close should untick the button.
+        shown = not self._scanner_dock.isHidden()
+        if self._scan_button.isChecked() != shown:
+            self._scan_button.blockSignals(True)
+            self._scan_button.setChecked(shown)
+            self._scan_button.blockSignals(False)
 
     def _scan_config(self) -> ScanConfig:
         panel = self.scanner_panel
@@ -638,7 +653,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._offset_spin.setSuffix(" kHz")
         self._offset_spin.setSingleStep(1.0)
         self._offset_spin.setToolTip(
-            "Listen this far from the tuned centre, without moving the radio"
+            "Listen this far from the tuned centre, without moving the radio.\n"
+            "Keeps a wide span on screen while you hear one signal inside it,\n"
+            "and keeps the listened-to signal clear of the centre (DC) spike."
         )
         self._offset_spin.setValue(self._initial_offset / 1e3)
         self._offset_spin.valueChanged.connect(self._on_offset_changed)
@@ -757,6 +774,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_changed)
         row.addWidget(self._zoom_combo)
 
+        self._scan_button = QtWidgets.QPushButton("Scan")
+        self._scan_button.setCheckable(True)
+        self._scan_button.setToolTip("Show or hide the scanner")
+        row.addWidget(self._scan_button)
+
         # Gain and driver settings, rebuilt whenever the radio changes. Empty for the
         # Airspy HF+, and then it takes no space at all rather than saying so.
         self._device_slot = QtWidgets.QWidget()
@@ -764,22 +786,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
         row.addWidget(self._device_slot)
         row.addStretch(1)
-
-        # The info line: decoded Morse in CW, stereo status and RDS in broadcast FM.
-        # Right-aligned, so decoded CW sits against the edge and grows leftwards.
-        self._info_label = QtWidgets.QLabel("")
-        mono = QtGui.QFont("Menlo")
-        mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
-        mono.setPointSizeF(max(10.0, self._info_label.font().pointSizeF()))
-        self._info_label.setFont(mono)
-        self._info_label.setMinimumWidth(430)
-        self._info_label.setMaximumWidth(620)
-        self._info_label.setAlignment(
-            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
-        )
-        self._info_label.setStyleSheet("color: #8ee6a0;")
-        self._info_label.setToolTip("Decoded CW, or stereo status and RDS for broadcast FM")
-        row.addWidget(self._info_label)
         return box
 
     def _build_memory_row(self) -> QtWidgets.QWidget:
@@ -862,6 +868,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_check.toggled.connect(self._on_peak_hold_toggled)
         self.spectrum.set_peak_hold(self._initial_peak_hold)
         row.addWidget(self._peak_check)
+
+        # The info line: decoded Morse in CW, stereo status and RDS in broadcast FM.
+        # Beside Peak hold, where the row has room to spare. Right-aligned, so decoded CW
+        # sits against the edge and grows leftwards like a ticker.
+        row.addSpacing(12)
+        self._info_label = QtWidgets.QLabel("")
+        mono = QtGui.QFont("Menlo")
+        mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
+        mono.setPointSizeF(max(10.0, self._info_label.font().pointSizeF()))
+        self._info_label.setFont(mono)
+        self._info_label.setMinimumWidth(430)
+        self._info_label.setMaximumWidth(620)
+        self._info_label.setAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        self._info_label.setStyleSheet("color: #8ee6a0;")
+        self._info_label.setToolTip("Decoded CW, or stereo status and RDS for broadcast FM")
+        row.addWidget(self._info_label)
 
         self._zerobeat_button = QtWidgets.QPushButton("Zero beat")
         self._zerobeat_button.setToolTip(

@@ -702,10 +702,11 @@ def test_offset_range_tracks_the_visible_span(qapp):
 
 def test_squelch_only_enabled_for_modes_that_support_it(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
-    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
     assert not win._squelch_check.isEnabled()
-    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
-    assert win._squelch_check.isEnabled()
+    for mode in ("am", "nbfm", "wbfm"):
+        win._mode_combo.setCurrentIndex(win._mode_combo.findData(mode))
+        assert win._squelch_check.isEnabled(), mode
     win.close()
 
 
@@ -2413,4 +2414,61 @@ def test_status_keeps_the_reason_audio_failed_to_start(qapp, monkeypatch):
     assert "could not start audio: output device busy" in win._audio_status()
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
     assert "audio off" in win._audio_status()
+    win.close()
+
+
+
+# -- layout, scanner button, and what a memory keeps -------------------------
+
+def test_info_line_sits_beside_peak_hold(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    row = win._peak_check.parentWidget().layout()
+    widgets = [row.itemAt(i).widget() for i in range(row.count())]
+    widgets = [w for w in widgets if w is not None]          # drop spacers
+    assert widgets.index(win._info_label) == widgets.index(win._peak_check) + 1
+    win.close()
+
+
+def test_scan_button_sits_right_of_zoom_and_shows_the_scanner(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    row = win._zoom_combo.parentWidget().layout()
+    widgets = [row.itemAt(i).widget() for i in range(row.count())]
+    assert widgets.index(win._scan_button) == widgets.index(win._zoom_combo) + 1
+    assert win._scanner_dock.isHidden() and not win._scan_button.isChecked()
+    win._scan_button.click()
+    assert not win._scanner_dock.isHidden()
+    win._scanner_dock.close()                     # the dock's own close box
+    assert not win._scan_button.isChecked()
+    win.close()
+
+
+def test_memory_keeps_bandwidth_snap_zoom_rate_step_and_squelch(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    src = StubSource(_caps(sample_rates=(768e3, 192e3)))
+    win = window_for(src, fft_size=1024, settings=settings)
+    win._rate_combo.setCurrentIndex(win._rate_combo.findData(192e3))
+    win._zoom_combo.setCurrentText("4x")
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._bw_audio_combo.setCurrentIndex(win._bw_audio_combo.count() - 1)
+    wanted_bw = win.bandwidth_hz()
+    win._step_combo.setCurrentIndex(win._step_combo.findData(9e3))
+    win._snap_check.setChecked(False)
+    win._squelch_check.setChecked(True)
+    win._squelch_spin.setValue(-77.0)
+    win.save_memory("everything")
+
+    win._rate_combo.setCurrentIndex(win._rate_combo.findData(768e3))
+    win._zoom_combo.setCurrentText("1x")
+    win._bw_audio_combo.setCurrentIndex(0)
+    win._step_combo.setCurrentIndex(win._step_combo.findData(1e3))
+    win._snap_check.setChecked(True)
+    win._squelch_check.setChecked(False)
+
+    assert win.recall_memory("everything")
+    assert src.sample_rate == 192e3
+    assert win.decimator.factor == 4
+    assert win.bandwidth_hz() == wanted_bw
+    assert win.step_hz == 9e3
+    assert not win._snap_check.isChecked()
+    assert win._squelch_value() == pytest.approx(-77.0)
     win.close()

@@ -235,10 +235,17 @@ into the 24–96 kHz range and hands that rate straight to the device.
 **Audio AGC is not optional.** AM envelope output is proportional to absolute signal
 strength: measured on air, a −103.9 dBFS carrier produced an audio RMS of **0.00001** —
 inaudible at any volume setting. With AGC the same signal gives **0.126** RMS. It uses
-asymmetric time constants (fast attack so it cannot blast, slow decay so it does not pump
-the noise floor) and jumps straight to the right gain on its first block, because easing
+asymmetric time constants (instant attack, ramped across the block so it cannot click;
+slow decay after a 0.6 s hang, so gaps between words do not pump the noise up) and jumps straight to the right gain on its first block, because easing
 in from unity at the slow rate takes ten seconds of near-silence and reads as broken.
 `max_gain` stops a dead channel being amplified to full scale.
+
+**AM is levelled by its carrier instead** (2026-09-25). With the audio AGC, speech after a
+pause came in loud: the gain wound up during the silence, then took several blocks to
+back off (measured: the first 50 ms of a word at 5.5x the settled level, clipping). An AM
+carrier is steady whatever the programme does, so dividing the detected envelope by the
+carrier estimate gives the modulation depth directly -- a constant level, independent of
+signal strength, with nothing to pump (measured 0.98x). Squelch is now allowed on AM too.
 
 **Mode choices.** WBFM is treated as 150 kHz rather than the nominal 180: the decimation
 cascade's own anti-alias filters retain about ±0.41 of the output rate, so 180 kHz would
@@ -246,7 +253,7 @@ sit in the transition band. It is mono — no stereo pilot decoding. SSB uses a 
 asymmetric band-pass: with the carrier at 0 Hz the upper sideband occupies 0..+B and the
 lower −B..0, so a real low-pass cannot separate them (it is symmetric); modulating a
 half-width low-pass up to ±B/2 passes one side only, measured at >30 dB rejection of the
-other. Squelch applies only to the FM modes, which is what `ModeSpec.squelch_capable`
+other. Squelch applies to AM and the FM modes, which is what `ModeSpec.squelch_capable`
 drives in the UI.
 
 **Measured on air:** AM on a −103.9 dBFS carrier 225 kHz off centre, 8 seconds of

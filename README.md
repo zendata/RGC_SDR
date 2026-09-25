@@ -135,11 +135,14 @@ zero-beating needs. Audio keeps playing while it converges.
   watch a wide span and hear one signal inside it. The shaded band follows it.
 - **Vol** is a plain output gain. An automatic gain control runs ahead of it, so a weak
   station is still audible: without it a −104 dBFS carrier gives an audio level of
-  0.00001, which is silence at any volume.
+  0.00001, which is silence at any volume. On **AM** the level is set from the carrier,
+  which is steady whether anyone is talking or not, so speech after a pause does not
+  come in loud. Other modes hold their gain through pauses of up to 0.6 s.
 - **Mute** silences the output without losing your volume setting, and keeps the
   demodulator running so unmuting is instant. A recording in progress still captures
   audio — muting is about the room, not the file.
-- **Squelch** mutes below a threshold, and is only enabled for the FM modes.
+- **Squelch** mutes below a threshold, in AM, NBFM and WBFM. (SSB and CW have no
+  carrier to measure, so a threshold would chop the speech.)
 - **BW** sets the channel filter width — narrow it to pull one AM station out of a
   crowded band, or widen it for better fidelity.
 
@@ -155,7 +158,7 @@ use, and any underruns -- or, when there is no sound, why: "audio off (choose a 
 or the reason audio could not start.
 
 **WBFM** is decoded in **stereo** when the station sends a pilot, with **RDS**: the info
-line at the top right shows STEREO or MONO, the station name, programme type and radio
+line beside Peak hold shows STEREO or MONO, the station name, programme type and radio
 text (hover for the PI code). The station name usually appears within a second or two;
 the radio text is shown only once the whole message has arrived, which takes about 10
 seconds. Untick **Stereo** for mono, which is quieter on a weak
@@ -166,7 +169,7 @@ sideband.
 
 ### Scanner
 
-The **Scanner** panel sweeps a frequency range, logs every active channel it finds, and
+The **Scan** button, right of Zoom, opens the **Scanner** panel. It sweeps a frequency range, logs every active channel it finds, and
 stops on transmissions so you can hear them.
 
 Set **From** / **To**, pick a **Step** matching the band's channel spacing, and press

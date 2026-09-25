@@ -160,6 +160,15 @@ def test_fm_squelch_passes_a_strong_channel():
     assert chain.muted_blocks == 0
 
 
+def test_am_squelch_mutes_a_weak_channel_and_passes_a_strong_one():
+    weak = DemodChain(FS, "am", volume=1.0, squelch_dbfs=-20.0)
+    assert np.max(np.abs(run_blocks(weak, am_signal(FS // 4, 1000.0) * 1e-4))) == 0.0
+    assert weak.muted_blocks > 0
+    strong = DemodChain(FS, "am", volume=1.0, squelch_dbfs=-20.0)
+    assert np.max(np.abs(run_blocks(strong, am_signal(FS // 4, 1000.0)))) > 0.01
+    assert strong.muted_blocks == 0
+
+
 def test_deemphasis_attenuates_treble_more_than_bass():
     rate = 192e3
     deemph = Deemphasis(rate, 75e-6)
@@ -542,3 +551,60 @@ def test_cw_audio_has_no_significant_harmonics():
     assert freqs[int(np.argmax(spectrum))] == pytest.approx(500.0, abs=25.0)
     assert level_at(1000.0) < -40.0, "second harmonic present"
     assert level_at(1500.0) < -40.0, "third harmonic present"
+
+
+# -- no pumping after a pause --------------------------------------------------
+# Heard on air: the first syllable after a pause came out louder than the rest, because
+# the gain wound up during the quiet and took a while to come back down.
+
+def _burst_levels(chain, signal, fs_audio, start_s, block=4096):
+    audio = run_blocks(chain, signal, block=block)
+    audio = audio if audio.ndim == 1 else audio[:, 0]
+    n = int(0.05 * fs_audio)                    # 50 ms windows
+    start = int(start_s * fs_audio)
+    onset = float(np.std(audio[start: start + n]))
+    settled = float(np.std(audio[start + 6 * n: start + 7 * n]))
+    return onset, settled
+
+
+def test_am_speech_after_a_pause_starts_no_louder_than_it_continues():
+    """A carrier with 2 s of programme, 1.5 s of silence, then programme again."""
+    fs = FS
+    t = np.arange(int(fs * 5.0)) / fs
+    depth = np.where((t > 2.0) & (t < 3.5), 0.0, 0.5)
+    iq = ((1.0 + depth * np.cos(2 * np.pi * 800 * t)) * 0.01).astype(np.complex64)
+    chain = DemodChain(fs, "am", volume=1.0)
+    onset, settled = _burst_levels(chain, iq, chain.audio_rate, 3.5)
+    assert onset < settled * 1.15, f"onset {onset:.3f} vs settled {settled:.3f}"
+
+
+def test_am_level_follows_modulation_depth_not_signal_strength():
+    levels = []
+    for amp in (1.0, 1e-3):
+        chain = DemodChain(FS, "am", volume=1.0)
+        audio = run_blocks(chain, am_signal(FS, 1000.0, depth=0.5) * amp)
+        levels.append(float(np.std(audio[-10000:])))
+    assert levels[0] == pytest.approx(levels[1], rel=0.05)
+    assert levels[0] == pytest.approx(0.5 * 0.5 / np.sqrt(2), rel=0.1)
+
+
+def test_audio_agc_holds_its_gain_through_a_short_pause():
+    agc = AudioAgc(target_rms=0.1, hang_samples=24000)
+    loud = np.full(1024, 0.5)
+    for _ in range(20):
+        agc.process(loud)
+    held = agc.gain
+    for _ in range(20):                       # about 0.4 s of near-silence at 48 kHz
+        agc.process(np.full(1024, 1e-4))
+    assert agc.gain == pytest.approx(held)
+    for _ in range(200):                      # a long silence does recover
+        agc.process(np.full(1024, 1e-4))
+    assert agc.gain > 10 * held
+
+
+def test_audio_agc_attack_is_immediate_and_click_free():
+    agc = AudioAgc(target_rms=0.1)
+    agc.process(np.full(1024, 0.001))
+    out = agc.process(np.full(1024, 1.0))
+    assert agc.gain == pytest.approx(0.1)                   # there by the end of the block
+    assert np.max(np.abs(np.diff(out))) < 0.2               # ramped, not a step
