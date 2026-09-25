@@ -445,3 +445,88 @@ class AudioSink:
             "muted": self._muted,
             "cw_wpm": self.cw_wpm,
         }
+
+
+# -- transmit audio: the microphone -----------------------------------------------
+# Groundwork for transmitting (PLANNING.md, P6): captured here, modulated by
+# dsp.modulate, and one day written to a radio. Nothing in this section transmits.
+
+#: The input to use for transmit audio, by the name CoreAudio gives it.
+PREFERRED_MIC = "MacBook Air Microphone"
+
+
+def choose_input_device(devices, preferred: str = PREFERRED_MIC) -> int | None:
+    """Index of the microphone to use, or None for the system default input.
+
+    By name rather than by index or "the default": indexes shift as devices come and
+    go, and the default input can be a headset or a phone that happens to be paired
+    (this machine lists an iPhone-style "light Microphone" ahead of the built-in one).
+    """
+    inputs = [(i, d) for i, d in enumerate(devices) if d.get("max_input_channels", 0) > 0]
+    for i, d in inputs:
+        if d.get("name") == preferred:
+            return i
+    for i, d in inputs:
+        if preferred.lower() in str(d.get("name", "")).lower():
+            return i
+    return None
+
+
+class Microphone:
+    """Mono audio from the microphone, into a FIFO the modulator pulls from.
+
+    The PortAudio callback only copies and measures; anything heavier belongs on the
+    consumer's thread, as on the receive side.
+    """
+
+    def __init__(
+        self,
+        samplerate: float = 48_000.0,
+        blocksize: int = 1024,
+        device_name: str = PREFERRED_MIC,
+        buffer_seconds: float = 1.0,
+    ) -> None:
+        self.samplerate = float(samplerate)
+        self.blocksize = int(blocksize)
+        self.device_name = device_name
+        self._fifo = AudioFifo(int(self.samplerate * buffer_seconds))
+        self._stream = None
+        #: Peak level of the most recent block, dBFS: for a mic-gain meter.
+        self.level_dbfs = -200.0
+        self.device_index: int | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._stream is not None
+
+    def _callback(self, indata, frames, time_info, status) -> None:  # noqa: ARG002
+        block = indata[:, 0].astype(np.float32, copy=True)
+        peak = float(np.max(np.abs(block))) if block.size else 0.0
+        self.level_dbfs = 20.0 * np.log10(peak + 1e-12)
+        self._fifo.push(block)
+
+    def start(self) -> None:
+        if self._stream is not None:
+            return
+        sd = _import_sounddevice()
+        self.device_index = choose_input_device(sd.query_devices(), self.device_name)
+        stream = sd.InputStream(
+            device=self.device_index, channels=1, samplerate=self.samplerate,
+            blocksize=self.blocksize, dtype="float32", callback=self._callback,
+        )
+        stream.start()
+        self._stream = stream
+
+    def available(self) -> int:
+        return len(self._fifo)
+
+    def read(self, n: int) -> np.ndarray:
+        """Exactly `n` samples; silence-padded if the microphone has not caught up."""
+        return self._fifo.pull(n)
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
+        self._fifo.clear()

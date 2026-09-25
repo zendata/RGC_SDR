@@ -33,6 +33,8 @@ from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
 from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
+from ..dsp.modulate import TX_MODES
+from ..transmit import TX_TIMEOUT_S, Transmitter
 from .smeter import SMeter
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
@@ -71,6 +73,40 @@ def _open_soapy(driver: str, centre_hz: float) -> IQSource:
     return SoapyIQSource(driver=driver, center_freq=centre_hz)
 
 
+class _SpaceTogglesTransmit(QtCore.QObject):
+    """The space bar toggles TX anywhere in the window, as the TX button does.
+
+    An application-wide filter rather than a shortcut, because the focused widget sees a
+    key first: space would otherwise click whichever button or tick box had focus. Left
+    alone only while text is being typed -- a memory name, say -- or in another window.
+    """
+
+    def __init__(self, window: "MainWindow") -> None:
+        super().__init__(window)
+        self._window = window
+
+    def _typing(self) -> bool:
+        focus = QtWidgets.QApplication.focusWidget()
+        if isinstance(focus, (QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit)):
+            return True
+        if isinstance(focus, QtWidgets.QLineEdit):
+            # A spin box's editor is a line edit too, but nobody types spaces into one.
+            return not isinstance(focus.parentWidget(), QtWidgets.QAbstractSpinBox)
+        return False
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802  (Qt naming)
+        if event.type() not in (QtCore.QEvent.Type.KeyPress, QtCore.QEvent.Type.KeyRelease):
+            return False
+        if event.key() != QtCore.Qt.Key.Key_Space or event.modifiers() not in (
+                QtCore.Qt.KeyboardModifier.NoModifier,):
+            return False
+        if QtWidgets.QApplication.activeWindow() is not self._window or self._typing():
+            return False
+        if event.type() == QtCore.QEvent.Type.KeyPress and not event.isAutoRepeat():
+            self._window._tx_button.toggle()
+        return True          # swallow presses, repeats and releases alike
+
+
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
@@ -97,10 +133,14 @@ class MainWindow(QtWidgets.QMainWindow):
         settings: Settings | None = None,
         source_factory=None,
         availability_fn=None,
+        transmitter_factory=None,
         parent=None,
     ) -> None:
         super().__init__(parent=parent)
         self.source = source
+        #: Builds a Transmitter for a mode. Injectable so tests never open the microphone.
+        self._transmitter_factory = transmitter_factory or Transmitter
+        self.transmitter: Transmitter | None = None
         #: Opens a radio by Soapy driver key. Injectable so tests can switch devices
         #: without hardware.
         self._source_factory = source_factory or _open_soapy
@@ -196,6 +236,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._zerobeat_timer = QtCore.QTimer(self)
         self._zerobeat_timer.timeout.connect(self._zerobeat_step)
+
+        self._space_filter = _SpaceTogglesTransmit(self)
+        QtWidgets.QApplication.instance().installEventFilter(self._space_filter)
+        self._sync_tx_enabled()
 
         self._timer = QtCore.QTimer(self)
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
@@ -305,6 +349,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_rates()
         self._refresh_hw_bandwidths()
         self._rebuild_device_controls()
+        if hasattr(self, "_tx_button"):
+            self._sync_tx_enabled()
         if hasattr(self, "scanner_panel"):
             self.scanner_panel.set_coverage(caps.freq_ranges)
 
@@ -329,6 +375,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
 
         previous_mode = self.mode
+        self._tx_button.setChecked(False)
         if self.scanner is not None:
             self.stop_scan()
         self._stop_zerobeat()
@@ -785,6 +832,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mute_button.setToolTip("Silence the output without losing the volume setting")
         self._mute_button.toggled.connect(self._on_mute_toggled)
         row.addWidget(self._mute_button)
+
+        self._tx_button = QtWidgets.QPushButton("TX")
+        self._tx_button.setCheckable(True)
+        self._tx_button.setFixedWidth(60)
+        self._tx_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._tx_button.setStyleSheet(
+            "QPushButton { color: #ff4d4d; border: 2px solid #d62828; border-radius: 6px;"
+            " font-weight: bold; padding: 3px; }"
+            "QPushButton:checked { color: white; background-color: #d62828; }"
+            "QPushButton:disabled { color: #7a4a4a; border-color: #5a3030; }"
+        )
+        self._tx_button.toggled.connect(self._on_tx_toggled)
+        row.addWidget(self._tx_button)
 
         row.addWidget(QtWidgets.QLabel("Offset"))
         self._offset_spin = QtWidgets.QDoubleSpinBox()
@@ -1278,6 +1338,8 @@ class MainWindow(QtWidgets.QMainWindow):
         right, and the status bar explains why nothing is audible.
         """
         self._audio_problem = ""
+        if self.transmitter is not None and mode != self.transmitter.mode:
+            self._tx_button.setChecked(False)      # a different mode means stop sending
         if mode == "off":
             if self.audio is not None:
                 self.audio.stop()
@@ -1417,9 +1479,63 @@ class MainWindow(QtWidgets.QMainWindow):
     def muted(self) -> bool:
         return self._mute_button.isChecked()
 
+    # -- transmit ------------------------------------------------------------
+
+    def _sync_tx_enabled(self) -> None:
+        tx = self.source.caps.tx
+        self._tx_button.setEnabled(tx is not None)
+        if tx is None:
+            self._tx_button.setToolTip(f"{self.source.caps.label or 'This radio'} cannot transmit")
+        else:
+            self._tx_button.setToolTip(
+                "Transmit (space bar or click to toggle).\n"
+                "Dry run for now: the microphone is modulated and metered, nothing is "
+                "radiated.\n"
+                f"Modes: {', '.join(m.upper() for m in TX_MODES)}. "
+                f"Stops itself after {TX_TIMEOUT_S / 60:.0f} minutes.")
+
+    @property
+    def transmitting(self) -> bool:
+        return self.transmitter is not None
+
+    def _on_tx_toggled(self, on: bool) -> None:
+        if on:
+            self._start_transmit()
+        else:
+            self._stop_transmit()
+
+    def _start_transmit(self) -> None:
+        def refuse(message: str) -> None:
+            self._tx_button.blockSignals(True)
+            self._tx_button.setChecked(False)
+            self._tx_button.blockSignals(False)
+            self._status.showMessage(f"cannot transmit: {message}", 6000)
+
+        if self.source.caps.tx is None:
+            refuse(f"{self.source.caps.label or 'this radio'} has no transmitter")
+            return
+        try:
+            tx = self._transmitter_factory(self.mode)
+            tx.start()
+        except Exception as exc:
+            refuse(str(exc))
+            return
+        self.transmitter = tx
+        # Half duplex: the receiver goes quiet while transmitting. Muted rather than
+        # stopped, so it comes straight back when TX ends.
+        if self.audio is not None:
+            self.audio.set_muted(True)
+
+    def _stop_transmit(self) -> None:
+        tx, self.transmitter = self.transmitter, None
+        if tx is not None:
+            tx.stop()
+        if self.audio is not None:
+            self.audio.set_muted(self.muted)
+
     def _on_mute_toggled(self, muted: bool) -> None:
         if self.audio is not None:
-            self.audio.set_muted(muted)
+            self.audio.set_muted(muted or self.transmitting)
         self._mute_button.setText("Muted" if muted else "Mute")
 
     def _on_volume_changed(self, value: int) -> None:
@@ -1952,6 +2068,10 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.decimator.input_for_output(wanted)
 
     def _on_frame(self) -> None:
+        if self.transmitter is not None and self.transmitter.expired():
+            self._tx_button.setChecked(False)
+            self._status.showMessage(
+                f"TX stopped: {TX_TIMEOUT_S / 60:.0f} minute transmit timeout", 8000)
         iq = self.source.read_latest(self._frame_request())
         if iq.size < self.decimator.input_for_output(self.analyzer.fft_size):
             self._status.showMessage("waiting for samples...")
@@ -2005,7 +2125,19 @@ class MainWindow(QtWidgets.QMainWindow):
             + self._audio_status()
         )
 
+    def _tx_status(self) -> str:
+        tx = self.transmitter
+        if tx is None:
+            return ""
+        level = getattr(tx.mic, "level_dbfs", -200.0)
+        elapsed = int(tx.elapsed_s)
+        what = "TX dry run, no RF" if tx.dry_run else "TX"
+        return (f"  |  {what}  {tx.mode.upper()}  mic {level:.0f} dBFS"
+                f"  {elapsed // 60}:{elapsed % 60:02d}")
+
     def _audio_status(self) -> str:
+        if self.transmitter is not None:
+            return self._tx_status()
         # The status line is rewritten every frame, so a one-off message would vanish
         # before it could be read: why there is no sound has to live here instead.
         if self.audio is None:
@@ -2023,6 +2155,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return text
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
+        self._tx_button.setChecked(False)
+        QtWidgets.QApplication.instance().removeEventFilter(self._space_filter)
         self._timer.stop()
         self._zerobeat_timer.stop()
         self._save_timer.stop()

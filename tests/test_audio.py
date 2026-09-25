@@ -520,3 +520,35 @@ def test_stereo_fifo_pads_with_stereo_silence():
     out = fifo.pull(6)
     assert out.shape == (6, 2) and not out.any()
     assert fifo.underrun_samples == 6
+
+
+# -- microphone choice (transmit groundwork) ------------------------------------
+
+from src.rgc_sdr.audio import Microphone, choose_input_device  # noqa: E402
+
+DEVICES = [
+    {"name": "light Microphone", "max_input_channels": 1, "max_output_channels": 0},
+    {"name": "MacBook Air Microphone", "max_input_channels": 1, "max_output_channels": 0},
+    {"name": "MacBook Air Speakers", "max_input_channels": 0, "max_output_channels": 2},
+]
+
+
+def test_the_built_in_microphone_is_chosen_by_name():
+    """Not the first input and not the system default, either of which can be a phone."""
+    assert choose_input_device(DEVICES) == 1
+
+
+def test_an_output_is_never_chosen_as_a_microphone():
+    assert choose_input_device(DEVICES, preferred="MacBook Air Speakers") is None
+
+
+def test_no_match_falls_back_to_the_default_input():
+    assert choose_input_device(DEVICES[:1] + DEVICES[2:]) is None
+
+
+def test_microphone_callback_fills_the_fifo_and_meters_the_level():
+    mic = Microphone()
+    mic._callback(np.full((1024, 1), 0.5, dtype=np.float32), 1024, None, None)
+    assert mic.available() == 1024
+    assert mic.level_dbfs == pytest.approx(20 * np.log10(0.5), abs=0.01)
+    assert np.allclose(mic.read(1024), 0.5)

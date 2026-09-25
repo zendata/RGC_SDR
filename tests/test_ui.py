@@ -2612,3 +2612,122 @@ def test_if_bandwidth_shows_the_radios_real_value_and_is_saved_only_when_chosen(
     win._bw_combo.setCurrentText("2500 kHz")
     assert win.current_radio_settings().if_bandwidth_hz == 2.5e6
     win.close()
+
+
+# -- the TX button ---------------------------------------------------------------
+
+from tests.test_transmit import FakeMic  # noqa: E402
+from src.rgc_sdr.transmit import Transmitter  # noqa: E402
+
+
+def tx_window(start="hackrf", clock=None):
+    made = []
+
+    def factory(mode):
+        kwargs = {"clock": clock} if clock else {}
+        tx = Transmitter(mode, mic=FakeMic(), **kwargs)
+        made.append(tx)
+        return tx
+
+    win, first, opened = switching_window(start=start)
+    win._transmitter_factory = factory
+    return win, made
+
+
+def test_tx_button_is_red_and_only_enabled_on_a_radio_that_can_transmit(qapp):
+    win, _ = tx_window(start="airspyhf")
+    assert "#d62828" in win._tx_button.styleSheet()
+    assert not win._tx_button.isEnabled()
+    win.switch_device("hackrf")
+    assert win._tx_button.isEnabled()
+    win.close()
+
+
+def test_tx_click_starts_a_dry_run_and_mutes_the_receiver(qapp):
+    win, made = tx_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    win._tx_button.click()
+    assert win.transmitting and made[-1].active
+    assert "TX dry run, no RF" in win._audio_status()
+    win._tx_button.click()
+    assert not win.transmitting and not made[-1].active
+    win.close()
+
+
+def test_tx_in_cw_is_refused_and_the_button_springs_back(qapp):
+    win, made = tx_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._tx_button.click()
+    assert not win.transmitting
+    assert not win._tx_button.isChecked()
+    assert "CW transmit is not supported" in win._status.currentMessage()
+    win.close()
+
+
+def test_changing_mode_stops_transmitting(qapp):
+    win, made = tx_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._tx_button.click()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("lsb"))
+    assert not win.transmitting and not win._tx_button.isChecked()
+    win.close()
+
+
+def test_tx_times_out(qapp):
+    now = [0.0]
+    win, made = tx_window(clock=lambda: now[0])
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    win._tx_button.click()
+    now[0] = 181.0
+    win._on_frame()
+    assert not win.transmitting and not win._tx_button.isChecked()
+    assert "timeout" in win._status.currentMessage()
+    win.close()
+
+
+def _space(win, qapp, focus=None):
+    from PyQt6.QtTest import QTest
+    # The tests patch QApplication.activeWindow: offscreen Qt has no window manager to
+    # activate anything.
+    win.show()
+    qapp.processEvents()
+    target = focus or win
+    if focus is not None:
+        focus.setFocus()
+        qapp.processEvents()
+    QTest.keyClick(target, QtCore.Qt.Key.Key_Space)
+    qapp.processEvents()
+
+
+def test_space_bar_toggles_tx(qapp, monkeypatch):
+    win, made = tx_window()
+    monkeypatch.setattr(QtWidgets.QApplication, "activeWindow", staticmethod(lambda: win))
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    _space(win, qapp)
+    assert win.transmitting
+    _space(win, qapp)
+    assert not win.transmitting
+    win.close()
+
+
+def test_space_on_a_focused_button_toggles_tx_not_the_button(qapp, monkeypatch):
+    win, made = tx_window()
+    monkeypatch.setattr(QtWidgets.QApplication, "activeWindow", staticmethod(lambda: win))
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    _space(win, qapp, focus=win._mute_button)
+    assert win.transmitting
+    assert not win._mute_button.isChecked()
+    win._tx_button.setChecked(False)
+    win.close()
+
+
+def test_space_while_typing_a_name_is_just_a_space(qapp, monkeypatch):
+    win, made = tx_window()
+    monkeypatch.setattr(QtWidgets.QApplication, "activeWindow", staticmethod(lambda: win))
+    edit = QtWidgets.QLineEdit(win)
+    edit.show()
+    monkeypatch.setattr(QtWidgets.QApplication, "focusWidget", staticmethod(lambda: edit))
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    _space(win, qapp, focus=edit)
+    assert not win.transmitting
+    win.close()

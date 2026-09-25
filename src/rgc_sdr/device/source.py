@@ -23,6 +23,7 @@ import numpy as np
 # direction so nothing showed, but the HackRF opened a *transmit* stream, every read
 # failed with NOT_SUPPORTED, and the gains offered were its TX gains.
 SOAPY_RX = 1
+SOAPY_TX = 0
 ERR_TIMEOUT = -1
 ERR_OVERFLOW = -4
 
@@ -88,6 +89,22 @@ class SettingInfo:
 
 
 @dataclass(frozen=True)
+class TxCaps:
+    """What a radio's transmitter offers, probed read-only (nothing is keyed).
+
+    Groundwork for P6 (PLANNING.md). Measured on the HackRF One 2026-09-25: one channel,
+    0-7.25 GHz, gains VGA 0-47 dB and AMP 0/14, rates from 1 MS/s, half duplex.
+    """
+
+    freq_ranges: tuple[FreqRange, ...]
+    gain_elements: tuple[GainElement, ...]
+    sample_rates: tuple[float, ...]
+    #: False means receive and transmit cannot run at once (the HackRF), so keying the
+    #: transmitter has to stop the receiver.
+    full_duplex: bool = False
+
+
+@dataclass(frozen=True)
 class DeviceCaps:
     """What a radio can actually do, probed from the driver.
 
@@ -108,6 +125,8 @@ class DeviceCaps:
     bandwidths: tuple[float, ...] = ()
     #: Boolean driver settings (bias-tee and the like), offered as checkboxes.
     settings: tuple[SettingInfo, ...] = ()
+    #: The transmitter, for radios that have one; None for receive-only radios.
+    tx: TxCaps | None = None
 
     def default_sample_rate(self, prefer: float = 768e3) -> float:
         """Pick `prefer` if offered, else the highest rate at or below it, else the lowest."""
@@ -536,6 +555,25 @@ class SoapyIQSource(IQSource):
             except Exception:
                 continue
 
+        tx = None
+        if _safe(lambda: d.getNumChannels(SOAPY_TX), 0) > 0:
+            tx_gains = []
+            for name in _safe(lambda: d.listGains(SOAPY_TX, 0), ()):
+                gr = _safe(lambda: d.getGainRange(SOAPY_TX, 0, name), None)
+                if gr is not None and gr.maximum() > gr.minimum():
+                    tx_gains.append(GainElement(str(name), float(gr.minimum()),
+                                                float(gr.maximum()), float(gr.step())))
+            tx = TxCaps(
+                freq_ranges=tuple(
+                    FreqRange(float(r.minimum()), float(r.maximum()))
+                    for r in _safe(lambda: d.getFrequencyRange(SOAPY_TX, 0), ())
+                ),
+                gain_elements=tuple(tx_gains),
+                sample_rates=tuple(
+                    float(r) for r in _safe(lambda: d.listSampleRates(SOAPY_TX, 0), ())),
+                full_duplex=bool(_safe(lambda: d.getFullDuplex(SOAPY_TX, 0), False)),
+            )
+
         # Rates reported only as a continuous range (Pluto does this) come back empty
         # from listSampleRates; the profile fills that gap in refine_caps.
         info = _safe(lambda: d.getHardwareInfo(), {})
@@ -551,6 +589,7 @@ class SoapyIQSource(IQSource):
             formats=tuple(str(f) for f in _safe(lambda: d.getStreamFormats(SOAPY_RX, 0), ())),
             bandwidths=bandwidths,
             settings=tuple(settings),
+            tx=tx,
         )
 
     # -- IQSource ----------------------------------------------------------

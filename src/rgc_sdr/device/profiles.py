@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from .source import DeviceCaps, FreqRange, GainElement
+from .source import DeviceCaps, FreqRange, GainElement, TxCaps
 
 #: Above this the audio chain cannot keep up in pure NumPy (see module docstring).
 APP_MAX_RATE = 10e6
@@ -49,6 +49,8 @@ class SdrProfile:
     notes: str = ""
     #: Gains to start from, where the driver's own defaults are measurably poor.
     default_gains: tuple[tuple[str, float], ...] = ()
+    #: The transmitter, for radios that have one. Probing wins once the radio is open.
+    tx: TxCaps | None = None
 
     def covers(self, hz: float) -> bool:
         return any(r.contains(hz) for r in self.freq_ranges)
@@ -123,6 +125,14 @@ PROFILES: tuple[SdrProfile, ...] = (
         # 25-27 dB, stereo and RDS on The Fox and SmoothFM, and IQ peaks near 0.16 --
         # plenty of headroom. AMP off: it added nothing but floor.
         default_gains=(("LNA", 32.0), ("VGA", 30.0)),
+        # Probed 2026-09-25 (receive open, nothing keyed). Half duplex.
+        tx=TxCaps(
+            freq_ranges=(FreqRange(1e6, 6000e6),),
+            gain_elements=(GainElement("VGA", 0.0, 47.0, 1.0),
+                           GainElement("AMP", 0.0, 14.0, 14.0)),
+            sample_rates=(2e6, 4e6, 8e6, 10e6),
+            full_duplex=False,
+        ),
     ),
     SdrProfile(
         key="rtlsdr",
@@ -252,6 +262,7 @@ def caps_from_profile(profile: SdrProfile, serial: str = "") -> DeviceCaps:
         gain_elements=profile.gain_elements,
         has_agc=profile.has_agc,
         formats=("CF32",),
+        tx=profile.tx,
     )
 
 

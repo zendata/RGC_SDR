@@ -123,6 +123,10 @@ headless-testable and lets modules be swapped independently.
 - **P5 — Extras.** Scanner ✅ (section 7e). Remaining: IQ *playback* (the recorder's
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
+- **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
+  not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
+  probe, the `IQSink` interface, and a TX button that runs a *dry run*. Remaining: a
+  Soapy `IQSink` and the interlocks below, before anything is radiated.
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
 (originally part of the P3 DSP chain) and named memories with last-state restore
@@ -666,6 +670,47 @@ carrier took the block error rate from 45% to 0.1%: station name in 0.8 s, full 
 had been tried first and made no difference -- measure the carrier before tuning the
 clock. With no antenna, stations 1-4 dB above noise are correctly reported as mono with
 no RDS.
+
+## 7m. Transmit groundwork (P6)
+
+Requested 2026-09-25: transmit with the HackRF in every mode except CW, audio from the
+MacBook Air Microphone, a red TX button toggled by click or the space bar. Built so far,
+with **no RF path**:
+
+- **`dsp/modulate.py`** -- audio to IQ: limit, band-limit (300-3000 Hz AM/NBFM, 300-2700
+  SSB, 30-15000 WBFM), 50 us pre-emphasis for WBFM, modulate at 48 kHz (240 kHz for WBFM),
+  then integer polyphase interpolation to the IQ rate. Output is held to |x| <= 1, full
+  scale for CF32. Each mode is verified by demodulating its own output with the receive
+  chain: the tone comes back at 1 kHz in all five, NBFM peaks at its 2.5 kHz deviation,
+  and USB measured 95.8 dB below its opposite sideband. CW raises: it needs a keyer and
+  shaped keying, not a microphone.
+- **`transmit.py`** -- `Transmitter`: microphone -> modulator -> `IQSink`, on a worker
+  thread, at 2.4 MS/s (50 x 48 kHz, 10 x 240 kHz, at or above the HackRF's 2 MS/s
+  minimum). With no sink it is a dry run: modulated and metered, nothing radiated.
+- **`audio.Microphone`** -- chosen *by name* ("MacBook Air Microphone"), not by index or
+  system default: this machine lists a phone's "light Microphone" first.
+- **`device/source.TxCaps`**, probed read-only: HackRF has one TX channel, 0-7.25 GHz,
+  VGA 0-47 dB and AMP 0/14, rates 1-20 MS/s, and **no full duplex**.
+- **`device/sink.IQSink`** -- the interface a Soapy transmit stream will implement.
+- **TX button** (audio row), red; solid red while keyed. Space bar toggles it through an
+  application-wide event filter -- a shortcut would lose to whichever button had focus,
+  which space clicks -- except while text is being typed. Disabled on radios with no
+  transmitter; refused (and sprung back) in CW or with no mode; mutes the receiver while
+  keyed (half duplex); stops on a mode change, a radio change, closing the window, and
+  after a **3-minute timeout**.
+
+**Before any RF: interlocks the Soapy `IQSink` must enforce.** Transmitting needs an
+amateur licence (ACMA, Australia) and only on the bands and modes that licence allows; the
+HackRF will happily transmit on broadcast, aviation or emergency frequencies, so the app
+must not.
+1. A callsign in settings, and the licence level, which selects the allowed bands.
+2. TX refused outside those bands, checked against the *signal's* occupied bandwidth, not
+   just its centre.
+3. Default TX gain at minimum; the HackRF's harmonics are strong, so a band-pass filter
+   between it and the antenna is required on air -- the UI should say so.
+4. Half duplex: stop the receive stream, open the transmit one, and the reverse on
+   unkey; unkey on any error, and on the existing timeout.
+5. WBFM transmit into a dummy load only: it is a broadcast mode, not an amateur one.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

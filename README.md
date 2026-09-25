@@ -167,6 +167,17 @@ station. De-emphasis is 50 us, the standard in Australia and Europe.
 SSB is a proper single-sideband filter, measured at over 30 dB rejection of the opposite
 sideband.
 
+### Transmit (groundwork)
+
+The red **TX** button -- click it, or press the **space bar** -- runs the transmit chain:
+the MacBook Air Microphone is modulated in the current mode (AM, NBFM, WBFM, USB or LSB;
+not CW) and its level shown in the status bar. **Nothing is radiated yet**: it is a dry
+run, marked "TX dry run, no RF". The receiver is muted while TX is on, and TX switches
+itself off after three minutes, on a mode or radio change, or when the window closes. It
+is only enabled for radios with a transmitter (the HackRF). The first press asks macOS
+for microphone permission. See PLANNING.md section 7m for what is still needed before it
+transmits.
+
 ### Scanner
 
 The **Scan** button, right of Zoom, opens the **Scanner** panel. It sweeps a frequency range, logs every active channel it finds, and
