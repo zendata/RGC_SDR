@@ -224,9 +224,17 @@ print(meta["sample_rate_hz"], meta["center_freq_hz"], iq.size)
 
 ### Memories
 
-**Save…** stores the current frequency, rate, zoom and display settings under a name you
-type. Pick a name from the **Memory** dropdown to jump straight back to it, or
-**Delete** to remove it. They live in
+**Save…** stores the current station -- frequency, mode, bandwidth, step, snap, squelch,
+volume, offset -- under a name you type, together with how the *current radio* was set
+for it: rate, zoom, gains, AGC, IF bandwidth, bias-tee and colour range. Pick a name from
+the **Memory** dropdown to jump straight back to it, or **Delete** to remove it.
+
+Memories work on any radio. Saving the same name on another radio adds that radio's setup
+and keeps the others. Recalling a station on a radio it was never saved on uses that
+radio's own last settings, with the zoom picked to give about the same span.
+
+Each radio type also remembers its own last settings -- a HackRF's gains, say -- and gets
+them back whenever it is opened or switched to. Everything lives in
 `~/Library/Application Support/RGC_SDR/settings.json`.
 
 ### Display

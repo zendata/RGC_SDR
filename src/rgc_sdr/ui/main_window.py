@@ -7,6 +7,8 @@ its AGC toggle. See PLANNING.md sections 3 and 4.
 
 from __future__ import annotations
 
+import dataclasses
+
 import time
 from pathlib import Path
 
@@ -29,7 +31,7 @@ from ..scanner import ScanAction, ScanConfig, Scanner
 from ..dsp.spectrum import SpectrumAnalyzer
 from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
 from ..dsp.zerobeat import measure_carrier
-from ..settings import Settings, Snapshot
+from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from .smeter import SMeter
 from .spectrum_view import SpectrumView
@@ -172,6 +174,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._status = self.statusBar()
         self._build_scanner_dock()
         self._apply_device_profile()
+        saved = self.settings.radios.get(self.current_device_key())
+        if saved is not None:
+            # Rate, zoom and levels came in with the last snapshot; the gains did not.
+            self.apply_radio_hardware(saved)
         self._apply_geometry()
         self.spectrum.set_center_marker(source.center_freq)
 
@@ -259,6 +265,12 @@ class MainWindow(QtWidgets.QMainWindow):
         combo.clear()
         for bw in widths:
             combo.addItem(f"{bw / 1e3:g} kHz", bw)
+        # Show what the radio is really using. Drivers such as the HackRF's set it from
+        # the sample rate, so the first entry would be a lie (1.75 MHz shown, 3.5 in use).
+        actual = getattr(self.source, "bandwidth", 0.0) or 0.0
+        if widths and actual > 0:
+            combo.setCurrentIndex(min(range(len(widths)), key=lambda i: abs(widths[i] - actual)))
+        self._if_bw_chosen = False
         combo.blockSignals(False)
         self._hw_bw_label.setVisible(bool(widths))
         combo.setVisible(bool(widths))
@@ -268,6 +280,8 @@ class MainWindow(QtWidgets.QMainWindow):
         width = self._bw_combo.currentData()
         if width is not None:
             self.source.set_bandwidth(width)
+            self._if_bw_chosen = True
+            self._schedule_save()
 
     def _rebuild_device_controls(self) -> None:
         layout = self._device_slot_layout
@@ -324,6 +338,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.stop()
 
         old = self.source
+        self.settings.radios[self.current_device_key()] = self.current_radio_settings()
         old_driver, old_freq = old.caps.driver, old.center_freq
         centre = starting_frequency(profile, old_freq)
         try:
@@ -349,10 +364,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.spectrum.reset()
         self.waterfall.clear_history()
         self._rows_pushed = 0
-        if not self._levels_explicit:
-            # Different radios sit at very different levels, so refit the colours.
-            self._auto_pending = True
+        # Different radios sit at very different levels: take the new radio's own, or
+        # refit the colours if it has none saved.
+        self._levels_explicit = False
+        self._auto_pending = True
         self._apply_device_profile()
+        saved = self.settings.radios.get(self.current_device_key()) if switched else None
+        if saved is not None:
+            self.apply_radio_settings(saved)
         self._apply_geometry()
         self.spectrum.set_center_marker(self.source.center_freq)
         self._update_offset_range()
@@ -366,6 +385,92 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"now using {profile.label} at {self.source.center_freq / 1e6:.4f} MHz", 5000
             )
         return switched
+
+    # -- per-radio settings ------------------------------------------------
+
+    def current_radio_settings(self) -> RadioSettings:
+        """What is set on this radio now, as opposed to what station is tuned."""
+        caps = self.source.caps
+        gains: dict[str, float] = {}
+        getter = getattr(self.source, "get_gain", None)
+        for element in caps.gain_elements if getter is not None else ():
+            try:
+                gains[element.name] = float(getter(element.name))
+            except Exception:
+                pass
+        flags: dict[str, bool] = {}
+        reader = getattr(self.source, "read_setting", None)
+        for setting in getattr(caps, "settings", ()) if reader is not None else ():
+            try:
+                flags[setting.key] = bool(reader(setting.key))
+            except Exception:
+                pass
+        explicit = self._levels_explicit
+        return RadioSettings(
+            sample_rate=self.source.sample_rate,
+            decimation=self.decimator.factor,
+            gains=gains,
+            agc=self._agc_check.isChecked() if self._agc_check is not None else None,
+            # Only a width the user picked: otherwise the driver's automatic choice,
+            # which follows the rate, is the right one to come back to.
+            if_bandwidth_hz=(self._bw_combo.currentData()
+                             if self._if_bw_chosen and self._bw_combo.count() else None),
+            driver_settings=flags,
+            min_db=self._levels[0] if explicit else None,
+            max_db=self._levels[1] if explicit else None,
+        )
+
+    def apply_radio_hardware(self, radio: RadioSettings) -> None:
+        """Gains, AGC, IF bandwidth and driver switches -- what the radio itself holds."""
+        caps = self.source.caps
+        stages = {g.name: g for g in caps.gain_elements}
+        for name, db in radio.gains.items():
+            stage = stages.get(name)
+            if stage is not None:
+                self.source.set_gain(name, min(max(db, stage.min_db), stage.max_db))
+        if radio.agc is not None and caps.has_agc:
+            self.source.set_agc(radio.agc)
+        writer = getattr(self.source, "write_setting", None)
+        known = {setting.key for setting in getattr(caps, "settings", ())}
+        for key, enabled in radio.driver_settings.items():
+            if writer is not None and key in known:
+                writer(key, enabled)
+        if radio.if_bandwidth_hz is not None:
+            index = self._bw_combo.findData(radio.if_bandwidth_hz)
+            if index >= 0:
+                self._bw_combo.setCurrentIndex(index)
+                self.source.set_bandwidth(radio.if_bandwidth_hz)
+                self._if_bw_chosen = True
+        self._rebuild_device_controls()       # show what was just set
+
+    def apply_radio_settings(self, radio: RadioSettings) -> None:
+        """Everything saved for this radio: rate, zoom and colour levels as well."""
+        index = self._rate_combo.findData(radio.sample_rate) if radio.sample_rate else -1
+        if index >= 0 and radio.sample_rate != self.source.sample_rate:
+            self._rate_combo.setCurrentIndex(index)       # restarts the stream
+        factor = radio.decimation if radio.decimation in ZOOM_FACTORS else 1
+        if factor != self.decimator.factor:
+            self.set_decimation(factor)
+            self._sync_zoom_combo()
+        if radio.min_db is not None and radio.max_db is not None:
+            self._levels_explicit = True
+            self._auto_pending = False
+            self._set_levels(radio.min_db, radio.max_db)
+        self.apply_radio_hardware(radio)
+
+    def _radio_settings_for_new_station(self, snap: Snapshot) -> RadioSettings:
+        """Settings for a station never saved on this radio.
+
+        This radio's own last-used settings, with the zoom chosen to give about the
+        span the memory had on the radio it was saved on -- the rate itself may not
+        exist here.
+        """
+        base = self.settings.radios.get(self.current_device_key()) or RadioSettings()
+        rates = self.source.caps.sample_rates
+        rate = base.sample_rate if base.sample_rate in rates else self.source.sample_rate
+        span = snap.sample_rate / max(1, snap.decimation)
+        factor = min(ZOOM_FACTORS, key=lambda f: abs(np.log((rate / f) / span)))
+        return dataclasses.replace(base, sample_rate=rate, decimation=factor)
 
     # -- scanner -----------------------------------------------------------
 
@@ -943,6 +1048,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     lambda on, e=element: self.source.set_gain(
                         e.name, e.max_db if on else e.min_db)
                 )
+                check.toggled.connect(self._schedule_save)
                 row.addWidget(check)
                 continue
             row.addWidget(QtWidgets.QLabel(element.name))
@@ -954,6 +1060,7 @@ class MainWindow(QtWidgets.QMainWindow):
             spin.valueChanged.connect(
                 lambda value, name=element.name: self.source.set_gain(name, value)
             )
+            spin.valueChanged.connect(self._schedule_save)
             row.addWidget(spin)
 
         # Boolean driver settings -- bias-tee and the like -- as the driver names them.
@@ -965,6 +1072,7 @@ class MainWindow(QtWidgets.QMainWindow):
             writer = getattr(self.source, "write_setting", None)
             if writer is not None:
                 check.toggled.connect(lambda on, key=setting.key: writer(key, on))
+                check.toggled.connect(self._schedule_save)
             row.addWidget(check)
 
         # Nothing to control: say nothing. A "no gain controls" label only takes space
@@ -1092,6 +1200,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._rate_combo.currentData() is None:
             return
         self.source.set_sample_rate(self._rate_combo.currentData())
+        self._refresh_hw_bandwidths()        # the driver may have moved it with the rate
         self.spectrum.reset()
         self.waterfall.clear_history()
         self._apply_geometry()
@@ -1683,7 +1792,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def save_memory(self, name: str) -> bool:
         """Store the current settings. Returns True if an existing name was replaced."""
-        replaced = self.settings.add_memory(name, self.current_snapshot())
+        replaced = self.settings.add_memory(
+            name, self.current_snapshot(), self.current_device_key(),
+            self.current_radio_settings(),
+        )
         self._refresh_memories()
         index = self._memory_combo.findData(self.settings.get_memory(name).name)
         if index >= 0:
@@ -1697,8 +1809,26 @@ class MainWindow(QtWidgets.QMainWindow):
         memory = self.settings.get_memory(name)
         if memory is None:
             return False
-        self.apply_snapshot(memory.snapshot)
-        self._status.showMessage(f"recalled {memory.name}", 3000)
+        key = self.current_device_key()
+        radio = memory.radios.get(key)
+        note = ""
+        if radio is None:
+            radio = self._radio_settings_for_new_station(memory.snapshot)
+            note = " -- first time on this radio, using its own settings"
+        snap = dataclasses.replace(
+            memory.snapshot,
+            sample_rate=radio.sample_rate or self.source.sample_rate,
+            decimation=radio.decimation,
+            min_db=radio.min_db,
+            max_db=radio.max_db,
+            agc=bool(radio.agc) if radio.agc is not None else memory.snapshot.agc,
+        )
+        self.apply_snapshot(snap)
+        self.apply_radio_hardware(radio)
+        if not self.source.caps.covers(memory.snapshot.freq_hz):
+            note = (f" -- {memory.snapshot.freq_hz / 1e6:.4f} MHz is outside this "
+                    f"radio's range ({self.source.caps.describe_ranges()})")
+        self._status.showMessage(f"recalled {memory.name}{note}", 6000)
         self._schedule_save()
         return True
 
@@ -1758,6 +1888,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._persist:
             return
         self.settings.last = self.current_snapshot()
+        self.settings.radios[self.current_device_key()] = self.current_radio_settings()
         try:
             self.settings.save()
         except OSError as exc:

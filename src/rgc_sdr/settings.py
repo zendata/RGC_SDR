@@ -3,6 +3,12 @@
 "Memory" here is the radio sense -- a named preset of frequency, rate, zoom and display
 choices, like the memory channels on a receiver's front panel.
 
+Settings that belong to a *radio* rather than a station -- sample rate, zoom, gains, AGC,
+IF bandwidth, bias-tee, colour levels -- are kept per radio type (`RadioSettings`), both
+as each radio's last-used state and inside each memory. So a station saved on one radio
+recalls on another with that radio's own settings: a HackRF's gains mean nothing to an
+Airspy, and its noise floor sits some 50 dB higher.
+
 Stored as one JSON file under ~/Library/Application Support/RGC_SDR/. Loading is
 deliberately forgiving: a missing, truncated or hand-edited file falls back to defaults
 rather than stopping the application from starting, since these are conveniences and
@@ -17,7 +23,11 @@ import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+#: Every memory saved before per-radio settings existed was made on the Airspy HF+ (the
+#: only radio that streamed), so that is where their rate and zoom are filed.
+LEGACY_RADIO = "airspyhf"
 
 APP_DIR = Path.home() / "Library" / "Application Support" / "RGC_SDR"
 SETTINGS_FILE = APP_DIR / "settings.json"
@@ -97,9 +107,66 @@ class Snapshot:
 
 
 @dataclass
+class RadioSettings:
+    """What belongs to one radio type rather than to a station."""
+
+    #: None means the radio's default.
+    sample_rate: float | None = None
+    decimation: int = 1
+    #: Gain stage name -> dB, as the driver names them.
+    gains: dict[str, float] = field(default_factory=dict)
+    agc: bool | None = None
+    if_bandwidth_hz: float | None = None
+    #: Boolean driver settings (bias-tee and the like), by driver key.
+    driver_settings: dict[str, bool] = field(default_factory=dict)
+    #: Colour range; None means fit to the signal.
+    min_db: float | None = None
+    max_db: float | None = None
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: object) -> "RadioSettings":
+        out = cls()
+        if not isinstance(data, dict):
+            return out
+        for name in ("sample_rate", "if_bandwidth_hz", "min_db", "max_db"):
+            if name in data:
+                setattr(out, name, _coerce(data[name], None))
+        out.decimation = max(1, _coerce(data.get("decimation", 1), 1))
+        if data.get("agc") is not None:
+            out.agc = bool(data["agc"])
+        gains = data.get("gains")
+        if isinstance(gains, dict):
+            for key, value in gains.items():
+                db = _coerce(value, None)
+                if db is not None:
+                    out.gains[str(key)] = db
+        flags = data.get("driver_settings")
+        if isinstance(flags, dict):
+            out.driver_settings = {str(k): bool(v) for k, v in flags.items()}
+        return out
+
+    @classmethod
+    def from_snapshot(cls, snap: Snapshot) -> "RadioSettings":
+        """The radio half of a pre-version-2 snapshot."""
+        return cls(sample_rate=snap.sample_rate, decimation=snap.decimation,
+                   agc=snap.agc, min_db=snap.min_db, max_db=snap.max_db)
+
+
+def _radios_from(data: object) -> dict[str, RadioSettings]:
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): RadioSettings.from_dict(v) for k, v in data.items() if k}
+
+
+@dataclass
 class Memory:
     name: str
     snapshot: Snapshot = field(default_factory=Snapshot)
+    #: Per radio type: how this station was set up on that radio.
+    radios: dict[str, RadioSettings] = field(default_factory=dict)
 
 
 @dataclass
@@ -190,6 +257,8 @@ class Settings:
         self.scan = ScanSettings()
         #: The radio last used, by profile key.
         self.device: str | None = None
+        #: Each radio type's last-used settings, restored when it is opened again.
+        self.radios: dict[str, RadioSettings] = {}
 
     # -- persistence -------------------------------------------------------
 
@@ -208,10 +277,12 @@ class Settings:
         if isinstance(entries, list):
             for entry in entries:
                 if isinstance(entry, dict) and str(entry.get("name", "")).strip():
-                    settings.memories.append(
-                        Memory(str(entry["name"]).strip(),
-                               Snapshot.from_dict(entry.get("snapshot")))
-                    )
+                    snap = Snapshot.from_dict(entry.get("snapshot"))
+                    if "radios" in entry:
+                        radios = _radios_from(entry["radios"])
+                    else:
+                        radios = {LEGACY_RADIO: RadioSettings.from_snapshot(snap)}
+                    settings.memories.append(Memory(str(entry["name"]).strip(), snap, radios))
             settings._sort()
 
         entries = raw.get("found")
@@ -233,6 +304,12 @@ class Settings:
         settings.scan = ScanSettings.from_dict(raw.get("scan"))
         device = raw.get("device")
         settings.device = str(device) if isinstance(device, str) and device else None
+        settings.radios = _radios_from(raw.get("radios"))
+        if (not settings.radios and settings.last is not None and settings.device
+                and raw.get("version", 1) < 2):
+            # Only when the file says which radio the last state came from: a HackRF's
+            # 2 MS/s filed under the Airspy would be nonsense.
+            settings.radios[settings.device] = RadioSettings.from_snapshot(settings.last)
         return settings
 
     def save(self) -> None:
@@ -241,12 +318,15 @@ class Settings:
             "version": SCHEMA_VERSION,
             "last": self.last.to_dict() if self.last is not None else None,
             "memories": [
-                {"name": m.name, "snapshot": m.snapshot.to_dict()} for m in self.memories
+                {"name": m.name, "snapshot": m.snapshot.to_dict(),
+                 "radios": {k: r.to_dict() for k, r in m.radios.items()}}
+                for m in self.memories
             ],
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),
             "device": self.device,
+            "radios": {k: r.to_dict() for k, r in self.radios.items()},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = None
@@ -275,8 +355,19 @@ class Settings:
                 return memory
         return None
 
-    def add_memory(self, name: str, snapshot: Snapshot) -> bool:
-        """Store a memory. Returns True if it replaced one of the same name."""
+    def add_memory(
+        self,
+        name: str,
+        snapshot: Snapshot,
+        radio_key: str | None = None,
+        radio: RadioSettings | None = None,
+    ) -> bool:
+        """Store a memory. Returns True if it replaced one of the same name.
+
+        Saving over an existing memory replaces the station and *this* radio's settings,
+        and keeps every other radio's: re-saving a station on the HackRF must not throw
+        away how it was set up on the Airspy.
+        """
         clean = name.strip()
         if not clean:
             raise ValueError("a memory needs a name")
@@ -284,9 +375,12 @@ class Settings:
         if existing is not None:
             existing.snapshot = snapshot
             existing.name = clean
+            if radio_key and radio is not None:
+                existing.radios[radio_key] = radio
             self._sort()
             return True
-        self.memories.append(Memory(clean, snapshot))
+        radios = {radio_key: radio} if radio_key and radio is not None else {}
+        self.memories.append(Memory(clean, snapshot, radios))
         self._sort()
         return False
 

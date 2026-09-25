@@ -249,3 +249,56 @@ def test_found_channel_describe():
 
     text = FoundChannel(118.325e6, -95.0, 22.0, 3, label="Tower").describe()
     assert "118.3250 MHz" in text and "Tower" in text and "x3" in text
+
+
+
+# -- per-radio settings (schema 2) ---------------------------------------------
+
+from src.rgc_sdr.settings import RadioSettings  # noqa: E402
+
+
+def test_radio_settings_round_trip(tmp_path):
+    path = tmp_path / "s.json"
+    settings = Settings(path)
+    settings.radios["hackrf"] = RadioSettings(
+        sample_rate=4e6, decimation=4, gains={"LNA": 32.0, "VGA": 30.0}, agc=None,
+        if_bandwidth_hz=1.75e6, driver_settings={"bias_tx": False}, min_db=-85, max_db=-40)
+    settings.add_memory("Fox", Snapshot(freq_hz=101.9e6), "hackrf",
+                        RadioSettings(sample_rate=4e6, gains={"LNA": 24.0}))
+    settings.save()
+    loaded = Settings.load(path)
+    assert loaded.radios["hackrf"] == settings.radios["hackrf"]
+    assert loaded.get_memory("Fox").radios["hackrf"].gains == {"LNA": 24.0}
+
+
+def test_version_1_memories_are_filed_under_the_airspy_hf(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "last": {"freq_hz": 7.1e6, "sample_rate": 768e3, "decimation": 2},
+        "memories": [{"name": "40m", "snapshot": {"freq_hz": 7.1e6, "sample_rate": 384e3,
+                                                   "decimation": 4, "min_db": -130,
+                                                   "max_db": -90}}],
+    }))
+    loaded = Settings.load(path)
+    radio = loaded.get_memory("40m").radios["airspyhf"]
+    assert (radio.sample_rate, radio.decimation, radio.min_db) == (384e3, 4, -130)
+    assert loaded.radios == {}        # the file does not say which radio "last" was on
+
+
+def test_version_1_last_state_is_filed_under_the_radio_it_names(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"version": 1, "device": "airspyhf",
+                                "last": {"sample_rate": 768e3, "decimation": 2}}))
+    assert Settings.load(path).radios["airspyhf"].decimation == 2
+
+
+def test_nonsense_radio_settings_fall_back_quietly(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text(json.dumps({"version": 2, "radios": {
+        "hackrf": {"gains": {"LNA": "loud", "VGA": 30}, "decimation": -3},
+        "rtlsdr": "garbage"}}))
+    loaded = Settings.load(path)
+    assert loaded.radios["hackrf"].gains == {"VGA": 30.0}
+    assert loaded.radios["hackrf"].decimation == 1
+    assert loaded.radios["rtlsdr"] == RadioSettings()

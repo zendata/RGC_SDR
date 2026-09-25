@@ -2054,12 +2054,20 @@ class ProfiledStub(StubSource):
         self.closed = False
         self.started = False
         self.written = {}
+        self.gains = {}
 
     def start(self):
         self.started = True
 
     def close(self):
         self.closed = True
+
+    def set_gain(self, name, db):
+        self.gain = (name, db)
+        self.gains[name] = db
+
+    def get_gain(self, name):
+        return self.gains.get(name, 0.0)
 
     def read_setting(self, key):
         return self.written.get(key, False)
@@ -2498,4 +2506,109 @@ def test_memory_keeps_bandwidth_snap_zoom_rate_step_and_squelch(qapp, tmp_path):
     assert win.step_hz == 9e3
     assert not win._snap_check.isChecked()
     assert win._squelch_value() == pytest.approx(-77.0)
+    win.close()
+
+
+
+# -- per-radio settings --------------------------------------------------------
+
+def _gain_spin(win, name):
+    for label in win._device_slot.findChildren(QtWidgets.QLabel):
+        if label.text() == name:
+            row = label.parentWidget().layout()
+            i = row.indexOf(label)
+            return row.itemAt(i + 1).widget()
+    raise AssertionError(f"no {name} control")
+
+
+def test_hackrf_gains_survive_switching_away_and_back(qapp, tmp_path):
+    win, _, opened = switching_window(settings=Settings(tmp_path / "s.json"))
+    win.switch_device("hackrf")
+    _gain_spin(win, "LNA").setValue(24.0)
+    _gain_spin(win, "VGA").setValue(40.0)
+    win.switch_device("airspyhf")
+    win.switch_device("hackrf")
+    assert opened[-1].gains["LNA"] == 24.0
+    assert opened[-1].gains["VGA"] == 40.0
+    assert _gain_spin(win, "LNA").value() == 24.0      # and the controls show it
+    win.close()
+
+
+def test_hackrf_gains_survive_a_restart(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win, first, _ = switching_window(start="hackrf", settings=Settings(path))
+    _gain_spin(win, "VGA").setValue(44.0)
+    win.close()
+    assert Settings.load(path).radios["hackrf"].gains["VGA"] == 44.0
+
+    again, second, _ = switching_window(start="hackrf", settings=Settings.load(path))
+    assert second.gains["VGA"] == 44.0
+    again.close()
+
+
+def test_each_radio_keeps_its_own_colour_levels(qapp, tmp_path):
+    win, _, _ = switching_window(settings=Settings(tmp_path / "s.json"))
+    win._min_spin.setValue(-140.0); win._max_spin.setValue(-100.0)
+    win.switch_device("hackrf")
+    win._min_spin.setValue(-85.0); win._max_spin.setValue(-40.0)
+    win.switch_device("airspyhf")
+    assert win._levels == (-140.0, -100.0)
+    win.switch_device("hackrf")
+    assert win._levels == (-85.0, -40.0)
+    win.close()
+
+
+def test_a_station_saved_on_one_radio_recalls_on_another(qapp, tmp_path):
+    """Frequency and mode travel; rate and gains are the new radio's own."""
+    win, _, opened = switching_window(settings=Settings(tmp_path / "s.json"))
+    win.switch_device("hackrf")
+    _gain_spin(win, "LNA").setValue(16.0)
+    win.switch_device("airspyhf")
+    win._freq_spin.setValue(101.9)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win._zoom_combo.setCurrentText("1x")
+    win.save_memory("The Fox")
+
+    win.switch_device("hackrf")
+    win._freq_spin.setValue(91.5)
+    assert win.recall_memory("The Fox")
+    assert win.source.center_freq == pytest.approx(101.9e6)
+    assert win.mode == "wbfm"
+    assert opened[-1].gains["LNA"] == 16.0
+    assert win.source.sample_rate in profile_for("hackrf").sample_rates
+    # About the same span as on the Airspy (768 kHz): 4 MS/s at 4x is 1 MHz.
+    assert win.effective_rate == pytest.approx(1e6)
+    assert "first time on this radio" in win._status.currentMessage()
+    win.close()
+
+
+def test_resaving_on_another_radio_keeps_the_first_radios_setup(qapp, tmp_path):
+    win, _, _ = switching_window(settings=Settings(tmp_path / "s.json"))
+    win._freq_spin.setValue(101.9)
+    win._zoom_combo.setCurrentText("2x")
+    win.save_memory("The Fox")
+    win.switch_device("hackrf")
+    win.recall_memory("The Fox")
+    win._zoom_combo.setCurrentText("8x")
+    win.save_memory("The Fox")
+
+    memory = win.settings.get_memory("The Fox")
+    assert memory.radios["airspyhf"].decimation == 2
+    assert memory.radios["hackrf"].decimation == 8
+    win.switch_device("airspyhf")
+    win.recall_memory("The Fox")
+    assert win.decimator.factor == 2
+    win.close()
+
+
+def test_if_bandwidth_shows_the_radios_real_value_and_is_saved_only_when_chosen(qapp):
+    """The HackRF driver sets 3.5 MHz at 4 MS/s by itself. Showing (and saving) the first
+    entry, 1.75 MHz, would narrow the span to less than half when restored."""
+    src = StubSource(_caps(driver="hackrf", bandwidths=(1.75e6, 2.5e6, 3.5e6)))
+    src.bandwidth = 3.5e6
+    win = window_for(src, fft_size=1024)
+    assert win._bw_combo.currentData() == 3.5e6
+    assert win.current_radio_settings().if_bandwidth_hz is None
+    win._bw_combo.setCurrentText("2500 kHz")
+    assert win.current_radio_settings().if_bandwidth_hz == 2.5e6
     win.close()
