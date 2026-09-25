@@ -135,6 +135,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
         self.audio: AudioSink | None = None
+        self._audio_problem = ""          # why a chosen mode is silent, for the status bar
         self._rows_pushed = 0
         self._frames = 0
         self._fps_mark = time.perf_counter()
@@ -1112,12 +1113,13 @@ class MainWindow(QtWidgets.QMainWindow):
         started: seeing the channel width and offset on the spectrum is useful in its own
         right, and the status bar explains why nothing is audible.
         """
+        self._audio_problem = ""
         if mode == "off":
             if self.audio is not None:
                 self.audio.stop()
                 self.audio = None
         elif not self._audio_ok:
-            self._status.showMessage("no audio device available", 4000)
+            self._audio_problem = "no audio device available"
         elif self.audio is None:
             sink = AudioSink(
                 self.source, mode=mode,
@@ -1133,13 +1135,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 sink.set_muted(self.muted)
                 self.audio = sink
             except Exception as exc:
-                self._status.showMessage(f"could not start audio: {exc}", 6000)
+                self._audio_problem = f"could not start audio: {exc}"
         else:
             try:
                 self.audio.set_mode(mode)
             except Exception as exc:
-                self._status.showMessage(f"could not switch mode: {exc}", 6000)
+                self._audio_problem = f"could not switch mode: {exc}"
 
+        if self._audio_problem:
+            self._status.showMessage(self._audio_problem, 4000)   # and kept in the line
         self._sync_squelch_enabled()
         self._refresh_bandwidths()
         self._sync_zerobeat_enabled()
@@ -1816,8 +1820,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _audio_status(self) -> str:
+        # The status line is rewritten every frame, so a one-off message would vanish
+        # before it could be read: why there is no sound has to live here instead.
         if self.audio is None:
-            return ""
+            if self.mode == "off":
+                return "  |  audio off (choose a Mode)"
+            return f"  |  no audio: {self._audio_problem or 'not running'}"
         a = self.audio.stats
         text = (f"  |  {self.mode.upper()} {a['audio_rate'] / 1e3:.1f} kHz"
                 f"  agc x{a['agc_gain']:.0f}"

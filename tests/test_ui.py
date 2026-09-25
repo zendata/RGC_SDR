@@ -2372,3 +2372,45 @@ def test_stereo_choice_is_remembered(qapp, tmp_path):
     win._stereo_check.setChecked(False)
     win.close()
     assert Settings.load(path).last.stereo is False
+
+
+# -- why there is no sound ---------------------------------------------------
+# The status line is redrawn every frame, so a one-off message is gone before it can
+# be read. The reason for silence has to be part of the line itself.
+
+def test_status_says_audio_is_off_when_no_mode_is_chosen(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
+    assert "audio off (choose a Mode)" in win._audio_status()
+    win.close()
+
+
+def test_status_keeps_saying_there_is_no_audio_device(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)       # audio disabled
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    assert "no audio: no audio device available" in win._audio_status()
+    win.close()
+
+
+def test_status_keeps_the_reason_audio_failed_to_start(qapp, monkeypatch):
+    import src.rgc_sdr.ui.main_window as mw
+
+    class BrokenSink:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def set_force_mono(self, mono):
+            pass
+
+        def start(self):
+            raise RuntimeError("output device busy")
+
+    monkeypatch.setattr(mw, "AudioSink", BrokenSink)
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win._audio_ok = True
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    assert win.audio is None
+    assert "could not start audio: output device busy" in win._audio_status()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
+    assert "audio off" in win._audio_status()
+    win.close()

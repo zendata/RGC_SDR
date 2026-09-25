@@ -151,7 +151,8 @@ copyable.
 
 Audio is continuous and independent of the display: the waterfall may drop frames, the
 audio path never skips samples. The status bar reports the audio rate, the AGC gain in
-use, and any underruns.
+use, and any underruns -- or, when there is no sound, why: "audio off (choose a Mode)"
+or the reason audio could not start.
 
 **WBFM** is decoded in **stereo** when the station sends a pilot, with **RDS**: the info
 line at the top right shows STEREO or MONO, the station name, programme type and radio
