@@ -340,7 +340,12 @@ class DemodChain:
         self.if_decim = self._pick_factor(self.sample_rate, self.spec.if_target_hz)
         self.if_rate = self.sample_rate / self.if_decim
 
-        self.pitch_hz = float(pitch_hz if pitch_hz is not None else self.spec.pitch_hz)
+        # Only CW has a beat note. The UI passes its pitch whatever the mode, and it once
+        # reached SSB too: USB then passed -500..+2200 Hz while the display shaded
+        # 0..+2700, and every voice came out 500 Hz high.
+        self.pitch_hz = self.spec.pitch_hz
+        if mode == "cw" and pitch_hz is not None:
+            self.pitch_hz = float(pitch_hz)
         self._user_offset = float(offset_hz)
         # The BFO is folded into the mixer, so the UI's offset keeps meaning "where I am
         # listening" rather than having to know about CW's pitch.
@@ -467,7 +472,7 @@ class DemodChain:
         passband.
         """
         pitch_hz = float(pitch_hz)
-        if pitch_hz == self.pitch_hz:
+        if self.mode != "cw" or pitch_hz == self.pitch_hz:
             return
         self.pitch_hz = pitch_hz
         self._mixer.set_offset(self._mix_offset())

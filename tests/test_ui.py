@@ -1490,14 +1490,13 @@ def test_cw_offers_narrow_bandwidths(qapp):
     win.close()
 
 
-def test_cw_passband_sits_at_the_pitch(qapp):
-    """The tone appears above where you are listening, so shade it there."""
-    from src.rgc_sdr.dsp.demod import MODE_SPECS as SPECS
-
+def test_cw_passband_is_centred_where_you_are_tuned(qapp):
+    """The pitch is where the *audio* tone lands; on the spectrum, the carrier that makes
+    it sits at the tuned frequency (measured: the chain passes -200..+200 Hz there)."""
     win = window_for(StubSource(_caps(), center=14.05e6), fft_size=1024)
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
     lo, hi = win.spectrum._passband.getRegion()
-    assert (lo + hi) / 2 == pytest.approx(14.05e6 + SPECS["cw"].pitch_hz, abs=1.0)
+    assert (lo + hi) / 2 == pytest.approx(14.05e6, abs=1.0)
     assert (hi - lo) == pytest.approx(500.0, abs=1.0)
     win.close()
 
@@ -1819,16 +1818,14 @@ def test_pitch_defaults_to_500(qapp):
     win.close()
 
 
-def test_pitch_moves_the_passband(qapp):
-    """The shaded band must follow the pitch, since that is where the tone appears."""
+def test_pitch_does_not_move_the_passband(qapp):
+    """Changing the beat note changes what you hear, not which signal you hear."""
     win = window_for(StubSource(_caps(), center=7.015e6), fft_size=1024)
     win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
-    win._pitch_combo.setCurrentText("400 Hz")
-    lo, hi = win.spectrum._passband.getRegion()
-    assert (lo + hi) / 2 == pytest.approx(7.015e6 + 400.0, abs=1.0)
-    win._pitch_combo.setCurrentText("800 Hz")
-    lo, hi = win.spectrum._passband.getRegion()
-    assert (lo + hi) / 2 == pytest.approx(7.015e6 + 800.0, abs=1.0)
+    for pitch in ("400 Hz", "800 Hz"):
+        win._pitch_combo.setCurrentText(pitch)
+        lo, hi = win.spectrum._passband.getRegion()
+        assert (lo + hi) / 2 == pytest.approx(7.015e6, abs=1.0)
     win.close()
 
 

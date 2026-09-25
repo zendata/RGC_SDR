@@ -1320,8 +1320,10 @@ class MainWindow(QtWidgets.QMainWindow):
         width = self._channel_bandwidth()
         centre = self.source.center_freq + self._offset_spin.value() * 1e3
         if mode == "cw":
-            # Narrow, and sitting at the BFO pitch above where you are listening.
-            self.spectrum.set_passband(centre + self.pitch_hz, width)
+            # Centred on the tuned frequency: the BFO is folded into the mixer, so a
+            # carrier *there* is what comes out at the pitch. (It was once drawn at
+            # centre + pitch, 500 Hz right of what was actually heard.)
+            self.spectrum.set_passband(centre, width)
             return
         if mode in ("usb", "lsb"):
             # One-sided: shade only the sideband actually being demodulated.

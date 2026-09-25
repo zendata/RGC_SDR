@@ -608,3 +608,34 @@ def test_audio_agc_attack_is_immediate_and_click_free():
     out = agc.process(np.full(1024, 1.0))
     assert agc.gain == pytest.approx(0.1)                   # there by the end of the block
     assert np.max(np.abs(np.diff(out))) < 0.2               # ramped, not a step
+
+
+# -- the shaded passband must be where the demodulator actually listens --------------
+
+def _passband_edges(mode, pitch_hz, fs=768e3):
+    """Measured -6 dB edges of the chain's response, relative to the tuned centre."""
+    freqs = np.arange(-4000.0, 4001.0, 100.0)
+    levels = []
+    for f in freqs:
+        chain = DemodChain(fs, mode, volume=1.0, agc=False, pitch_hz=pitch_hz)
+        t = np.arange(int(fs * 0.15)) / fs
+        x = np.exp(2j * np.pi * f * t).astype(np.complex64)
+        audio = np.concatenate([chain.process(x[i:i + 16384]) for i in range(0, x.size, 16384)])
+        levels.append(float(np.std(audio[len(audio) // 3:])))
+    levels = 20 * np.log10(np.array(levels) + 1e-12)
+    passed = freqs[levels > levels.max() - 6.0]
+    return passed.min(), passed.max()
+
+
+@pytest.mark.parametrize("mode,low,high", [("usb", 0.0, 2700.0), ("lsb", -2700.0, 0.0)])
+def test_ssb_listens_where_the_display_shades_whatever_the_cw_pitch(mode, low, high):
+    """The UI hands every mode its CW pitch; SSB must ignore it."""
+    lo, hi = _passband_edges(mode, pitch_hz=500.0)
+    assert lo == pytest.approx(low, abs=250.0)
+    assert hi == pytest.approx(high, abs=250.0)
+
+
+def test_ssb_ignores_a_pitch_change():
+    chain = DemodChain(768e3, "usb", pitch_hz=500.0)
+    chain.set_pitch(700.0)
+    assert chain.pitch_hz == 0.0
