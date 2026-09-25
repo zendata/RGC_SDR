@@ -712,6 +712,28 @@ one synthesizer and amp); the 3-minute timeout stays. Tested against a recording
 stand-in device; **the first real key-up is the owner's** -- the harness refused to let
 the assistant key the radio.
 
+## 7n. Repeaters, CTCSS and DCS (NBFM)
+
+Requested 2026-09-25. In NBFM only, on any frequency: a Simplex / Duplex + / Duplex −
+split with an editable offset (Australian defaults, `repeater.py`: 600 kHz on 2 m,
+5 MHz on 70 cm; some older VK 70 cm repeaters use 7 MHz), and Tone / TSQL / DCS.
+
+**DCS** (`dsp/tones.py`): a 23-bit Golay (23,12) word -- 9-bit octal code, fixed 100,
+11 check bits from generator 0xC75 -- repeated at 134.4 bit/s, least significant bit
+first, NRZ low-passed below 300 Hz, "1" = upward shift. Verified against the published
+tables rather than only its own decoder: 023 encodes to 0x763813, and the inverse of 023
+is a rotation of 047, 025 of 244 -- the inverse pairs radios list.
+
+**Transmit**: the tone or code is added after the 300 Hz voice high-pass at 15% of the
+deviation. **Receive**: `ToneSquelch` decimates the discriminator audio to 1.5 kHz and
+examines the last 0.5 s: CTCSS by a zero-padded spectrum's peak (within 1 Hz, so 67.0 and
+69.3 are told apart) and its share of sub-audible energy; DCS by normalised correlation
+with the code's own periodic waveform at every phase, signed, since an inverted code is
+another code (measured: 1.00 for the right code, 0.42 at most for others, threshold 0.6).
+It closes after two misses. The speaker audio is high-passed at 300 Hz while tone
+squelch is on, as radios do (tone > 30 dB below voice). Round trips through the real
+modulator and demodulator are tested for both.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

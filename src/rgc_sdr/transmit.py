@@ -31,7 +31,8 @@ class Transmitter:
     """Microphone audio, modulated in `mode`, written to `sink` if there is one."""
 
     def __init__(self, mode: str, mic=None, sink=None, iq_rate: float = TX_IQ_RATE,
-                 timeout_s: float = TX_TIMEOUT_S, block: int = 1024, clock=time.monotonic):
+                 timeout_s: float = TX_TIMEOUT_S, block: int = 1024, clock=time.monotonic,
+                 tone: tuple[str, object] | None = None):
         if mode not in TX_MODES:
             raise ValueError(
                 "CW transmit is not supported" if mode == "cw"
@@ -44,7 +45,7 @@ class Transmitter:
         self.mode = mode
         self.mic = mic
         self.sink = sink
-        self.modulator = Modulator(mode, iq_rate)
+        self.modulator = Modulator(mode, iq_rate, tone=tone)
         self.timeout_s = float(timeout_s)
         self._block = int(block)
         self._clock = clock

@@ -80,6 +80,15 @@ class Snapshot:
     pitch_hz: float = 500.0
     #: Broadcast FM in stereo when the station sends it; False forces mono.
     stereo: bool = True
+    #: NBFM repeater split for transmit: "simplex", "plus" or "minus".
+    repeater_shift: str = "simplex"
+    #: The split; None means the band's standard (600 kHz on 2 m, 5 MHz on 70 cm).
+    repeater_offset_hz: float | None = None
+    #: NBFM signalling: "off", "tone" (CTCSS sent), "tsql" (CTCSS sent and required on
+    #: receive) or "dcs" (DCS sent and required on receive).
+    tone_mode: str = "off"
+    ctcss_hz: float = 88.5
+    dcs_code: str = "023"
 
     def to_dict(self) -> dict:
         return asdict(self)

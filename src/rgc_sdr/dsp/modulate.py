@@ -34,6 +34,10 @@ TX_MODES = ("am", "nbfm", "wbfm", "usb", "lsb")
 #: The microphone's rate. CoreAudio gives the MacBook Air Microphone 48 kHz natively.
 AUDIO_RATE = 48_000.0
 
+#: CTCSS/DCS share of full deviation. 15% is typical: enough for a repeater's decoder,
+#: not enough to eat into the voice.
+TONE_LEVEL = 0.15
+
 
 @dataclass(frozen=True)
 class TxModeSpec:
@@ -146,6 +150,7 @@ class Modulator:
         iq_rate: float,
         audio_rate: float = AUDIO_RATE,
         am_depth: float = 0.8,
+        tone: tuple[str, object] | None = None,
     ) -> None:
         if mode == "cw":
             raise ValueError("CW transmit is not supported: it needs a keyer, not a microphone")
@@ -168,6 +173,15 @@ class Modulator:
             )
 
         self.am_depth = float(am_depth)
+        if tone is not None and mode != "nbfm":
+            raise ValueError("CTCSS and DCS are NBFM features")
+        #: ("ctcss", Hz) or ("dcs", "023"), sent under the voice; None for neither.
+        self.tone = tone
+        self._tone = None
+        if tone is not None:
+            from .tones import tone_generator
+
+            self._tone = tone_generator(self.audio_rate, *tone)
         self._band = _audio_bandpass(self.spec.audio_low_hz, self.spec.audio_high_hz,
                                      self.audio_rate)
         self._pre = (Preemphasis(self.audio_rate, self.spec.preemphasis_s)
@@ -190,6 +204,10 @@ class Modulator:
         a = self._band.process(a)
         if self._pre is not None:
             a = self._pre.process(a)
+        if self._tone is not None:
+            # Added after the 300 Hz high-pass, which keeps the voice out of the tone's
+            # band. 15% of the deviation (375 Hz of 2.5 kHz), the voice taking the rest.
+            a = (1.0 - TONE_LEVEL) * a + TONE_LEVEL * self._tone.process(a.size)
         a = self._audio_up.process(a)
         base = self.spec.baseband_rate
 

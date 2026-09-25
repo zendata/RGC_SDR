@@ -2435,6 +2435,9 @@ def test_status_keeps_the_reason_audio_failed_to_start(qapp, monkeypatch):
         def set_force_mono(self, mono):
             pass
 
+        def set_tone_squelch(self, tone):
+            pass
+
         def start(self):
             raise RuntimeError("output device busy")
 
@@ -2615,6 +2618,7 @@ def test_if_bandwidth_shows_the_radios_real_value_and_is_saved_only_when_chosen(
 
 from tests.test_transmit import FakeMic  # noqa: E402
 from src.rgc_sdr.transmit import Transmitter  # noqa: E402
+from src.rgc_sdr.repeater import CTCSS_TONES  # noqa: E402
 
 
 def tx_window(start="hackrf", clock=None):
@@ -2826,7 +2830,8 @@ def test_the_default_transmitter_opens_the_radios_sink(qapp, monkeypatch):
     import src.rgc_sdr.ui.main_window as mw
 
     monkeypatch.setattr(mw, "Transmitter",
-                        lambda mode, sink=None: Transmitter(mode, mic=FakeMic(), sink=sink))
+                        lambda mode, sink=None, **kw: Transmitter(mode, mic=FakeMic(),
+                                                                  sink=sink, **kw))
     win, sinks = sink_window()
     win._transmitter_factory = win._make_transmitter
     win._freq_spin.setValue(146.5)
@@ -2836,4 +2841,124 @@ def test_the_default_transmitter_opens_the_radios_sink(qapp, monkeypatch):
     assert sinks[-1].sample_rate == pytest.approx(2.4e6)
     assert not win.transmitter.dry_run
     win._tx_button.click()
+    win.close()
+
+
+# -- NBFM: repeater split and CTCSS/DCS -------------------------------------------------
+
+def _nbfm(win):
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+
+
+def _choose(combo, data):
+    combo.setCurrentIndex(combo.findData(data))
+
+
+def test_nbfm_row_shows_only_in_nbfm(qapp):
+    win, _ = tx_window()
+    for mode in ("am", "usb", "lsb", "wbfm", "cw", "off"):
+        win._mode_combo.setCurrentIndex(win._mode_combo.findData(mode))
+        assert win._fm_row.isHidden(), mode
+    _nbfm(win)
+    assert not win._fm_row.isHidden()
+    win.close()
+
+
+def test_repeater_split_shows_only_on_a_radio_that_transmits(qapp):
+    win, _ = tx_window(start="airspyhf")
+    win._freq_spin.setValue(146.9)
+    _nbfm(win)
+    assert win._rpt_box.isHidden() and not win._tone_combo.isHidden()   # RX tones still
+    win.switch_device("hackrf")
+    _nbfm(win)
+    assert not win._rpt_box.isHidden()
+    win.close()
+
+
+@pytest.mark.parametrize("freq_mhz,shift,expected_mhz", [
+    (146.9, "minus", 146.3),        # 2 m: 600 kHz
+    (147.0, "plus", 147.6),
+    (438.5, "minus", 433.5),        # 70 cm: 5 MHz
+    (146.9, "simplex", 146.9),
+])
+def test_tx_frequency_follows_the_band_offset(qapp, freq_mhz, shift, expected_mhz):
+    win, _ = tx_window()
+    win._freq_spin.setValue(freq_mhz)
+    _nbfm(win)
+    _choose(win._shift_combo, shift)
+    assert win.tx_freq == pytest.approx(expected_mhz * 1e6)
+    win.close()
+
+
+def test_the_split_works_on_any_frequency_with_the_last_offset(qapp):
+    win, _ = tx_window()
+    win._freq_spin.setValue(29.6)                 # 10 m FM: no Australian default
+    _nbfm(win)
+    _choose(win._shift_combo, "minus")
+    win._rpt_offset_spin.setValue(100.0)
+    assert win.tx_freq == pytest.approx(29.5e6)
+    win.close()
+
+
+def test_an_edited_offset_is_kept_for_its_band(qapp):
+    win, _ = tx_window()
+    win._freq_spin.setValue(438.5)
+    _nbfm(win)
+    win._rpt_offset_spin.setValue(7000.0)          # an older 7 MHz repeater
+    win._freq_spin.setValue(146.9)
+    assert win._rpt_offset_spin.value() == pytest.approx(600.0)
+    win._freq_spin.setValue(438.7)
+    assert win._rpt_offset_spin.value() == pytest.approx(7000.0)
+    win.close()
+
+
+def test_tone_lists_switch_between_ctcss_and_dcs(qapp):
+    win, _ = tx_window()
+    _nbfm(win)
+    assert win._tone_value_combo.isHidden()
+    _choose(win._tone_combo, "tsql")
+    assert win._tone_value_combo.count() == len(CTCSS_TONES)
+    _choose(win._tone_combo, "dcs")
+    assert win._tone_value_combo.currentText() == "D023N"
+    _choose(win._tone_value_combo, "754")
+    assert win.tx_tone() == ("dcs", "754") and win.rx_tone() == ("dcs", "754")
+    _choose(win._tone_combo, "tone")                # CTCSS on TX only
+    _choose(win._tone_value_combo, 123.0)
+    assert win.tx_tone() == ("ctcss", 123.0) and win.rx_tone() is None
+    win.close()
+
+
+def test_transmit_goes_to_the_repeater_input_with_the_tone(qapp):
+    win, sinks = sink_window()
+    captured = {}
+    win._transmitter_factory = lambda mode: captured.setdefault("tx", Transmitter(
+        mode, mic=FakeMic(), tone=win.tx_tone(),
+        sink=win.source.open_tx_sink(win.tx_freq, 2.4e6, {})))
+    win._freq_spin.setValue(146.9)
+    _nbfm(win)
+    _choose(win._shift_combo, "minus")
+    _choose(win._tone_combo, "tsql")
+    _choose(win._tone_value_combo, 91.5)
+    win._tx_button.click()
+    assert sinks[-1].center_freq == pytest.approx(146.3e6)
+    assert captured["tx"].modulator.tone == ("ctcss", 91.5)
+    assert not win._shift_combo.isEnabled()          # locked while keyed
+    win._tx_button.click()
+    win.close()
+
+
+def test_repeater_and_tone_are_saved_in_a_memory(qapp, tmp_path):
+    win, _, _ = switching_window(start="hackrf", settings=Settings(tmp_path / "s.json"))
+    win._freq_spin.setValue(438.5)
+    _nbfm(win)
+    _choose(win._shift_combo, "minus")
+    _choose(win._tone_combo, "dcs")
+    _choose(win._tone_value_combo, "205")
+    win.save_memory("70cm rptr")
+    _choose(win._shift_combo, "simplex")
+    _choose(win._tone_combo, "off")
+    win.recall_memory("70cm rptr")
+    assert win.repeater_shift == "minus" and win.tone_mode == "dcs"
+    assert win.tx_tone() == ("dcs", "205")
+    assert win.tx_freq == pytest.approx(433.5e6)
     win.close()

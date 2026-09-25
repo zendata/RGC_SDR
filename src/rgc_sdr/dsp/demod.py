@@ -423,6 +423,8 @@ class DemodChain:
                                         for _ in range(2)]
 
         self.muted_blocks = 0
+        self._tone_squelch = None
+        self._tone_highpass = None
         #: The most recent channel-filtered block, complex. CW decoding needs the
         #: envelope of this rather than the audio, which carries the beat note.
         self.last_channel = np.zeros(0, dtype=np.complex128)
@@ -477,6 +479,30 @@ class DemodChain:
         self.pitch_hz = pitch_hz
         self._mixer.set_offset(self._mix_offset())
         self._channel = Fir(self._channel_taps())
+
+    def set_tone_squelch(self, tone: tuple[str, object] | None) -> None:
+        """Only let audio through while a CTCSS tone or DCS code is received (NBFM).
+
+        The audio is high-passed at 300 Hz while this is on, as a radio does, so the
+        tone that opens the squelch is not heard in the speaker.
+        """
+        if tone is None or self.mode != "nbfm":
+            self._tone_squelch = None
+            self._tone_highpass = None
+            return
+        from .tones import SUBAUDIBLE_HZ, ToneSquelch
+
+        self._tone_squelch = ToneSquelch(self.audio_rate, *tone)
+        cutoff = SUBAUDIBLE_HZ / self.audio_rate
+        n = fir_length_for(cutoff, maximum=1023)
+        highpass = -lowpass_taps(cutoff, n)
+        highpass[n // 2] += 1.0
+        self._tone_highpass = Fir(highpass)
+
+    @property
+    def tone_open(self) -> bool | None:
+        """Whether the tone squelch is open; None when there is no tone squelch."""
+        return None if self._tone_squelch is None else self._tone_squelch.open
 
     def set_offset(self, offset_hz: float) -> None:
         self._user_offset = float(offset_hz)
@@ -563,6 +589,12 @@ class DemodChain:
                 return np.zeros(0, dtype=np.float32)
         if self._audio_fir is not None:
             audio = self._audio_fir.process(audio)
+
+        if self._tone_squelch is not None:
+            # Decided on the audio *with* the tone in it, before it is filtered out.
+            if not self._tone_squelch.process(audio):
+                squelched = True
+            audio = self._tone_highpass.process(audio)
 
         if squelched:
             self.muted_blocks += 1

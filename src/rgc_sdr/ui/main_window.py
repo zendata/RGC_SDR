@@ -35,6 +35,8 @@ from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from ..dsp.modulate import TX_MODES
 from ..transmit import TX_IQ_RATE, TX_TIMEOUT_S, Transmitter
+from ..repeater import CTCSS_TONES, MINUS, PLUS, SIMPLEX, band_for, tx_frequency
+from ..dsp.tones import DCS_CODES
 from .smeter import SMeter
 from .spectrum_view import SpectrumView
 from .waterfall import COLORMAPS, WaterfallView
@@ -233,6 +235,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._save_timer.setInterval(800)
         self._save_timer.timeout.connect(self._save_state)
 
+        # Repeater and tone settings, before audio starts so its tone squelch is right.
+        self._apply_fm_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
@@ -757,6 +761,7 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(self._build_radio_row())
         outer.addWidget(self._build_display_row())
         outer.addWidget(self._build_audio_row())
+        outer.addWidget(self._build_fm_row())
         outer.addWidget(self._build_memory_row())
         return bar
 
@@ -796,6 +801,200 @@ class MainWindow(QtWidgets.QMainWindow):
             not self._bw_combo.isHidden() or not self._device_slot.isHidden()
             or not self._tx_slot.isHidden()
         )
+
+    def _build_fm_row(self) -> QtWidgets.QWidget:
+        """NBFM only: repeater split for transmit, and CTCSS/DCS signalling."""
+        self._fm_row = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(self._fm_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QtWidgets.QLabel("NBFM"))
+
+        # The split only matters to a radio that transmits, so it hides on others.
+        self._rpt_box = QtWidgets.QWidget()
+        rpt = QtWidgets.QHBoxLayout(self._rpt_box)
+        rpt.setContentsMargins(0, 0, 0, 0)
+        self._shift_combo = QtWidgets.QComboBox()
+        for label, key in (("Simplex", SIMPLEX), ("Duplex +", PLUS), ("Duplex \u2212", MINUS)):
+            self._shift_combo.addItem(label, key)
+        self._shift_combo.setToolTip("Transmit on the listening frequency, or above or below "
+                                     "it by the offset to work a repeater")
+        self._shift_combo.currentIndexChanged.connect(self._on_fm_changed)
+        rpt.addWidget(self._shift_combo)
+        # "Rpt offset", not "Offset": the audio row already has a listening offset.
+        rpt.addWidget(QtWidgets.QLabel("Rpt offset"))
+        self._rpt_offset_spin = QtWidgets.QDoubleSpinBox()
+        self._rpt_offset_spin.setRange(0.0, 100_000.0)
+        self._rpt_offset_spin.setDecimals(1)
+        self._rpt_offset_spin.setSingleStep(100.0)
+        self._rpt_offset_spin.setSuffix(" kHz")
+        self._rpt_offset_spin.setToolTip("Repeater split. Australia: 600 kHz on 2 m, "
+                                         "5 MHz on 70 cm (7 MHz on some older repeaters)")
+        self._rpt_offset_spin.valueChanged.connect(self._on_rpt_offset_edited)
+        rpt.addWidget(self._rpt_offset_spin)
+        self._tx_freq_label = QtWidgets.QLabel("")
+        self._tx_freq_label.setStyleSheet("color: #ff4d4d;")
+        rpt.addWidget(self._tx_freq_label)
+        row.addWidget(self._rpt_box)
+
+        row.addSpacing(16)
+        row.addWidget(QtWidgets.QLabel("Tone"))
+        self._tone_combo = QtWidgets.QComboBox()
+        for label, key in (("Off", "off"), ("Tone (CTCSS TX)", "tone"),
+                           ("TSQL (CTCSS TX+RX)", "tsql"), ("DCS (TX+RX)", "dcs")):
+            self._tone_combo.addItem(label, key)
+        self._tone_combo.setToolTip(
+            "Tone: CTCSS sent on transmit.\n"
+            "TSQL: CTCSS sent, and receive stays muted unless it is heard.\n"
+            "DCS: the DCS code sent, and receive muted unless it is heard.")
+        self._tone_combo.currentIndexChanged.connect(self._on_tone_mode_changed)
+        row.addWidget(self._tone_combo)
+        self._tone_value_combo = QtWidgets.QComboBox()
+        self._tone_value_combo.currentIndexChanged.connect(self._on_tone_value_changed)
+        row.addWidget(self._tone_value_combo)
+        self._tone_state = QtWidgets.QLabel("")
+        row.addWidget(self._tone_state)
+        row.addStretch(1)
+
+        # Per-band offsets edited this session; the band's standard otherwise.
+        self._rpt_offsets: dict[str | None, float] = {}
+        self._rpt_band = band_for(self.source.center_freq)
+        self._ctcss_hz = 88.5
+        self._dcs_code = "023"
+        self._fm_loading = False
+        return self._fm_row
+
+    # -- NBFM: repeater and tones ------------------------------------------------
+
+    @property
+    def repeater_shift(self) -> str:
+        return self._shift_combo.currentData() or SIMPLEX
+
+    @property
+    def tone_mode(self) -> str:
+        return self._tone_combo.currentData() or "off"
+
+    @property
+    def tx_freq(self) -> float:
+        """Where TX goes: the listening frequency, shifted for a repeater in NBFM."""
+        if self.mode != "nbfm" or self.source.caps.tx is None:
+            return self.listen_freq
+        return tx_frequency(self.listen_freq, self.repeater_shift,
+                            self._rpt_offset_spin.value() * 1e3)
+
+    def tx_tone(self) -> tuple[str, object] | None:
+        if self.mode != "nbfm":
+            return None
+        if self.tone_mode in ("tone", "tsql"):
+            return ("ctcss", self._ctcss_hz)
+        if self.tone_mode == "dcs":
+            return ("dcs", self._dcs_code)
+        return None
+
+    def rx_tone(self) -> tuple[str, object] | None:
+        if self.mode != "nbfm":
+            return None
+        if self.tone_mode == "tsql":
+            return ("ctcss", self._ctcss_hz)
+        if self.tone_mode == "dcs":
+            return ("dcs", self._dcs_code)
+        return None
+
+    def _fill_tone_values(self) -> None:
+        combo = self._tone_value_combo
+        combo.blockSignals(True)
+        combo.clear()
+        if self.tone_mode == "dcs":
+            for code in DCS_CODES:
+                combo.addItem(f"D{code}N", code)
+            combo.setCurrentIndex(max(0, combo.findData(self._dcs_code)))
+            combo.setToolTip("DCS code, normal polarity")
+        elif self.tone_mode in ("tone", "tsql"):
+            for hz in CTCSS_TONES:
+                combo.addItem(f"{hz:.1f} Hz", hz)
+            combo.setCurrentIndex(max(0, combo.findData(self._ctcss_hz)))
+            combo.setToolTip("CTCSS tone frequency")
+        combo.blockSignals(False)
+        combo.setVisible(self.tone_mode != "off")
+
+    def _on_tone_mode_changed(self) -> None:
+        self._fill_tone_values()
+        self._apply_rx_tone()
+        self._on_fm_changed()
+
+    def _on_tone_value_changed(self) -> None:
+        value = self._tone_value_combo.currentData()
+        if value is None:
+            return
+        if self.tone_mode == "dcs":
+            self._dcs_code = str(value)
+        else:
+            self._ctcss_hz = float(value)
+        self._apply_rx_tone()
+        self._on_fm_changed()
+
+    def _apply_rx_tone(self) -> None:
+        if self.audio is not None:
+            self.audio.set_tone_squelch(self.rx_tone())
+        if self.rx_tone() is None:
+            self._tone_state.setText("")
+
+    def _on_rpt_offset_edited(self, khz: float) -> None:
+        if not self._fm_loading:
+            self._rpt_offsets[self._rpt_band.name if self._rpt_band else None] = khz * 1e3
+        self._on_fm_changed()
+
+    def _on_fm_changed(self) -> None:
+        self._sync_fm_row()
+        if not self._fm_loading:
+            self._schedule_save()
+
+    def _sync_fm_row(self) -> None:
+        """Follow the mode (NBFM only), the radio, and the band for the offset."""
+        if not hasattr(self, "_fm_row"):
+            return
+        nbfm = self.mode == "nbfm"
+        self._fm_row.setVisible(nbfm)
+        self._rpt_box.setVisible(self.source.caps.tx is not None)
+        band = band_for(self.listen_freq)
+        if band != self._rpt_band:
+            self._rpt_band = band
+            key = band.name if band else None
+            standard = band.offset_hz if band else self._rpt_offset_spin.value() * 1e3
+            self._fm_loading, loading = True, self._fm_loading
+            self._rpt_offset_spin.setValue(self._rpt_offsets.get(key, standard) / 1e3)
+            self._fm_loading = loading
+        shifted = self.repeater_shift != SIMPLEX
+        self._rpt_offset_spin.setEnabled(shifted and not self.transmitting)
+        self._tx_freq_label.setText(f"TX {self.tx_freq / 1e6:.4f} MHz" if shifted else "")
+
+    def _update_tone_state(self) -> None:
+        if self.rx_tone() is None or self.audio is None:
+            return
+        state = getattr(self.audio, "tone_open", None)
+        if state is None:
+            return
+        self._tone_state.setText("\u25cf open" if state else "\u25cb closed")
+        self._tone_state.setStyleSheet("color: #8ee6a0;" if state else "color: #888;")
+
+    def _apply_fm_snapshot(self, snap: Snapshot) -> None:
+        self._fm_loading = True
+        try:
+            self._ctcss_hz = float(snap.ctcss_hz) if snap.ctcss_hz in CTCSS_TONES else 88.5
+            self._dcs_code = snap.dcs_code if snap.dcs_code in DCS_CODES else "023"
+            self._shift_combo.setCurrentIndex(max(0, self._shift_combo.findData(
+                snap.repeater_shift)))
+            self._tone_combo.setCurrentIndex(max(0, self._tone_combo.findData(snap.tone_mode)))
+            self._fill_tone_values()
+            band = band_for(snap.freq_hz)
+            self._rpt_band = band
+            offset = (snap.repeater_offset_hz if snap.repeater_offset_hz is not None
+                      else band.offset_hz if band else 600e3)
+            self._rpt_offsets[band.name if band else None] = offset
+            self._rpt_offset_spin.setValue(offset / 1e3)
+        finally:
+            self._fm_loading = False
+        self._apply_rx_tone()
+        self._sync_fm_row()
 
     def _build_audio_row(self) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
@@ -1343,6 +1542,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return float(self._squelch_spin.value())
 
     def _update_passband(self) -> None:
+        self._sync_fm_row()          # the band, hence the repeater offset, may have changed
         mode = self.mode
         if mode == "off" or mode not in MODE_SPECS:
             self.spectrum.clear_passband()
@@ -1389,6 +1589,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             sink.set_force_mono(not self._stereo_check.isChecked())
             try:
+                sink.set_tone_squelch(self.rx_tone())
                 sink.start()
                 sink.set_muted(self.muted)
                 self.audio = sink
@@ -1397,6 +1598,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             try:
                 self.audio.set_mode(mode)
+                self.audio.set_tone_squelch(self.rx_tone())
             except Exception as exc:
                 self._audio_problem = f"could not switch mode: {exc}"
 
@@ -1424,6 +1626,7 @@ class MainWindow(QtWidgets.QMainWindow):
         broadcast FM; the info line serves both.
         """
         mode = self.mode
+        self._sync_fm_row()
         self._zerobeat_button.setVisible(mode == "cw")
         self._stereo_check.setVisible(mode == "wbfm")
         show = mode in ("cw", "wbfm")
@@ -1540,8 +1743,8 @@ class MainWindow(QtWidgets.QMainWindow):
         A source with no transmit path (a test stand-in) gives a dry run instead.
         """
         opener = getattr(self.source, "open_tx_sink", None)
-        sink = opener(self.listen_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
-        return Transmitter(mode, sink=sink)
+        sink = opener(self.tx_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
+        return Transmitter(mode, sink=sink, tone=self.tx_tone())
 
     def _reset_tx_gains(self) -> None:
         tx = self.source.caps.tx
@@ -1592,8 +1795,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """While keyed, freeze what would move or disturb the transmission."""
         for widget in (self._freq_spin, self._rate_combo, self._device_combo,
                        self._offset_spin, self._memory_combo, self._device_slot,
-                       self._bw_combo, self._scan_button):
+                       self._bw_combo, self._scan_button, self._shift_combo,
+                       self._tone_combo, self._tone_value_combo):
             widget.setEnabled(not locked)
+        self._sync_fm_row()
 
     def _on_tx_toggled(self, on: bool) -> None:
         if on:
@@ -1911,6 +2116,11 @@ class MainWindow(QtWidgets.QMainWindow):
             snap=self.snap_enabled,
             pitch_hz=self.pitch_hz,
             stereo=self._stereo_check.isChecked(),
+            repeater_shift=self.repeater_shift,
+            repeater_offset_hz=self._rpt_offset_spin.value() * 1e3,
+            tone_mode=self.tone_mode,
+            ctcss_hz=self._ctcss_hz,
+            dcs_code=self._dcs_code,
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -1990,6 +2200,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._step_combo.setCurrentIndex(index)
             self._step_combo.blockSignals(False)
             self._on_step_changed()
+        self._apply_fm_snapshot(snap)
         wanted = snap.mode if snap.mode in MODES else "off"
         self._mode_combo.blockSignals(True)
         self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(wanted)))
@@ -2191,6 +2402,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.waterfall.push(dbfs)
         self._update_smeter(dbfs, freqs)
         self._update_info_line()
+        self._update_tone_state()
         self._scan_frame(freqs, dbfs)
         self._rows_pushed += 1
 

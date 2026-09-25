@@ -135,6 +135,7 @@ class AudioSink:
         self._offset = float(offset_hz)
         self._volume = float(volume)
         self._squelch = squelch_dbfs
+        self._tone_squelch = None
         self._bandwidth = bandwidth_hz
         self._pitch = pitch_hz
         self._muted = False
@@ -231,6 +232,17 @@ class AudioSink:
             if self._chain is not None:
                 self._chain.volume = self._volume
 
+    def set_tone_squelch(self, tone: tuple[str, object] | None) -> None:
+        """CTCSS/DCS squelch for NBFM: ("ctcss", Hz), ("dcs", "023") or None."""
+        self._tone_squelch = tone
+        with self._lock:
+            if self._chain is not None:
+                self._chain.set_tone_squelch(tone)
+
+    @property
+    def tone_open(self) -> bool | None:
+        return self._chain.tone_open if self._chain is not None else None
+
     def set_squelch(self, squelch_dbfs: float | None) -> None:
         self._squelch = squelch_dbfs
         with self._lock:
@@ -317,6 +329,7 @@ class AudioSink:
         with self._lock:
             self._chain = self._build_chain()
             self._chain.force_mono = self._force_mono
+            self._chain.set_tone_squelch(self._tone_squelch)
             if self._mode == "cw":
                 self._sampler = EnvelopeSampler(ENVELOPE_DECIM)
                 self._decoder = CwDecoder(self._chain.if_rate / ENVELOPE_DECIM)

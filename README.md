@@ -184,6 +184,18 @@ show in the status bar. It is enabled only for radios with a transmitter (the Ha
   (VK3RQ). The HackRF's harmonics are strong -- use a dummy load or a filter.
 - The first press asks macOS for microphone permission.
 
+**NBFM row** (shown only in NBFM, on any frequency):
+- **Simplex / Duplex + / Duplex −** with a **Rpt offset**: transmit on the listening
+  frequency, or above or below it to work a repeater. The TX frequency shows in red. The
+  offset defaults to the Australian standard for the band -- 600 kHz on 2 m, 5 MHz on
+  70 cm -- and an edited one (7 MHz for an older 70 cm repeater, say) is kept for that
+  band. Shown only for radios that transmit.
+- **Tone**: *Tone* sends a CTCSS tone; *TSQL* sends it and keeps receive muted until
+  it is heard; *DCS* does the same with a DCS code. Pick the tone frequency or the code
+  beside it. The tone is filtered out of the speaker, and "open"/"closed" shows whether
+  it is being received. Tone squelch works on receive-only radios too.
+- All of it is saved with memories.
+
 ### Scanner
 
 The **Scan** button, right of Zoom, opens the **Scanner** panel. It sweeps a frequency range, logs every active channel it finds, and
