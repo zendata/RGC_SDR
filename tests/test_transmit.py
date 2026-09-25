@@ -90,3 +90,113 @@ def test_timeout_expires_on_the_clock():
     assert tx.expired()
     tx.stop()
     assert not tx.expired()
+
+
+# -- the Soapy transmit sink, against a recording stand-in device ---------------------
+
+from src.rgc_sdr.device.sink import SoapyIQSink  # noqa: E402
+from src.rgc_sdr.device.source import LO_OFFSET_HZ, SOAPY_TX  # noqa: E402
+from src.rgc_sdr.device.profiles import profile_for, caps_from_profile  # noqa: E402
+
+
+class _Result:
+    def __init__(self, ret):
+        self.ret = ret
+
+
+class RecordingDevice:
+    """Records Soapy calls; accepts writes in chunks, as a real driver does."""
+
+    def __init__(self, chunk=10_000):
+        self.calls = []
+        self.chunk = chunk
+        self.sent = []
+
+    def setSampleRate(self, d, ch, rate):
+        self.calls.append(("rate", d, rate))
+
+    def setFrequency(self, d, ch, hz):
+        self.calls.append(("freq", d, hz))
+
+    def setGain(self, d, ch, name, db):
+        self.calls.append(("gain", d, name, db))
+
+    def setupStream(self, d, fmt):
+        self.calls.append(("setup", d, fmt))
+        return "tx-stream"
+
+    def activateStream(self, s):
+        self.calls.append(("activate", s))
+
+    def deactivateStream(self, s):
+        self.calls.append(("deactivate", s))
+
+    def closeStream(self, s):
+        self.calls.append(("close", s))
+
+    def writeStream(self, s, bufs, n, timeoutUs=0):
+        take = min(n, self.chunk)
+        self.sent.append(np.array(bufs[0][:take]))
+        return _Result(take)
+
+
+class FakeSource:
+    def __init__(self, key="hackrf"):
+        self.profile = profile_for(key)
+        self.caps = caps_from_profile(self.profile)
+        self.soapy_device = RecordingDevice()
+        self.events = []
+
+    def stop(self):
+        self.events.append("rx stop")
+
+    def start(self):
+        self.events.append("rx start")
+
+
+def test_half_duplex_pauses_the_receiver_around_transmit():
+    src = FakeSource()
+    sink = SoapyIQSink(src, 146.5e6, 2.4e6, gains={"VGA": 10.0})
+    sink.start()
+    assert src.events == ["rx stop"]
+    sink.stop()
+    assert src.events == ["rx stop", "rx start"]
+    kinds = [c[0] for c in src.soapy_device.calls]
+    assert kinds.index("setup") < kinds.index("activate") < kinds.index("deactivate")
+
+
+def test_transmits_from_the_lo_offset_and_shifts_the_signal_onto_frequency():
+    """HackRF: LO 200 kHz above, signal shifted down, so it lands on the wanted
+    frequency and the LO leakage 200 kHz away."""
+    src = FakeSource()
+    sink = SoapyIQSink(src, 146.5e6, 2.4e6)
+    sink.start()
+    assert ("freq", SOAPY_TX, 146.5e6 + LO_OFFSET_HZ) in src.soapy_device.calls
+    sink.write(np.ones(24_000, np.complex64))               # a carrier at baseband 0
+    sent = np.concatenate(src.soapy_device.sent)
+    spectrum = np.abs(np.fft.fft(sent))
+    freqs = np.fft.fftfreq(sent.size, 1 / 2.4e6)
+    assert freqs[np.argmax(spectrum)] == pytest.approx(-LO_OFFSET_HZ, abs=200.0)
+    sink.stop()
+
+
+def test_every_sample_is_written_even_when_the_driver_takes_it_in_pieces():
+    src = FakeSource()
+    sink = SoapyIQSink(src, 146.5e6, 2.4e6)
+    sink.start()
+    assert sink.write(np.ones(48_000, np.complex64)) == 48_000
+    assert sum(b.size for b in src.soapy_device.sent) == 48_000
+    sink.stop()
+
+
+def test_tx_gains_are_applied_to_the_transmit_side():
+    src = FakeSource()
+    sink = SoapyIQSink(src, 146.5e6, 2.4e6, gains={"VGA": 12.0, "AMP": 0.0})
+    sink.start()
+    assert ("gain", SOAPY_TX, "VGA", 12.0) in src.soapy_device.calls
+    sink.stop()
+
+
+def test_a_receive_only_radio_cannot_make_a_sink():
+    with pytest.raises(RuntimeError, match="cannot transmit"):
+        SoapyIQSink(FakeSource("airspyhf"), 7.1e6, 2.4e6)

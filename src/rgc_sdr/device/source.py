@@ -653,6 +653,17 @@ class SoapyIQSource(IQSource):
             self._nco = _Nco(shift, self._rate)
 
     @property
+    def soapy_device(self):
+        """The open Soapy device, for a transmit sink sharing it (device/sink.py)."""
+        return self._dev
+
+    def open_tx_sink(self, center_freq: float, sample_rate: float,
+                     gains: dict[str, float] | None = None):
+        from .sink import SoapyIQSink
+
+        return SoapyIQSink(self, center_freq, sample_rate, gains)
+
+    @property
     def dc_spike_offset_hz(self) -> float:
         return self._nco.shift_hz
 

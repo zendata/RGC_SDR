@@ -122,6 +122,8 @@ class RadioSettings:
     #: Colour range; None means fit to the signal.
     min_db: float | None = None
     max_db: float | None = None
+    #: Transmit gain stage name -> dB, for radios that transmit.
+    tx_gains: dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -137,12 +139,13 @@ class RadioSettings:
         out.decimation = max(1, _coerce(data.get("decimation", 1), 1))
         if data.get("agc") is not None:
             out.agc = bool(data["agc"])
-        gains = data.get("gains")
-        if isinstance(gains, dict):
-            for key, value in gains.items():
-                db = _coerce(value, None)
-                if db is not None:
-                    out.gains[str(key)] = db
+        for attr in ("gains", "tx_gains"):
+            gains = data.get(attr)
+            if isinstance(gains, dict):
+                for key, value in gains.items():
+                    db = _coerce(value, None)
+                    if db is not None:
+                        getattr(out, attr)[str(key)] = db
         flags = data.get("driver_settings")
         if isinstance(flags, dict):
             out.driver_settings = {str(k): bool(v) for k, v in flags.items()}
