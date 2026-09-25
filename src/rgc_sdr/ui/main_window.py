@@ -314,6 +314,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _refresh_hw_bandwidths(self) -> None:
         widths = sorted(self.source.caps.bandwidths)
+        actual = getattr(self.source, "bandwidth", 0.0) or 0.0
+        if widths and actual > 0 and all(abs(w - actual) > 0.01 * actual for w in widths):
+            # The radio can be set to a width it does not list: the Pluto opens at 18 MHz
+            # with 10 MHz its widest option. Show that, not the nearest option.
+            widths = sorted(widths + [actual])
         combo = self._bw_combo
         combo.blockSignals(True)
         combo.clear()
@@ -321,7 +326,6 @@ class MainWindow(QtWidgets.QMainWindow):
             combo.addItem(f"{bw / 1e3:g} kHz", bw)
         # Show what the radio is really using. Drivers such as the HackRF's set it from
         # the sample rate, so the first entry would be a lie (1.75 MHz shown, 3.5 in use).
-        actual = getattr(self.source, "bandwidth", 0.0) or 0.0
         if widths and actual > 0:
             combo.setCurrentIndex(min(range(len(widths)), key=lambda i: abs(widths[i] - actual)))
         self._if_bw_chosen = False

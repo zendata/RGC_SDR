@@ -2962,3 +2962,13 @@ def test_repeater_and_tone_are_saved_in_a_memory(qapp, tmp_path):
     assert win.tx_tone() == ("dcs", "205")
     assert win.tx_freq == pytest.approx(433.5e6)
     win.close()
+
+
+def test_if_bandwidth_shows_a_width_the_radio_does_not_list(qapp):
+    """The Pluto opens at 18 MHz; its widest listed option is 10 MHz."""
+    src = StubSource(_caps(driver="plutosdr", bandwidths=(2e6, 5e6, 10e6)))
+    src.bandwidth = 18e6
+    win = window_for(src, fft_size=1024)
+    assert win._bw_combo.currentData() == 18e6
+    assert win._bw_combo.currentText() == "18000 kHz"
+    win.close()

@@ -325,6 +325,9 @@ class SequentialReader:
 #: pilot was unusable (coherence 0.09); off the spike it locked.
 LO_OFFSET_HZ = 200e3
 
+#: Synthesizer readback closer than this to the request is reported as the request.
+LO_READBACK_TOLERANCE_HZ = 10.0
+
 
 class _Nco:
     """Phase-continuous frequency shift of a complex stream, in place.
@@ -646,8 +649,11 @@ class SoapyIQSource(IQSource):
         if shift and not self._caps.covers(wanted + shift):
             shift = -shift
         self._dev.setFrequency(SOAPY_RX, 0, wanted + shift)
-        hardware = float(self._dev.getFrequency(SOAPY_RX, 0))
-        self._freq = hardware - shift
+        hardware = float(self._dev.getFrequency(SOAPY_RX, 0)) - shift
+        # A synthesizer lands within a few hertz (the Pluto reads back 101.899998 MHz
+        # for 101.9) -- far inside its crystal's own error of several kHz at VHF. Report
+        # the frequency asked for then, rather than a step nobody can use.
+        self._freq = wanted if abs(hardware - wanted) < LO_READBACK_TOLERANCE_HZ else hardware
         if shift != self._nco.shift_hz or self._nco.rate != self._rate:
             # Swapped whole, so the reader thread only ever sees a complete NCO.
             self._nco = _Nco(shift, self._rate)

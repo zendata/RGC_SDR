@@ -167,6 +167,19 @@ PROFILES: tuple[SdrProfile, ...] = (
         module="PlutoSDRSupport",
         install="./tools/install_drivers.sh pluto (builds libiio, libad9361, SoapyPlutoSDR)",
         notes="325-3800 MHz as shipped; 70-6000 MHz with the well-known firmware change.",
+        # Measured 2026-09-25 (VK3RQ's Pluto, which reports 70-6000 MHz): the driver
+        # starts at PGA 71 dB, where Melbourne FM overloads it -- 3 dB over a raised
+        # floor, stereo 40% of the time, no radio text. At 50 dB: 47 dB over the floor,
+        # stereo 99%, RDS 453 good / 0 bad, IQ peaks 0.32.
+        default_gains=(("PGA", 50.0),),
+        # Probed 2026-09-25, nothing keyed. Unlike the HackRF it is full duplex, so the
+        # receiver keeps running while it transmits.
+        tx=TxCaps(
+            freq_ranges=(FreqRange(70e6, 6000e6),),
+            gain_elements=(GainElement("PGA", 0.0, 89.0, 1.0),),
+            sample_rates=(1e6, 2e6, 4e6, 6e6),
+            full_duplex=True,
+        ),
     ),
 )
 

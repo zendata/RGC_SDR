@@ -87,6 +87,19 @@ appears 200 kHz above it, and the scanner's DC guard moves there too. Measured o
 HackRF, tuned straight to the station: The Fox and SmoothFM in stereo with full RDS (535/10
 and 546/0 blocks), Triple M stereo 97% (0% before).
 
+**ADALM-Pluto, measured 2026-09-25** (VK3RQ's, over USB, `usb:0.1.5`): reports
+**70-6000 MHz** (the extended-range firmware change; stock is 325-3800), RX gain PGA 0-73
+dB with a working AGC, rates 65 kS/s and 1-10 MS/s, IF bandwidth options 0.2-10 MHz, and
+a transmitter (PGA 0-89 dB) that is **full duplex**. Streams 2 MS/s with zero errors.
+The driver opens at PGA 71 dB, which overloads on Melbourne FM (station 3 dB over a
+raised floor, stereo 40%); at 50 dB (now the profile default) The Fox gave 47 dB over the
+floor, stereo 99%, RDS 453/0 with full radio text. It opens with an **18 MHz** IF
+bandwidth -- wider than any listed option, so the IF BW combo now adds the real value.
+Narrowing it to 2 or 1 MHz lowered the floor 1-2 dB but left the narrow spurs across the
+spectrum unchanged (~230-260 either way): they are not aliasing. Its synthesizer reads
+back 2 Hz off (101.899998 MHz); a readback within 10 Hz is reported as the request, the
+crystal's own error being several kHz at VHF.
+
 ## 4. Device access & multi-SDR support
 SoapySDR is the abstraction seam. Future radios (HackRF is already installed) must work without
 touching DSP or UI code, so:
