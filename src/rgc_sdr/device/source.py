@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import threading
 from abc import ABC, abstractmethod
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -299,8 +300,61 @@ class SequentialReader:
             self._cursor = ring._total
 
 
+#: How far a radio with a DC spike is tuned away from the wanted frequency. The stream is
+#: shifted back in software, so the spike lands this far from centre instead of on top of
+#: whatever is being listened to. Measured on a HackRF at 105.1 MHz: at centre the stereo
+#: pilot was unusable (coherence 0.09); off the spike it locked.
+LO_OFFSET_HZ = 200e3
+
+
+class _Nco:
+    """Phase-continuous frequency shift of a complex stream, in place.
+
+    Uses one period of the complex exponential as a lookup table when the shift divides
+    the rate into a short cycle -- 200 kHz does into every supported rate (4 MS/s: 20
+    samples) -- which costs a multiply per sample instead of an exp. Otherwise falls back
+    to computing the phasor from a running phase.
+    """
+
+    MAX_TABLE = 1 << 20
+
+    def __init__(self, shift_hz: float, rate: float) -> None:
+        self.shift_hz = float(shift_hz)
+        self.rate = float(rate)
+        self._n = 0
+        self._table = None
+        self._phase = 0.0
+        if self.shift_hz == 0.0:
+            return
+        r, f = int(round(self.rate)), int(round(abs(self.shift_hz)))
+        if r == self.rate and f == abs(self.shift_hz):
+            period = r // math.gcd(r, f)
+            if period <= self.MAX_TABLE:
+                n = np.arange(period)
+                self._table = np.exp(2j * np.pi * self.shift_hz * n / self.rate).astype(
+                    np.complex64)
+
+    def process(self, x: np.ndarray) -> None:
+        if self.shift_hz == 0.0 or x.size == 0:
+            return
+        if self._table is not None:
+            period = self._table.size
+            idx = np.arange(self._n, self._n + x.size) % period
+            x *= self._table[idx]
+            self._n = (self._n + x.size) % period
+            return
+        step = 2 * np.pi * self.shift_hz / self.rate
+        phases = self._phase + step * np.arange(x.size)
+        x *= np.exp(1j * phases).astype(np.complex64)
+        self._phase = float((self._phase + step * x.size) % (2 * np.pi))
+
+
 class IQSource(ABC):
     """A running stream of complex baseband samples."""
+
+    #: Where the radio's DC spike appears, relative to `center_freq`. Zero for a radio
+    #: without one, or one listened to at centre.
+    dc_spike_offset_hz: float = 0.0
 
     @property
     @abstractmethod
@@ -393,8 +447,11 @@ class SoapyIQSource(IQSource):
         # Read back: the driver may quantise to a supported rate.
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
 
+        # Radios with a DC spike are tuned LO_OFFSET_HZ away and shifted back (_Nco).
+        self._lo_offset = LO_OFFSET_HZ if (self.profile and self.profile.dc_offset) else 0.0
+        self._nco = _Nco(0.0, self._rate)
         self._freq = float(center_freq)
-        self._dev.setFrequency(SOAPY_RX, 0, self._freq)
+        self._tune_hardware(self._caps.clamp_freq(self._freq))
 
         if agc is not None and self._caps.has_agc:
             self._dev.setGainMode(SOAPY_RX, 0, bool(agc))
@@ -533,13 +590,32 @@ class SoapyIQSource(IQSource):
         on a live stream shows no transient; only a *rate* change, which restarts the
         stream, needs the settle.)
         """
-        target = self._caps.clamp_freq(float(hz))
-        self._dev.setFrequency(SOAPY_RX, 0, target)
-        self._freq = float(self._dev.getFrequency(SOAPY_RX, 0))
+        self._tune_hardware(self._caps.clamp_freq(float(hz)))
         if flush:
             self._ring.clear()
             self._arm_settle()
         return self._freq
+
+    def _tune_hardware(self, wanted: float) -> None:
+        """Tune so that `wanted` ends up at the centre of the stream we deliver.
+
+        With an LO offset the hardware sits above the wanted frequency (below it at the
+        top of the radio's range) and the NCO shifts the stream by the difference, so
+        the spike lands at +/-LO_OFFSET_HZ on the display.
+        """
+        shift = self._lo_offset
+        if shift and not self._caps.covers(wanted + shift):
+            shift = -shift
+        self._dev.setFrequency(SOAPY_RX, 0, wanted + shift)
+        hardware = float(self._dev.getFrequency(SOAPY_RX, 0))
+        self._freq = hardware - shift
+        if shift != self._nco.shift_hz or self._nco.rate != self._rate:
+            # Swapped whole, so the reader thread only ever sees a complete NCO.
+            self._nco = _Nco(shift, self._rate)
+
+    @property
+    def dc_spike_offset_hz(self) -> float:
+        return self._nco.shift_hz
 
     @property
     def bandwidth(self) -> float:
@@ -571,6 +647,7 @@ class SoapyIQSource(IQSource):
         self._dev.setSampleRate(SOAPY_RX, 0, target)
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
         self._ring = _Ring(self._ring_capacity())
+        self._nco = _Nco(self._nco.shift_hz, self._rate)
         if was_running:
             self.start()
         return self._rate
@@ -643,6 +720,7 @@ class SoapyIQSource(IQSource):
                 if self._read_samples <= self._drop_until:
                     self._dropped += ret
                     continue
+                self._nco.process(buf[:ret])       # undo the LO offset, if any
                 self._ring.write(buf[:ret])
                 self._total_samples += ret
             elif ret == ERR_OVERFLOW:

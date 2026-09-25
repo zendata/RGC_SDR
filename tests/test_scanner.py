@@ -415,3 +415,22 @@ def test_dwell_still_happens_on_a_first_sighting():
     step = scanner.on_frame(centre, freqs, dbfs, now=t)
     assert step.action is ScanAction.DWELL
     assert step.new_hits == (), "reported before confirmation"
+
+
+def test_a_spike_at_the_lo_offset_is_not_a_station():
+    """A HackRF is tuned 200 kHz off and shifted back, so its DC spike sits 200 kHz
+    from centre. The guard must follow it there, and stop guarding the centre."""
+    config = airband(min_sightings=1, dc_guard_hz=5e3, dc_spike_offset_hz=200e3)
+    scanner = Scanner(config)
+    centre = scanner.start(SPAN, now=0.0).centre_hz
+    t = settle(scanner, centre, 0.0)
+    freqs, dbfs = spectrum(centre, carriers=[(centre + 200e3, 30)])
+    step = scanner.on_frame(centre, freqs, dbfs, now=t)
+    assert step.action is not ScanAction.DWELL
+    assert not scanner.hits()
+
+    scanner = Scanner(config)
+    centre = scanner.start(SPAN, now=0.0).centre_hz
+    t = settle(scanner, centre, 0.0)
+    freqs, dbfs = spectrum(centre, carriers=[(centre, 30)])      # a real station at centre
+    assert scanner.on_frame(centre, freqs, dbfs, now=t).action is ScanAction.DWELL

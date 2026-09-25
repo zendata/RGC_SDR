@@ -59,6 +59,9 @@ class ScanConfig:
     #: False surveys the range without stopping, which builds a list fast.
     stop_on_signal: bool = True
     dc_guard_hz: float = 1.5e3
+    #: Where the radio's DC spike sits relative to the tuned centre: 0, or the LO offset
+    #: for radios tuned off-centre to keep it away from the listening frequency.
+    dc_spike_offset_hz: float = 0.0
     #: Passes a channel must appear on before it is reported as found.
     #:
     #: Measured 2026-09-23: the loudest *noise* bin in a window sits 7-24 dB above the
@@ -276,7 +279,7 @@ class Scanner:
             usable_lo=max(centre_hz - half, self.config.start_hz),
             usable_hi=min(centre_hz + half, self.config.end_hz),
             dc_guard_hz=self.config.dc_guard_hz,
-            centre_hz=centre_hz,
+            centre_hz=centre_hz + self.config.dc_spike_offset_hz,
             lockout=frozenset(self.lockout),
         )
         new: list[ScanHit] = []

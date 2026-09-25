@@ -78,6 +78,15 @@ all stations and RDS on The Fox (540 good / 5 bad blocks) and SmoothFM (546 / 0)
 **DC spike at the tuned centre**: listening there, the pilot coherence was 0.09 (no
 stereo); 400 kHz off centre, 0.43 at the same gain.
 
+**LO offset for spiky radios.** Radios whose profile has `dc_offset` (HackRF, RTL-SDR,
+Pluto) are tuned `LO_OFFSET_HZ` = 200 kHz above the wanted frequency (below it at the top
+of their range), and the reader thread shifts every block back with a phase-continuous
+NCO (`_Nco`, a one-period lookup table: 20 samples at 4 MS/s). Everything downstream --
+display, demodulator, recorder, memories -- sees the wanted frequency at centre; the spike
+appears 200 kHz above it, and the scanner's DC guard moves there too. Measured on the
+HackRF, tuned straight to the station: The Fox and SmoothFM in stereo with full RDS (535/10
+and 546/0 blocks), Triple M stereo 97% (0% before).
+
 ## 4. Device access & multi-SDR support
 SoapySDR is the abstraction seam. Future radios (HackRF is already installed) must work without
 touching DSP or UI code, so:

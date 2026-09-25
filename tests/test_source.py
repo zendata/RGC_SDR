@@ -342,3 +342,43 @@ def test_direction_constant_is_receive():
         return
     assert SOAPY_RX == SoapySDR.SOAPY_SDR_RX
     assert SOAPY_RX != SoapySDR.SOAPY_SDR_TX
+
+
+# -- LO offset: tune off the DC spike, shift back in software -------------------
+
+from src.rgc_sdr.device.source import LO_OFFSET_HZ, _Nco  # noqa: E402
+
+
+def _tone(freq, rate, n):
+    return np.exp(2j * np.pi * freq * np.arange(n) / rate).astype(np.complex64)
+
+
+@pytest.mark.parametrize("rate", [1e6, 2e6, 4e6, 10e6, 2.048e6, 1.92e6])
+def test_nco_moves_a_signal_back_to_centre_seamlessly(rate):
+    """Hardware tuned +200 kHz puts the wanted signal at -200 kHz; the NCO undoes it,
+    across block boundaries, leaving a clean tone at DC."""
+    x = _tone(-LO_OFFSET_HZ, rate, 50_000)
+    nco = _Nco(LO_OFFSET_HZ, rate)
+    for start in range(0, x.size, 4097):                 # odd block size on purpose
+        nco.process(x[start: start + 4097])
+    assert np.max(np.abs(x - x[0])) < 1e-3, "not DC, or a phase step at a block edge"
+
+
+def test_nco_table_and_fallback_agree():
+    x1 = _tone(123e3, 3e6, 30_000)
+    x2 = x1.copy()
+    table = _Nco(-LO_OFFSET_HZ, 3e6)
+    assert table._table is not None
+    slow = _Nco(-LO_OFFSET_HZ, 3e6)
+    slow._table = None
+    for start in range(0, x1.size, 1000):
+        table.process(x1[start: start + 1000])
+        slow.process(x2[start: start + 1000])
+    assert np.max(np.abs(x1 - x2)) < 1e-3
+
+
+def test_nco_with_no_shift_leaves_samples_alone():
+    x = _tone(5e3, 1e6, 1000)
+    before = x.copy()
+    _Nco(0.0, 1e6).process(x)
+    assert np.array_equal(x, before)

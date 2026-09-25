@@ -424,6 +424,7 @@ class MainWindow(QtWidgets.QMainWindow):
             stop_on_signal=panel.stop_on_signal,
             min_sightings=panel.min_sightings,
             dc_guard_hz=5e3 if getattr(self.source.profile, "dc_offset", False) else 1.5e3,
+            dc_spike_offset_hz=self.source.dc_spike_offset_hz,
         )
 
     def _on_scan_config_changed(self) -> None:
