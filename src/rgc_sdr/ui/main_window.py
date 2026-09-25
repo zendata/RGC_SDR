@@ -49,6 +49,9 @@ ZEROBEAT_INTERVAL_MS = 150
 ZEROBEAT_DEADBAND_HZ = 3.0
 #: Decimation factors offered as a zoom control. Powers of two, matching Decimator.
 ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
+
+#: Shown in the title bar, with the radio in use after it.
+APP_TITLE = "VK3RQ Super SDR"
 #: Fraction of the ring a single frame may consume, so deep zoom cannot starve itself.
 FRAME_INPUT_BUDGET = 0.6
 
@@ -185,7 +188,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         levels = self._levels
         caps = source.caps
-        self.setWindowTitle(f"RGC_SDR - {caps.label or caps.driver}")
+        self.setWindowTitle(f"{APP_TITLE} \u2014 {caps.label or caps.driver}")
 
         self.spectrum = SpectrumView()
         self.waterfall = WaterfallView(
@@ -343,7 +346,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _apply_device_profile(self) -> None:
         """Make the window match the radio: everything device-specific in one place."""
         caps = self.source.caps
-        self.setWindowTitle(f"RGC_SDR - {caps.label or caps.driver}")
+        self.setWindowTitle(f"{APP_TITLE} \u2014 {caps.label or caps.driver}")
         self._refresh_device_list()
         self._refresh_freq_range()
         self._refresh_rates()
@@ -2190,7 +2193,7 @@ def run(source: IQSource, debug_gestures: bool = False, **kwargs) -> int:
     # to Python.framework and the Dock says "Python". Fixing that needs the interpreter
     # bundled inside the .app, which is more than a launcher shortcut warrants.
     app.setApplicationName("RGC SDR")
-    app.setApplicationDisplayName("RGC SDR")
+    app.setApplicationDisplayName(APP_TITLE)
     icon_path = Path(__file__).resolve().parents[3] / "assets" / "icon.png"
     if icon_path.is_file():
         app.setWindowIcon(QtGui.QIcon(str(icon_path)))

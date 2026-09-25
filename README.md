@@ -28,7 +28,7 @@ source .venv/bin/activate
 ## Usage
 
 ```bash
-./run.sh                                     # or double-click "RGC SDR.app"
+./run.sh                                     # or double-click "VK3RQ Super SDR.app"
 python -m src.rgc_sdr                        # resumes where you left off
 python -m src.rgc_sdr --list                 # show attached SDRs
 python -m src.rgc_sdr --freq 0.909e6         # medium wave
@@ -91,7 +91,7 @@ click or wipe the screen on every step. A larger move clears them, as it should.
 
 ### Desktop shortcut
 
-`RGC SDR.app` on the Desktop launches the current working copy — it is a thin bundle that
+`VK3RQ Super SDR.app` on the Desktop launches the current working copy — it is a thin bundle that
 just runs [run.sh](run.sh), so it picks up code changes with no rebuild. Rebuild the bundle
 itself only if the repo moves:
 

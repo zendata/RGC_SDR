@@ -2135,7 +2135,7 @@ def test_switching_to_hackrf_brings_up_its_gain_stages(qapp):
     # AMP is 0 or 14 dB and nothing between, so it is a switch rather than a spinbox.
     checks = {c.text(): c for c in win._device_slot.findChildren(QtWidgets.QCheckBox)}
     assert "AMP" in checks
-    assert "HackRF" in win.windowTitle()
+    assert win.windowTitle() == "VK3RQ Super SDR \u2014 HackRF One"
     win.close()
 
 

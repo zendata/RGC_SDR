@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the double-clickable "RGC SDR.app" launcher.
+# Build the double-clickable "VK3RQ Super SDR.app" launcher.
 #
 #   ./tools/make_app.sh              # onto the Desktop
 #   ./tools/make_app.sh /Applications
@@ -10,7 +10,9 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="${1:-$HOME/Desktop}"
-APP="$DEST/RGC SDR.app"
+APP="$DEST/VK3RQ Super SDR.app"
+# The launcher's earlier name; replaced rather than left as a second, stale shortcut.
+OLD="$DEST/RGC SDR.app"
 
 [ -x "$REPO/run.sh" ] || { echo "missing $REPO/run.sh" >&2; exit 1; }
 
@@ -22,6 +24,7 @@ if [ ! -f "$REPO/assets/AppIcon.icns" ]; then
 fi
 
 rm -rf "$APP"
+[ -d "$OLD" ] && rm -rf "$OLD"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -30,15 +33,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0">
 <dict>
 	<key>CFBundleName</key>
-	<string>RGC SDR</string>
+	<string>VK3RQ Super SDR</string>
 	<key>CFBundleDisplayName</key>
-	<string>RGC SDR</string>
+	<string>VK3RQ Super SDR</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.rgc-sdr.launcher</string>
 	<key>CFBundleVersion</key>
-	<string>0.3.0</string>
+	<string>0.4.0</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.3.0</string>
+	<string>0.4.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleExecutable</key>
@@ -51,6 +54,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<true/>
 	<key>LSUIElement</key>
 	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The microphone is the transmit audio when TX is pressed.</string>
 </dict>
 </plist>
 PLIST
