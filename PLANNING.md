@@ -136,6 +136,9 @@ headless-testable and lets modules be swapped independently.
 - **P5 — Extras.** Scanner ✅ (section 7e). Remaining: IQ *playback* (the recorder's
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
+- **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
+  CI-V core, scope/waterfall, control, audio + TX, then WiFi (Icom's network protocol).
+  No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
   probe, the `IQSink` interface, and a TX button that runs a *dry run*. Remaining: a
@@ -746,6 +749,27 @@ another code (measured: 1.00 for the right code, 0.42 at most for others, thresh
 It closes after two misses. The speaker audio is high-passed at 300 Hz while tone
 squelch is on, as radios do (tone > 30 dB below voice). Round trips through the real
 modulator and demodulator are tested for both.
+
+## 7o. Icom IC-705 spike (P7)
+
+The IC-705 is a transceiver, not an SDR: it demodulates itself and gives no IQ over USB
+(unlike the IC-7610). It is controlled over **CI-V** and its waterfall comes from its
+own **scope data**. Measured 2026-09-27 on VK3RQ's radio (serial 12002294):
+
+| Property | Value |
+|---|---|
+| USB | one composite device, vendor 0x0C26 (Icom), product 0x0036, "IC_705" |
+| Serial ports | `/dev/cu.usbmodem11201` = **CI-V** (answers); `...11203` = USB (B), silent |
+| Audio | "USB Audio CODEC" (TI/Burr-Brown): stereo in (RX audio) and stereo out (TX audio) |
+| CI-V address | radio `A4`, controller `E0`. **No echo** of our commands on USB |
+| Frequency | 5 bytes BCD, least significant first: `00 00 65 45 01` = 145.650000 MHz |
+| Mode | `04` -> `05 01` = FM, FIL1 |
+| Scope | on (`27 10` = 01), data output off by default (`27 11` = 00), main, centre mode, span `00 00 01 00 00` = +/-10 kHz, speed MID, ref 0 dB |
+| Scope line | 11 messages `27 00 00 <seq 01..11> 11 ...`: seq 1 = header (centre/fixed, centre frequency, span, out-of-range); seq 2-10 = 50 amplitude bytes; seq 11 = 25 -> **475 points** |
+| Amplitudes | plain bytes, not BCD; 0-57 seen on a quiet 2 m channel (Icom documents 0-160) |
+| Line rate | **4.3 lines/s at FAST and MID alike**, 2.5 kB/s -- so not the scope speed. Likely the CI-V link rate: check SET > Connectors > CI-V: "CI-V USB Port" = Unlink from [REMOTE], "CI-V USB Baud Rate" = 115200 |
+
+Every setting changed during the spike (scope output, speed) was read first and put back.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

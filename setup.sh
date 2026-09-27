@@ -40,7 +40,7 @@ source "$VENV_DIR/bin/activate"
 
 echo "Installing Python packages ..."
 pip install -q --upgrade pip
-pip install -q numpy PyQt6 pyqtgraph scipy sounddevice pytest
+pip install -q numpy PyQt6 pyqtgraph scipy sounddevice pyserial pytest
 
 echo "Linking the SoapySDR bindings from $BINDINGS ..."
 SITE="$(python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"

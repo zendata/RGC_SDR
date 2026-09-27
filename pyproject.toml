@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 # SoapySDR is intentionally absent: it is installed via Homebrew, not pip.
 # Audio and demodulation are core features as of P3. scipy is used only for the one
 # stateful IIR (FM de-emphasis); everything else is NumPy.
-dependencies = ["numpy", "PyQt6", "pyqtgraph", "scipy", "sounddevice"]
+dependencies = ["numpy", "PyQt6", "pyqtgraph", "scipy", "sounddevice", "pyserial"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
