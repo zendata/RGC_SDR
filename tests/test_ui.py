@@ -2972,3 +2972,127 @@ def test_if_bandwidth_shows_a_width_the_radio_does_not_list(qapp):
     assert win._bw_combo.currentData() == 18e6
     assert win._bw_combo.currentText() == "18000 kHz"
     win.close()
+
+
+# -- a transceiver (IC-705): its scope instead of our FFT ---------------------------
+
+from src.rgc_sdr.device import civ  # noqa: E402
+from src.rgc_sdr.device.source import DeviceCaps, FreqRange  # noqa: E402
+
+
+class FakeTransceiver:
+    """Stands in for IcomSource: scope lines in, tuning recorded. No IQ."""
+
+    kind = "transceiver"
+    profile = profile_for("icom705")
+
+    def __init__(self, centre=145.65e6, span=20e3):
+        self._caps = DeviceCaps(driver="icom705", label="Icom IC-705", serial="",
+                                sample_rates=(), freq_ranges=(FreqRange(30e3, 470e6),),
+                                gain_elements=(), has_agc=False, formats=())
+        self.centre, self.span = centre, span
+        self.lines = []
+        self.tuned = []
+        self.stats = {"lines": 0, "overflows": 0, "timeouts": 0, "errors": 0}
+
+    caps = property(lambda self: self._caps)
+    sample_rate = property(lambda self: self.span)
+    center_freq = property(lambda self: self.centre)
+
+    def start(self): pass
+    def stop(self): pass
+    def close(self): pass
+
+    def read_latest(self, n):
+        return np.zeros(0, dtype=np.complex64)
+
+    def queue_line(self, peak_offset_hz=0.0):
+        amps = np.zeros(475, dtype=np.uint8)
+        amps[int((peak_offset_hz / self.span + 0.5) * 475)] = 150
+        self.lines.append(civ.ScopeLine(True, self.centre - self.span / 2,
+                                        self.centre + self.span / 2, amps, False))
+
+    def take_scope_line(self):
+        if not self.lines:
+            return None
+        self.stats["lines"] += 1
+        return self.lines.pop(0)
+
+    def set_center_freq(self, hz, flush=True):
+        self.tuned.append(hz)
+        self.centre = hz
+        return hz
+
+    def set_sample_rate(self, hz):
+        return self.span
+
+
+def test_transceiver_hides_what_needs_iq(qapp):
+    win = window_for(FakeTransceiver(), fft_size=1024)
+    for widget in (win._zoom_combo, win._fft_combo, win._scan_button):
+        assert widget.isHidden()
+    assert not win._mode_combo.isEnabled() and not win._rec_iq_button.isEnabled()
+    assert win.spectrum.getAxis("left").labelText == "scope level"
+    win.close()
+
+
+def test_scope_lines_feed_the_spectrum_and_waterfall(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    src.queue_line(peak_offset_hz=5e3)
+    win._on_frame()
+    assert win.waterfall.buffer.cols == 475
+    assert win._rows_pushed == 1
+    row = win.waterfall.buffer.image[0]
+    peak_hz = win.waterfall._rect.left() + (np.argmax(row) + 0.5) * src.span / 475
+    assert peak_hz == pytest.approx(145.655e6, abs=src.span / 475)
+    win._on_frame()                                     # nothing new: nothing pushed
+    assert win._rows_pushed == 1
+    win.close()
+
+
+def test_the_display_follows_the_radios_own_dial(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    src.queue_line(); win._on_frame()
+    src.centre = 146.0e6                                # turned on the radio
+    src.queue_line(); win._on_frame()
+    assert win._freq_spin.value() == pytest.approx(146.0)
+    assert win.waterfall._rect.center().x() == pytest.approx(146.0e6)
+    win.close()
+
+
+def test_tuning_from_the_app_tunes_the_radio(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    win._freq_spin.setValue(145.7)
+    assert src.tuned[-1] == pytest.approx(145.7e6)
+    win.close()
+
+
+def test_transceiver_audio_is_refused_for_now(qapp):
+    win = window_for(FakeTransceiver(), fft_size=1024, enable_audio=False)
+    win._audio_ok = True
+    win.set_mode("fm")
+    assert win.audio is None
+    assert "IC-705" in win._audio_status()
+    win.close()
+
+
+def test_switching_between_an_sdr_and_the_ic705(qapp):
+    opened = []
+
+    def factory(driver, centre):
+        src = FakeTransceiver() if driver == "icom705" else ProfiledStub(driver, centre)
+        opened.append(src)
+        return src
+
+    first = ProfiledStub("airspyhf", 7.1e6)
+    win = window_for(first, fft_size=1024, fps=25, source_factory=factory,
+                     availability_fn=fleet(("airspyhf", "icom705")))
+    assert win.switch_device("icom705")
+    assert win.is_transceiver and win._zoom_combo.isHidden()
+    assert win.switch_device("airspyhf")
+    assert not win.is_transceiver and not win._zoom_combo.isHidden()
+    assert win.waterfall.buffer.cols == 1024
+    win.close()

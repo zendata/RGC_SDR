@@ -57,6 +57,16 @@ python -m src.rgc_sdr --help                 # all options
 saved on exit and restored next launch. Any flag you pass overrides just that one setting;
 `--no-restore` ignores the saved state for one run, and `--forget` clears it.
 
+### Icom IC-705
+
+The IC-705 is not an SDR, but it is in the same **SDR** menu: plug in its USB cable and
+choose **Icom IC-705**. The spectrum and waterfall are the radio's own scope (475 points,
+about 4 lines a second -- the 705's limit over USB), the frequency follows its dial, and
+tuning in the app (frequency box, step, click, memories) tunes the radio. Zoom and FFT
+are the radio's to set, so they are hidden. Audio, modes, gains and transmit from the
+app come in the next steps. Keep the scope showing on the radio: it sends no scope data
+while in a menu.
+
 ### Choosing the radio
 
 The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy

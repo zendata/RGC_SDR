@@ -174,11 +174,20 @@ def main(argv: list[str] | None = None) -> int:
         levels = None
 
     driver = choose_driver(args.driver, settings.device)
+    from .device.profiles import profile_for
+
+    chosen = profile_for(driver)
     try:
-        source = SoapyIQSource(
-            driver=driver, serial=args.serial, sample_rate=rate,
-            center_freq=freq, agc=agc,
-        )
+        if chosen is not None and chosen.kind == "transceiver":
+            from .device.icom import IcomSource
+
+            source = IcomSource()     # opens where the radio's dial is
+            freq = source.center_freq
+        else:
+            source = SoapyIQSource(
+                driver=driver, serial=args.serial, sample_rate=rate,
+                center_freq=freq, agc=agc,
+            )
     except SoapyUnavailable as exc:
         print(exc, file=sys.stderr)
         return 2

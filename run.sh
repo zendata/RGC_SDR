@@ -31,11 +31,11 @@ fi
 
 # Fail with a clear message rather than a stack trace when the radio is unplugged.
 if ! "$PY" -c 'import sys
-from src.rgc_sdr.device.source import enumerate_devices
-sys.exit(0 if enumerate_devices() else 1)' >/dev/null 2>&1; then
-  notify "No SDR detected.
+from src.rgc_sdr.device.profiles import availability
+sys.exit(0 if any(a.connected for a in availability()) else 1)' >/dev/null 2>&1; then
+  notify "No radio detected.
 
-Plug in a radio (Airspy HF+, Airspy R2, HackRF, RTL-SDR or Pluto) and try again."
+Plug in a radio (Airspy HF+, Airspy R2, HackRF, RTL-SDR, Pluto or IC-705) and try again."
   exit 1
 fi
 

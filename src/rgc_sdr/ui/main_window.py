@@ -54,6 +54,19 @@ ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 
 #: Shown in the title bar, with the radio in use after it.
 APP_TITLE = "VK3RQ Super SDR"
+
+#: A transceiver scope's width in points (IC-705: 475, measured) and line rate.
+SCOPE_POINTS = 475
+from ..device.icom import SCOPE_LINES_PER_S  # noqa: E402
+
+
+def scope_level_db(amplitudes: np.ndarray) -> np.ndarray:
+    """Icom scope amplitudes (0-160) on a dB-like axis, 0.5 dB a step, top at 0 dB.
+
+    Icom does not publish the scale; 160 steps over the scope's 80 dB display is the
+    working assumption, to be checked against a known signal level.
+    """
+    return (amplitudes.astype(np.float32) - 160.0) * 0.5
 #: Fraction of the ring a single frame may consume, so deep zoom cannot starve itself.
 FRAME_INPUT_BUDGET = 0.6
 
@@ -73,6 +86,13 @@ class DeviceCombo(QtWidgets.QComboBox):
 
 
 def _open_soapy(driver: str, centre_hz: float) -> IQSource:
+    from ..device.profiles import profile_for
+
+    profile = profile_for(driver)
+    if profile is not None and profile.kind == "transceiver":
+        from ..device.icom import IcomSource
+
+        return IcomSource()           # opens wherever the radio's own dial is
     from ..device.source import SoapyIQSource
 
     return SoapyIQSource(driver=driver, center_freq=centre_hz)
@@ -143,6 +163,9 @@ class MainWindow(QtWidgets.QMainWindow):
     ) -> None:
         super().__init__(parent=parent)
         self.source = source
+        #: An SDR's waterfall width; a transceiver's scope sets its own.
+        self._sdr_waterfall_bins = int(waterfall_bins)
+        self._scope_geometry: tuple[float, float] | None = None
         #: Builds a Transmitter for a mode. Injectable so tests never open the microphone.
         self._transmitter_factory = transmitter_factory or self._make_transmitter
         self.transmitter: Transmitter | None = None
@@ -368,6 +391,34 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_tx_enabled()
         if hasattr(self, "scanner_panel"):
             self.scanner_panel.set_coverage(caps.freq_ranges)
+        self._sync_transceiver_ui()
+
+    @property
+    def is_transceiver(self) -> bool:
+        """A radio that demodulates itself (the IC-705): its scope, not our FFT."""
+        return getattr(self.source, "kind", "sdr") == "transceiver"
+
+    def _sync_transceiver_ui(self) -> None:
+        """Hide what only an IQ radio can do; the rest works on a transceiver as is."""
+        sdr = not self.is_transceiver
+        for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
+                       self._scan_button):
+            widget.setVisible(sdr)
+        if not sdr:
+            if self._scan_button.isChecked():
+                self._scan_button.setChecked(False)
+            if self.decimator.factor != 1:
+                self.set_decimation(1)
+                self._sync_zoom_combo()
+        # Audio and recording from the IC-705 come in a later phase (PLANNING.md P7).
+        for widget in (self._mode_combo, self._rec_audio_button, self._rec_iq_button):
+            widget.setEnabled(sdr and (widget is not self._mode_combo or self._audio_ok))
+        self._mode_combo.setToolTip("" if sdr else "IC-705 audio and modes come in a later step")
+        self.spectrum.setLabel("left", "power" if sdr else "scope level",
+                               units="dBFS" if sdr else "dB")
+        self.waterfall.resize_bins(self._sdr_waterfall_bins if sdr else SCOPE_POINTS)
+        self._scope_geometry = None
+        self._apply_geometry()
 
     def _on_device_chosen(self, index: int) -> None:
         key = self._device_combo.itemData(index)
@@ -1179,7 +1230,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rate_combo.currentIndexChanged.connect(self._on_rate_changed)
         row.addWidget(self._rate_combo)
 
-        row.addWidget(QtWidgets.QLabel("Zoom"))
+        self._zoom_label = QtWidgets.QLabel("Zoom")
+        row.addWidget(self._zoom_label)
         self._zoom_combo = QtWidgets.QComboBox()
         for factor in ZOOM_FACTORS:
             self._zoom_combo.addItem(f"{factor}x", factor)
@@ -1246,7 +1298,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout(bar)
         row.setContentsMargins(0, 0, 0, 0)
 
-        row.addWidget(QtWidgets.QLabel("FFT"))
+        self._fft_label = QtWidgets.QLabel("FFT")
+        row.addWidget(self._fft_label)
         self._fft_combo = QtWidgets.QComboBox()
         for size in FFT_SIZES:
             self._fft_combo.addItem(str(size), size)
@@ -1388,7 +1441,8 @@ class MainWindow(QtWidgets.QMainWindow):
         the decimation changes the span itself, which the user asked for explicitly, so
         those reset the view.
         """
-        history_s = self.waterfall.buffer.rows / float(self.fps)
+        lines_per_s = SCOPE_LINES_PER_S if self.is_transceiver else float(self.fps)
+        history_s = self.waterfall.buffer.rows / lines_per_s
         self.waterfall.set_geometry(
             self.source.center_freq, self.effective_rate, history_s,
             preserve_span=preserve_span,
@@ -1574,6 +1628,9 @@ class MainWindow(QtWidgets.QMainWindow):
         right, and the status bar explains why nothing is audible.
         """
         self._audio_problem = ""
+        if mode != "off" and self.is_transceiver:
+            self._audio_problem = "IC-705 audio comes in a later step"
+            mode = "off"
         if self.transmitter is not None and mode != self.transmitter.mode:
             self._tx_button.setChecked(False)      # a different mode means stop sending
         if mode == "off":
@@ -2388,6 +2445,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._tx_button.setChecked(False)
             self._status.showMessage(
                 f"TX stopped: {TX_TIMEOUT_S / 60:.0f} minute transmit timeout", 8000)
+        if self.is_transceiver:
+            self._scope_frame()
+            return
         iq = self.source.read_latest(self._frame_request())
         if iq.size < self.decimator.input_for_output(self.analyzer.fft_size):
             # A half-duplex radio receives nothing while it transmits.
@@ -2425,6 +2485,36 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._recording_active():
                 self._update_recording_label()
 
+    def _scope_frame(self) -> None:
+        """A transceiver's display: its own scope lines, drawn as they arrive (~4/s)."""
+        line = self.source.take_scope_line()
+        if line is None:
+            return
+        n = line.amplitudes.size
+        # Pixel centres across the scope's span.
+        freqs = line.low_hz + (np.arange(n) + 0.5) * (line.span_hz / n)
+        dbfs = scope_level_db(line.amplitudes)
+        geometry = (line.centre_hz, line.span_hz)
+        if geometry != self._scope_geometry:
+            # The radio's dial or span moved: re-place the display on the new axis.
+            self._scope_geometry = geometry
+            if self.waterfall.buffer.cols != n:
+                self.waterfall.resize_bins(n)
+            self._apply_geometry(preserve_span=True)
+            self.spectrum.set_center_marker(self.source.center_freq)
+            self._freq_spin.blockSignals(True)
+            self._freq_spin.setValue(self.source.center_freq / 1e6)
+            self._freq_spin.blockSignals(False)
+            self._update_passband()
+        self.spectrum.update_spectrum(freqs, dbfs)
+        self.waterfall.push(dbfs)
+        self._update_smeter(dbfs, freqs)
+        self._rows_pushed += 1
+        if self._auto_pending and self._rows_pushed >= 8:
+            self._auto_pending = False
+            self._on_auto_levels()
+        self._update_status(dbfs)
+
     def _update_status(self, dbfs) -> None:
         stats = getattr(self.source, "stats", {})
         span = self.effective_rate
@@ -2460,6 +2550,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return self._tx_status()
         # The status line is rewritten every frame, so a one-off message would vanish
         # before it could be read: why there is no sound has to live here instead.
+        if self.audio is None and self.is_transceiver:
+            lines = self.source.stats.get("lines", 0)
+            return f"  |  IC-705 scope, {lines} lines  |  view and tune only for now"
         if self.audio is None:
             if self.mode == "off":
                 return "  |  audio off (choose a Mode)"

@@ -137,8 +137,8 @@ headless-testable and lets modules be swapped independently.
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
-  CI-V core, scope/waterfall, control, audio + TX, then WiFi (Icom's network protocol).
-  No D-STAR for now. Section 7o.
+  CI-V core ✅, scope/waterfall ✅, control, audio + TX, then WiFi (Icom's network
+  protocol). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
   probe, the `IQSink` interface, and a TX button that runs a *dry run*. Remaining: a
@@ -778,6 +778,17 @@ noise and collisions, BCD frequencies (LSB first) and levels (MSB first), the mo
 and `ScopeAssembler`, which rebuilds 475-point lines and drops torn ones. Tested against
 the bytes captured from the radio (`tests/data/ic705_scope_2s.bin`), not only against its
 own encoder.
+
+**Scope and waterfall** (`device/icom.py`, done): `IcomSource` finds the radio by USB ID,
+opens its first serial port, reads the dial, switches scope output on and restores the
+radio's scope settings on close. It poses as an `IQSource` whose rate is the scope's span
+and whose centre is the scope's centre, so geometry, tuning (CI-V 05), memories and the
+SDR menu work unchanged; the window's one new path takes scope lines instead of an FFT.
+The waterfall runs 475 columns at 4.3 lines/s; Zoom, FFT, Scan, audio and recording are
+hidden or disabled. Amplitudes 0-160 are drawn at an assumed 0.5 dB a step, top at 0 dB
+("scope level") -- Icom does not publish the scale; to be checked against a known level.
+Verified on the radio: dial read, lines arriving, tuning from the app followed by the
+radio and back, settings restored on close.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

@@ -51,6 +51,9 @@ class SdrProfile:
     default_gains: tuple[tuple[str, float], ...] = ()
     #: The transmitter, for radios that have one. Probing wins once the radio is open.
     tx: TxCaps | None = None
+    #: "sdr" (IQ over SoapySDR) or "transceiver" (a radio controlled over its own
+    #: protocol, such as the IC-705 over CI-V, which demodulates itself).
+    kind: str = "sdr"
 
     def covers(self, hz: float) -> bool:
         return any(r.contains(hz) for r in self.freq_ranges)
@@ -183,6 +186,29 @@ PROFILES: tuple[SdrProfile, ...] = (
     ),
 )
 
+# Not an SDR, but chosen from the same menu: the IC-705, viewed and controlled over CI-V
+# (device/icom.py). Its "rate" is the scope's span; it has no IQ.
+PROFILES = PROFILES + (
+    SdrProfile(
+        key="icom705",
+        label="Icom IC-705",
+        driver="icom705",
+        freq_ranges=(FreqRange(30e3, 199.999999e6), FreqRange(400e6, 470e6)),
+        sample_rates=(20e3,),
+        default_rate=20e3,
+        max_rate=20e3,
+        default_freq=145e6,
+        gain_elements=(),
+        has_agc=False,
+        bias_tee=False,
+        dc_offset=False,
+        module="pyserial",
+        install="pip install pyserial (./setup.sh does it), and a USB cable to the radio",
+        notes="Transceiver over CI-V: the radio's own scope as the waterfall. No IQ.",
+        kind="transceiver",
+    ),
+)
+
 _BY_DRIVER = {p.driver: p for p in PROFILES}
 _BY_KEY = {p.key: p for p in PROFILES}
 
@@ -238,6 +264,16 @@ def availability(
     found = {}
     for device in devices:
         found.setdefault(device.get("driver", ""), device.get("serial", ""))
+    # Transceivers are not SoapySDR devices: look for them on USB serial.
+    from .icom import find_ic705_ports
+
+    try:
+        import serial  # noqa: F401
+        modules = set(modules) | {"pyserial"}
+    except ImportError:
+        pass
+    if find_ic705_ports():
+        found.setdefault("icom705", "")
     out = []
     for profile in PROFILES:
         # Exact stem match: "airspySupport" must not match "airspyhfSupport".
