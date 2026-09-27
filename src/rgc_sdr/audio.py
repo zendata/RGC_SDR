@@ -543,3 +543,145 @@ class Microphone:
             stream.stop()
             stream.close()
         self._fifo.clear()
+
+
+# -- a transceiver's audio: its USB sound card ------------------------------------------
+# The IC-705 demodulates itself and appears to the Mac as "USB Audio CODEC": its input
+# carries the received audio, its output takes the transmit audio. Measured 2026-09-27:
+# a stereo input and a stereo output, 48 kHz.
+
+RADIO_CODEC = "USB Audio CODEC"
+
+
+def choose_output_device(devices, name: str) -> int | None:
+    """Index of the output device called `name`, or None."""
+    for i, d in enumerate(devices):
+        if d.get("name") == name and d.get("max_output_channels", 0) > 0:
+            return i
+    return None
+
+
+def default_output_device(devices, default_index: int | None, avoid: str = RADIO_CODEC):
+    """The Mac's output for the radio's audio -- never the radio's own sound card, which
+    would send the received audio straight back to the transmitter's input."""
+    if default_index is not None and 0 <= default_index < len(devices):
+        d = devices[default_index]
+        if d.get("name") != avoid and d.get("max_output_channels", 0) > 0:
+            return default_index
+    for i, d in enumerate(devices):
+        if d.get("name") != avoid and d.get("max_output_channels", 0) > 0:
+            return i
+    return None
+
+
+class RadioAudio:
+    """Plays a transceiver's received audio (from its USB sound card) on the Mac.
+
+    Two streams joined by a FIFO rather than one duplex stream: the devices are
+    different, and the FIFO absorbs their clock difference, as on the SDR side.
+    """
+
+    def __init__(self, samplerate: float = 48_000.0, blocksize: int = 1024,
+                 codec: str = RADIO_CODEC, volume: float = 0.5) -> None:
+        self.samplerate = float(samplerate)
+        self.blocksize = int(blocksize)
+        self.codec = codec
+        self.volume = float(volume)
+        self.muted = False
+        self._fifo = AudioFifo(int(self.samplerate * 0.5))
+        self._streams: list = []
+
+    @property
+    def running(self) -> bool:
+        return bool(self._streams)
+
+    @property
+    def stats(self) -> dict:
+        return {"audio_rate": self.samplerate, "queued": len(self._fifo),
+                "underrun_samples": self._fifo.underrun_samples,
+                "dropped_samples": self._fifo.dropped_samples}
+
+    def set_volume(self, volume: float) -> None:
+        self.volume = float(volume)
+
+    def set_muted(self, muted: bool) -> None:
+        self.muted = bool(muted)
+
+    def _captured(self, indata, frames, time_info, status) -> None:  # noqa: ARG002
+        # The 705 sends the same audio on both channels; the first is enough.
+        self._fifo.push(indata[:, 0].astype(np.float32, copy=True))
+
+    def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
+        block = self._fifo.pull(frames)
+        gain = 0.0 if self.muted else self.volume
+        outdata[:, 0] = block * gain
+
+    def start(self) -> None:
+        if self._streams:
+            return
+        sd = _import_sounddevice()
+        devices = sd.query_devices()
+        source = choose_input_device(devices, self.codec)
+        if source is None or devices[source].get("name") != self.codec:
+            raise RuntimeError(f"the radio's sound card ({self.codec}) is not connected")
+        target = default_output_device(devices, sd.default.device[1])
+        if target is None:
+            raise RuntimeError("no Mac audio output to play the radio on")
+        streams = [
+            sd.InputStream(device=source, channels=1, samplerate=self.samplerate,
+                           blocksize=self.blocksize, dtype="float32", callback=self._captured),
+            sd.OutputStream(device=target, channels=1, samplerate=self.samplerate,
+                            blocksize=self.blocksize, dtype="float32", callback=self._play),
+        ]
+        for stream in streams:
+            stream.start()
+        self._streams = streams
+
+    def stop(self) -> None:
+        streams, self._streams = self._streams, []
+        for stream in streams:
+            stream.stop()
+            stream.close()
+        self._fifo.clear()
+
+
+class CodecOutput:
+    """Sends microphone audio to a transceiver's USB sound card, for it to transmit.
+
+    The 705 takes it only if its voice modulation input is set to USB ("DATA OFF MOD":
+    USB or MIC,USB); otherwise it transmits its own microphone.
+    """
+
+    def __init__(self, samplerate: float = 48_000.0, blocksize: int = 1024,
+                 codec: str = RADIO_CODEC) -> None:
+        self.samplerate = float(samplerate)
+        self.blocksize = int(blocksize)
+        self.codec = codec
+        self._stream = None
+        self._mic = None
+
+    def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
+        block = self._mic.read(frames) if self._mic is not None else np.zeros(frames)
+        outdata[:, 0] = block
+        if outdata.shape[1] > 1:
+            outdata[:, 1] = block
+
+    def start(self, mic) -> None:
+        if self._stream is not None:
+            return
+        sd = _import_sounddevice()
+        target = choose_output_device(sd.query_devices(), self.codec)
+        if target is None:
+            raise RuntimeError(f"the radio's sound card ({self.codec}) is not connected")
+        self._mic = mic
+        stream = sd.OutputStream(device=target, channels=2, samplerate=self.samplerate,
+                                 blocksize=self.blocksize, dtype="float32", callback=self._play)
+        stream.start()
+        self._stream = stream
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
+        self._mic = None

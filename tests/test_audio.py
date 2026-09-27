@@ -552,3 +552,52 @@ def test_microphone_callback_fills_the_fifo_and_meters_the_level():
     assert mic.available() == 1024
     assert mic.level_dbfs == pytest.approx(20 * np.log10(0.5), abs=0.01)
     assert np.allclose(mic.read(1024), 0.5)
+
+
+# -- a transceiver's sound card ------------------------------------------------------
+
+from src.rgc_sdr.audio import (  # noqa: E402
+    CodecOutput, RadioAudio, choose_output_device, default_output_device,
+)
+
+MAC_WITH_705 = [
+    {"name": "light Microphone", "max_input_channels": 1, "max_output_channels": 0},
+    {"name": "USB Audio CODEC", "max_input_channels": 0, "max_output_channels": 2},
+    {"name": "USB Audio CODEC", "max_input_channels": 2, "max_output_channels": 0},
+    {"name": "MacBook Air Microphone", "max_input_channels": 1, "max_output_channels": 0},
+    {"name": "MacBook Air Speakers", "max_input_channels": 0, "max_output_channels": 2},
+]
+
+
+def test_the_radios_audio_comes_from_its_codec_input():
+    """As measured: the 705's codec shows up twice, input and output separately."""
+    assert choose_input_device(MAC_WITH_705, "USB Audio CODEC") == 2
+    assert choose_output_device(MAC_WITH_705, "USB Audio CODEC") == 1
+
+
+def test_received_audio_never_plays_into_the_radios_own_codec():
+    """Even if macOS's default output were the radio: that is its transmit input."""
+    assert default_output_device(MAC_WITH_705, 1) == 4
+    assert default_output_device(MAC_WITH_705, 4) == 4
+
+
+def test_radio_audio_follows_volume_and_mute():
+    audio = RadioAudio(volume=0.5)
+    audio._captured(np.full((1024, 2), 0.4, dtype=np.float32), 1024, None, None)
+    out = np.zeros((1024, 1), dtype=np.float32)
+    audio._play(out, 1024, None, None)
+    assert np.allclose(out[:, 0], 0.2)
+    audio.set_muted(True)
+    audio._captured(np.full((1024, 2), 0.4, dtype=np.float32), 1024, None, None)
+    audio._play(out, 1024, None, None)
+    assert np.all(out == 0.0)
+
+
+def test_microphone_goes_to_both_codec_channels():
+    out = CodecOutput()
+    mic = Microphone()
+    mic._callback(np.full((512, 1), 0.3, dtype=np.float32), 512, None, None)
+    out._mic = mic
+    buf = np.zeros((512, 2), dtype=np.float32)
+    out._play(buf, 512, None, None)
+    assert np.allclose(buf, 0.3)

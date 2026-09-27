@@ -17,6 +17,8 @@ class StandInRadio:
         self.switches = {0x02: 0, 0x12: 1, 0x22: 0, 0x40: 1}
         self.att = 0x00
         self.smeter = 109
+        self.ptt = 0
+        self.po, self.swr = 143, 48              # 50 % power, SWR 1.5
         self.parser = civ.FrameParser()
         self.out = bytearray()
         self.written = []
@@ -52,7 +54,10 @@ class StandInRadio:
             elif cmd == 0x11:
                 self.att = p[0]; self._reply(civ.OK)
             elif cmd == 0x15:
-                self._reply(0x15, b"\x02" + civ.encode_level(self.smeter))
+                value = {0x02: self.smeter, 0x11: self.po, 0x12: self.swr}[p[0]]
+                self._reply(0x15, bytes([p[0]]) + civ.encode_level(value))
+            elif cmd == 0x1C and len(p) == 2:
+                self.ptt = p[1]; self._reply(civ.OK)
             elif cmd == 0x27:
                 self._reply(civ.OK if len(p) > 1 else 0x27, p if len(p) == 1 else b"")
         return len(data)
@@ -154,3 +159,47 @@ def test_front_panel_changes_are_followed():
                                       (160, "S9+20 dB"), (241, "S9+60 dB")])
 def test_s_meter_text(raw, text):
     assert s_meter_text(raw) == text
+
+
+# -- transmit ------------------------------------------------------------------------
+
+from src.rgc_sdr.device.icom import power_percent, swr_value  # noqa: E402
+
+
+def test_ptt_keys_and_unkeys_the_radio():
+    radio, src = radio_and_source()
+    src.set_ptt(True)
+    settle(src)
+    assert radio.ptt == 1 and src.transmitting and src.refused is None
+    src.set_ptt(False)
+    settle(src)
+    assert radio.ptt == 0 and not src.transmitting
+
+
+def test_meters_while_transmitting_are_power_and_swr():
+    radio, src = radio_and_source()
+    src.set_ptt(True)
+    src.poll(now=0.0)
+    settle(src)
+    assert power_percent(src.po) == pytest.approx(50.0)
+    assert swr_value(src.swr) == pytest.approx(1.5)
+    polled = [f.payload[0] for f in radio.written if f.cmd == 0x15]
+    assert 0x11 in polled and 0x12 in polled and 0x02 not in polled
+
+
+def test_closing_never_leaves_the_radio_keyed():
+    radio, src = radio_and_source()
+    src.set_ptt(True)
+    settle(src)
+    src.close()
+    assert radio.ptt == 0
+
+
+@pytest.mark.parametrize("raw,percent", [(0, 0.0), (143, 50.0), (213, 100.0), (178, 75.0)])
+def test_power_meter_scale(raw, percent):
+    assert power_percent(raw) == pytest.approx(percent)
+
+
+@pytest.mark.parametrize("raw,swr", [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (100, 2.5)])
+def test_swr_meter_scale(raw, swr):
+    assert swr_value(raw) == pytest.approx(swr)

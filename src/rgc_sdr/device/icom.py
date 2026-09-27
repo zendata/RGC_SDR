@@ -22,7 +22,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from . import civ
-from .source import DeviceCaps, FreqRange, IQSource
+from .source import DeviceCaps, FreqRange, IQSource, TxCaps
 
 ICOM_VID = 0x0C26
 IC705_PID = 0x0036
@@ -79,6 +79,29 @@ _CONTROL_CI_V = {
     "att": (0x11, None, "att"),
 }
 _BY_COMMAND = {(cmd, sub): key for key, (cmd, sub, _form) in _CONTROL_CI_V.items()}
+
+
+def _piecewise(raw: int, points: tuple[tuple[int, float], ...]) -> float:
+    """Linear between the calibration points Icom lists for a meter."""
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        if raw <= x1:
+            return y0 + (y1 - y0) * (max(raw, x0) - x0) / (x1 - x0)
+    (x0, y0), (x1, y1) = points[-2], points[-1]
+    return y1 + (y1 - y0) * (raw - x1) / (x1 - x0)
+
+
+#: Icom's documented meter calibration (IC-7300/705 CI-V guides): raw -> % power, SWR.
+#: Not yet checked against the 705 itself -- verify at the first transmission.
+PO_POINTS = ((0, 0.0), (143, 50.0), (213, 100.0))
+SWR_POINTS = ((0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0))
+
+
+def power_percent(raw: int) -> float:
+    return min(_piecewise(raw, PO_POINTS), 120.0)
+
+
+def swr_value(raw: int) -> float:
+    return _piecewise(raw, SWR_POINTS)
 
 
 def s_meter_text(raw: int) -> str:
@@ -152,10 +175,18 @@ class IcomSource(IQSource):
         # because the app last looked somewhere else. `center_freq` is ignored.
         self._freq = float(self._query_freq() or 145e6)
         self._span = 20e3
+        # The radio modulates and keeps to its own licensed bands and power; the app
+        # only keys it and supplies audio. Half duplex, as any transceiver.
         self._caps = DeviceCaps(
             driver="icom705", label="Icom IC-705", serial="", sample_rates=(),
             freq_ranges=IC705_RANGES, gain_elements=(), has_agc=False, formats=(),
+            tx=TxCaps(freq_ranges=IC705_RANGES, gain_elements=(), sample_rates=(),
+                      full_duplex=False),
         )
+        #: Keyed by the app, and the transmit meters while keyed (raw 0-255).
+        self.transmitting = False
+        self.po: int | None = None
+        self.swr: int | None = None
 
     # -- CI-V plumbing --------------------------------------------------------------
 
@@ -205,8 +236,14 @@ class IcomSource(IQSource):
             if len(payload) > 1:
                 self.filter = payload[1]
             return
-        if cmd == 0x15 and payload[:1] == b"\x02" and len(payload) == 3:
-            self.smeter = civ.decode_level(payload[1:3])
+        if cmd == 0x15 and len(payload) == 3:
+            value = civ.decode_level(payload[1:3])
+            if payload[0] == 0x02:
+                self.smeter = value
+            elif payload[0] == 0x11:
+                self.po = value
+            elif payload[0] == 0x12:
+                self.swr = value
             return
         if cmd == 0x11 and len(payload) == 1:
             self.state["att"] = 1 if payload[0] else 0
@@ -231,7 +268,11 @@ class IcomSource(IQSource):
         now = time.monotonic() if now is None else now
         if now >= self._next_meter:
             self._next_meter = now + METER_POLL_S
-            self._send(0x15, b"\x02")
+            if self.transmitting:
+                self._send(0x15, b"\x11")        # power out
+                self._send(0x15, b"\x12")        # SWR
+            else:
+                self._send(0x15, b"\x02")        # S-meter
         if now >= self._next_settings:
             self._next_settings = now + SETTINGS_POLL_S
             self._send(civ.CMD_READ_MODE)
@@ -256,6 +297,13 @@ class IcomSource(IQSource):
             data = bytes([int(value)])
         self.state[key] = int(value)            # optimistic; a refusal corrects it
         self._send(cmd, (b"" if sub is None else bytes([sub])) + data, label=key)
+
+    def set_ptt(self, on: bool) -> None:
+        """Key or unkey the transmitter (CI-V 1C 00)."""
+        self.transmitting = bool(on)
+        if not on:
+            self.po = self.swr = None
+        self._send(0x1C, bytes([0x00, 0x01 if on else 0x00]), label="ptt")
 
     def set_mode(self, mode: str, filter_number: int | None = None) -> None:
         """Mode by name ("usb", "fm", ...) and filter FIL1-3 (kept if not given)."""
@@ -359,6 +407,8 @@ class IcomSource(IQSource):
 
     def close(self) -> None:
         try:
+            if self.transmitting:
+                self.set_ptt(False)             # never leave the radio keyed
             self.stop()
         finally:
             self._serial.close()

@@ -200,3 +200,79 @@ def test_tx_gains_are_applied_to_the_transmit_side():
 def test_a_receive_only_radio_cannot_make_a_sink():
     with pytest.raises(RuntimeError, match="cannot transmit"):
         SoapyIQSink(FakeSource("airspyhf"), 7.1e6, 2.4e6)
+
+
+# -- a transceiver: the radio modulates, the app keys it and feeds audio ---------------
+
+from src.rgc_sdr.transmit import RadioTransmitter  # noqa: E402
+
+
+class LoggingRadio:
+    def __init__(self, log):
+        self.log = log
+        self.transmitting = False
+        self.center_freq = 146.5e6
+
+    def set_ptt(self, on):
+        self.transmitting = on
+        self.log.append("ptt on" if on else "ptt off")
+
+
+class LoggingAudioOut:
+    def __init__(self, log, fail=False):
+        self.log, self.fail = log, fail
+
+    def start(self, mic):
+        if self.fail:
+            raise RuntimeError("the radio's sound card is not connected")
+        self.log.append("audio on")
+
+    def stop(self):
+        self.log.append("audio off")
+
+
+class LoggingMic(FakeMic):
+    def __init__(self, log):
+        super().__init__()
+        self.log = log
+
+    def start(self):
+        self.log.append("mic on")
+
+    def stop(self):
+        self.log.append("mic off")
+
+
+def test_audio_flows_before_keying_and_unkeying_comes_first():
+    log = []
+    tx = RadioTransmitter(LoggingRadio(log), "usb", mic=LoggingMic(log),
+                          audio_out=LoggingAudioOut(log))
+    tx.start()
+    assert log == ["mic on", "audio on", "ptt on"]
+    tx.stop()
+    assert log[3] == "ptt off" and log[3:] == ["ptt off", "audio off", "mic off"]
+    assert tx.tx_freq == 146.5e6 and not tx.dry_run
+
+
+def test_no_key_up_if_the_audio_cannot_start():
+    log = []
+    radio = LoggingRadio(log)
+    tx = RadioTransmitter(radio, "fm", mic=LoggingMic(log), audio_out=LoggingAudioOut(log, fail=True))
+    with pytest.raises(RuntimeError):
+        tx.start()
+    assert "ptt on" not in log and not radio.transmitting and not tx.active
+
+
+@pytest.mark.parametrize("mode", ["cw", "cw-r", "wfm"])
+def test_modes_the_radio_cannot_voice_are_refused(mode):
+    with pytest.raises(ValueError):
+        RadioTransmitter(LoggingRadio([]), mode, mic=FakeMic(), audio_out=LoggingAudioOut([]))
+
+
+def test_radio_transmitter_times_out():
+    now = [0.0]
+    tx = RadioTransmitter(LoggingRadio([]), "am", mic=FakeMic(), audio_out=LoggingAudioOut([]),
+                          timeout_s=180.0, clock=lambda: now[0])
+    tx.start()
+    now[0] = 181.0
+    assert tx.expired()

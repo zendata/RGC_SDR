@@ -70,7 +70,15 @@ AF, RF gain, squelch, preamp, attenuator, AGC, noise blanker, noise reduction an
 power, as percentages like the radio's own screen, and they follow the radio's knobs.
 The meter reads the radio's S-meter in S-units. If the radio refuses a setting -- the
 705 fixes AGC in FM -- the status bar says so and the control shows the radio's real
-value. The 705's audio and transmitting from the app come next. Keep the scope showing on the radio: it sends no scope data
+value.
+
+Its **audio** plays on the Mac (Vol and Mute work as usual). **TX** -- the red button
+or the space bar -- keys the 705 with the Mac's microphone as the audio, on the 705's
+frequency and at the power set on the Radio row; the meter shows power and SWR while
+transmitting, and the receiver is muted. For the Mac microphone to reach the air, set the
+705's **SET > Connectors > MOD Input > DATA OFF MOD** to **USB** (or **MIC,USB**);
+otherwise the 705 transmits its own microphone. CW and WFM are not transmitted from the
+app. Keep the scope showing on the radio: it sends no scope data
 while in a menu.
 
 ### Choosing the radio

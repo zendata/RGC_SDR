@@ -137,7 +137,7 @@ headless-testable and lets modules be swapped independently.
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
-  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX, then WiFi (Icom's network
+  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX (built; to verify on the radio), then WiFi (Icom's network
   protocol). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
@@ -803,6 +803,27 @@ FIL1-3, the Radio row carries AF/RF/SQL/Pre/ATT/AGC/NB/NR/Power (levels as % lik
 radio's screen), the meter shows S-units, and the app's squelch and listening offset are
 off (the radio demodulates). Memories map mode names both ways (nbfm <-> fm, wbfm <->
 wfm), so a station saved on an SDR recalls on the 705 and vice versa.
+
+**Audio and TX** (built 2026-09-27 with the radio unplugged; tested with stand-ins, **not
+yet on the radio**). Receive: `RadioAudio` plays the "USB Audio CODEC" input on the Mac's
+output through a FIFO, with the app's volume and mute, whenever the 705 is the radio --
+and never plays into the codec's own output, which is the transmitter's input. Transmit:
+`RadioTransmitter` has the SDR transmitter's face (TX button, space bar, 3-minute
+timeout, status line unchanged) but the radio modulates: microphone -> `CodecOutput` ->
+the codec's output, then PTT by CI-V `1C 00 01`; release is PTT off first, then audio.
+No key-up if the audio cannot start; closing the source always unkeys. CW (a key, not a
+microphone) and WFM (receive-only on the 705) are refused. While keyed the receiver's
+audio is muted and the meter shows power and SWR (`15 11`, `15 12`), polled instead of
+the S-meter.
+
+To verify on the radio: (1) the 705 transmits the Mac microphone only with its voice
+modulation input on USB (SET > Connectors > MOD Input > DATA OFF MOD = USB or MIC,USB);
+(2) the power and SWR scales are Icom's documented ones (0/143/213 = 0/50/100 %;
+0/48/80/120 = SWR 1.0/1.5/2.0/3.0), from the IC-7300 guide, unchecked on the 705;
+(3) receive audio level and latency.
+
+Found by the new tests: with the app *starting* on the 705, switching to an SDR raised
+AttributeError (`_agc_check` was never set on the transceiver path). Fixed.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

@@ -34,7 +34,7 @@ from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from ..dsp.modulate import TX_MODES
-from ..transmit import TX_IQ_RATE, TX_TIMEOUT_S, Transmitter
+from ..transmit import TX_IQ_RATE, TX_TIMEOUT_S, RadioTransmitter, Transmitter
 from ..repeater import CTCSS_TONES, MINUS, PLUS, SIMPLEX, band_for, tx_frequency
 from ..dsp.tones import DCS_CODES
 from .smeter import SMeter
@@ -57,7 +57,7 @@ APP_TITLE = "VK3RQ Super SDR"
 
 #: A transceiver scope's width in points (IC-705: 475, measured) and line rate.
 SCOPE_POINTS = 475
-from ..device.icom import SCOPE_LINES_PER_S, s_meter_text  # noqa: E402
+from ..device.icom import SCOPE_LINES_PER_S, power_percent, s_meter_text, swr_value  # noqa: E402
 from ..device import civ  # noqa: E402
 
 #: The IC-705 modes offered in the Mode list (D-STAR left out for now).
@@ -176,6 +176,10 @@ class MainWindow(QtWidgets.QMainWindow):
         #: Builds a Transmitter for a mode. Injectable so tests never open the microphone.
         self._transmitter_factory = transmitter_factory or self._make_transmitter
         self.transmitter: Transmitter | None = None
+        #: A transceiver's received audio on the Mac (RadioAudio), while one is in use.
+        #: Injectable so tests never open a sound device.
+        self.radio_audio = None
+        self._radio_audio_factory = None
         #: Transmit gains for the current radio, by stage. Start at each stage's minimum:
         #: a low first transmission, raised by the user as wanted.
         self._tx_gains: dict[str, float] = {}
@@ -429,6 +433,10 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._squelch_check.setEnabled(False)
             self._squelch_spin.setEnabled(False)
+        if sdr:
+            self._stop_radio_audio()
+        else:
+            self._start_radio_audio()
         self._fill_mode_combo()
         # A transceiver's mode is the radio's, so it needs no audio device to change.
         self._mode_combo.setEnabled(self._audio_ok or not sdr)
@@ -463,6 +471,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         previous_mode = self.mode
         self._tx_button.setChecked(False)
+        self._stop_radio_audio()
         if self.scanner is not None:
             self.stop_scan()
         self._stop_zerobeat()
@@ -1390,6 +1399,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.setContentsMargins(0, 0, 0, 0)
         caps = self.source.caps
         self._radio_widgets = {}
+        self._agc_check = None                 # set below for an SDR that has one
         if self.is_transceiver:
             self._build_transceiver_controls(row)
             return box
@@ -1501,7 +1511,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._bw_audio_combo.blockSignals(True)
             self._bw_audio_combo.setCurrentIndex(max(0, self._bw_audio_combo.findData(src.filter)))
             self._bw_audio_combo.blockSignals(False)
-        if src.smeter is not None:
+        if getattr(src, "transmitting", False):
+            if src.po is not None:
+                text = f"Po {power_percent(src.po):.0f}%"
+                if src.swr is not None:
+                    text += f"   SWR {swr_value(src.swr):.1f}"
+                self.smeter.set_s_reading(power_percent(src.po) / 100, text)
+        elif src.smeter is not None:
             self.smeter.set_s_reading(src.smeter / 255, s_meter_text(src.smeter))
         if src.refused:
             what, src.refused = src.refused, None
@@ -1509,6 +1525,29 @@ class MainWindow(QtWidgets.QMainWindow):
             # next scope line's status update within a quarter of a second.
             self._radio_note = (f"IC-705 refused the {what} change in "
                                 f"{(src.mode or '').upper()}", time.monotonic() + 5.0)
+
+    def _start_radio_audio(self) -> None:
+        """Play the transceiver's received audio on the Mac."""
+        if self.radio_audio is not None or not self._audio_ok:
+            return
+        factory = self._radio_audio_factory
+        if factory is None:
+            from ..audio import RadioAudio
+
+            factory = RadioAudio
+        audio = factory(volume=self._volume_slider.value() / 100.0)
+        audio.set_muted(self.muted)
+        try:
+            audio.start()
+        except Exception as exc:
+            self._audio_problem = f"radio audio: {exc}"
+            return
+        self.radio_audio = audio
+
+    def _stop_radio_audio(self) -> None:
+        audio, self.radio_audio = self.radio_audio, None
+        if audio is not None:
+            audio.stop()
 
     def _fill_mode_combo(self) -> None:
         """The app's demodulators for an SDR; the radio's own modes for a transceiver."""
@@ -1923,6 +1962,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         A source with no transmit path (a test stand-in) gives a dry run instead.
         """
+        if self.is_transceiver:
+            # The radio modulates: the app keys it and feeds it the microphone.
+            return RadioTransmitter(self.source, _TO_RADIO_MODE.get(mode, mode))
         opener = getattr(self.source, "open_tx_sink", None)
         sink = opener(self.tx_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
         return Transmitter(mode, sink=sink, tone=self.tx_tone())
@@ -2008,9 +2050,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.scanner is not None:
             self.stop_scan()
         # Half duplex: the receiver goes quiet while transmitting. Muted rather than
-        # stopped, so it comes straight back when TX ends.
+        # stopped, so it comes straight back when TX ends -- and a transceiver's audio
+        # cannot reach the microphone through the speakers.
         if self.audio is not None:
             self.audio.set_muted(True)
+        if self.radio_audio is not None:
+            self.radio_audio.set_muted(True)
 
     def _stop_transmit(self) -> None:
         tx, self.transmitter = self.transmitter, None
@@ -2019,15 +2064,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self._set_tx_lock(False)
         if self.audio is not None:
             self.audio.set_muted(self.muted)
+        if self.radio_audio is not None:
+            self.radio_audio.set_muted(self.muted)
 
     def _on_mute_toggled(self, muted: bool) -> None:
         if self.audio is not None:
             self.audio.set_muted(muted or self.transmitting)
+        if self.radio_audio is not None:
+            self.radio_audio.set_muted(muted or self.transmitting)
         self._mute_button.setText("Muted" if muted else "Mute")
 
     def _on_volume_changed(self, value: int) -> None:
         if self.audio is not None:
             self.audio.set_volume(value / 100.0)
+        if self.radio_audio is not None:
+            self.radio_audio.set_volume(value / 100.0)
         self._schedule_save()
 
     def _on_offset_changed(self, khz: float) -> None:
@@ -2681,7 +2732,7 @@ class MainWindow(QtWidgets.QMainWindow):
         level = getattr(tx.mic, "level_dbfs", -200.0)
         elapsed = int(tx.elapsed_s)
         what = ("TX dry run, no RF" if tx.dry_run
-                else f"TX {tx.sink.center_freq / 1e6:.4f} MHz")
+                else f"TX {tx.tx_freq / 1e6:.4f} MHz")
         return (f"  |  {what}  {tx.mode.upper()}  mic {level:.0f} dBFS"
                 f"  {elapsed // 60}:{elapsed % 60:02d}")
 
@@ -2692,6 +2743,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # before it could be read: why there is no sound has to live here instead.
         if self.audio is None and self.is_transceiver:
             text = f"  |  IC-705 scope, {self.source.stats.get('lines', 0)} lines"
+            if self.radio_audio is not None:
+                a = self.radio_audio.stats
+                text += f"  |  audio {a['audio_rate'] / 1e3:.0f} kHz  ur {int(a['underrun_samples'])}"
+            elif self._audio_problem:
+                text += f"  |  {self._audio_problem}"
             note = getattr(self, "_radio_note", None)
             if note is not None and time.monotonic() < note[1]:
                 text += f"  |  {note[0]}"
@@ -2712,6 +2768,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
         self._tx_button.setChecked(False)
+        self._stop_radio_audio()
         QtWidgets.QApplication.instance().removeEventFilter(self._space_filter)
         self._timer.stop()
         self._zerobeat_timer.stop()

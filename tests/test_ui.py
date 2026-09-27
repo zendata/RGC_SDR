@@ -2987,9 +2987,13 @@ class FakeTransceiver:
     profile = profile_for("icom705")
 
     def __init__(self, centre=145.65e6, span=20e3):
+        from src.rgc_sdr.device.source import TxCaps
         self._caps = DeviceCaps(driver="icom705", label="Icom IC-705", serial="",
                                 sample_rates=(), freq_ranges=(FreqRange(30e3, 470e6),),
-                                gain_elements=(), has_agc=False, formats=())
+                                gain_elements=(), has_agc=False, formats=(),
+                                tx=TxCaps(freq_ranges=(FreqRange(30e3, 470e6),),
+                                          gain_elements=(), sample_rates=()))
+        self.transmitting, self.po, self.swr = False, None, None
         self.centre, self.span = centre, span
         self.lines = []
         self.tuned = []
@@ -3004,6 +3008,10 @@ class FakeTransceiver:
     def set_control(self, key, value):
         self.set_calls.append((key, value))
         self.state[key] = value
+
+    def set_ptt(self, on):
+        self.set_calls.append(("ptt", on))
+        self.transmitting = on
 
     def set_mode(self, mode, filter_number=None):
         self.set_calls.append(("mode", mode, filter_number))
@@ -3180,4 +3188,87 @@ def test_switching_between_an_sdr_and_the_ic705(qapp):
     assert win.switch_device("airspyhf")
     assert not win.is_transceiver and not win._zoom_combo.isHidden()
     assert win.waterfall.buffer.cols == 1024
+    win.close()
+
+
+
+# -- the IC-705's audio and transmit ------------------------------------------------
+
+from src.rgc_sdr.transmit import RadioTransmitter  # noqa: E402
+
+
+class FakeRadioAudio:
+    instances = []
+
+    def __init__(self, volume=0.5):
+        self.volume, self.muted, self.running = volume, False, False
+        self.stats = {"audio_rate": 48000.0, "queued": 0, "underrun_samples": 0,
+                      "dropped_samples": 0}
+        FakeRadioAudio.instances.append(self)
+
+    def start(self): self.running = True
+    def stop(self): self.running = False
+    def set_volume(self, v): self.volume = v
+    def set_muted(self, m): self.muted = m
+
+
+class NullAudioOut:
+    def start(self, mic): pass
+    def stop(self): pass
+
+
+def radio_window(start="icom705"):
+    """A window whose radios are stand-ins, with the 705's audio faked."""
+    FakeRadioAudio.instances.clear()
+
+    def factory(driver, centre):
+        return FakeTransceiver() if driver == "icom705" else ProfiledStub(driver, centre)
+
+    first = factory(start, 7.1e6)
+    win = MainWindow(first, fft_size=1024, fps=25, source_factory=factory,
+                     availability_fn=fleet(("airspyhf", "icom705")), enable_audio=False)
+    _OPEN_WINDOWS.append(win)
+    win._audio_ok = True
+    win._radio_audio_factory = FakeRadioAudio
+    win._transmitter_factory = lambda mode: RadioTransmitter(
+        win.source, mode, mic=FakeMic(), audio_out=NullAudioOut())
+    win._sync_transceiver_ui()                 # now that audio is "available"
+    return win
+
+
+def test_the_705s_audio_plays_while_it_is_the_radio(qapp):
+    win = radio_window()
+    audio = win.radio_audio
+    assert audio is not None and audio.running
+    win._volume_slider.setValue(20)
+    assert audio.volume == pytest.approx(0.2)
+    win._mute_button.setChecked(True)
+    assert audio.muted
+    win.switch_device("airspyhf")
+    assert not audio.running and win.radio_audio is None
+    win.close()
+
+
+def test_tx_on_the_705_keys_the_radio_and_mutes_its_audio(qapp):
+    win = radio_window()
+    src = win.source
+    assert win._tx_button.isEnabled()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._tx_button.click()
+    assert ("ptt", True) in src.set_calls and win.radio_audio.muted
+    assert "TX 145.6500 MHz" in win._audio_status()
+    src.po, src.swr = 143, 48
+    win._on_frame()
+    assert win.smeter._s_reading[1] == "Po 50%   SWR 1.5"
+    win._tx_button.click()
+    assert src.set_calls[-1] == ("ptt", False) and not win.radio_audio.muted
+    win.close()
+
+
+def test_tx_on_the_705_is_refused_in_cw(qapp):
+    win = radio_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("cw"))
+    win._tx_button.click()
+    assert not win.transmitting and ("ptt", True) not in win.source.set_calls
+    assert "CW transmit is not supported" in win._status.currentMessage()
     win.close()
