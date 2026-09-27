@@ -767,9 +767,17 @@ own **scope data**. Measured 2026-09-27 on VK3RQ's radio (serial 12002294):
 | Scope | on (`27 10` = 01), data output off by default (`27 11` = 00), main, centre mode, span `00 00 01 00 00` = +/-10 kHz, speed MID, ref 0 dB |
 | Scope line | 11 messages `27 00 00 <seq 01..11> 11 ...`: seq 1 = header (centre/fixed, centre frequency, span, out-of-range); seq 2-10 = 50 amplitude bytes; seq 11 = 25 -> **475 points** |
 | Amplitudes | plain bytes, not BCD; 0-57 seen on a quiet 2 m channel (Icom documents 0-160) |
-| Line rate | **4.3 lines/s at FAST and MID alike**, 2.5 kB/s -- so not the scope speed. Likely the CI-V link rate: check SET > Connectors > CI-V: "CI-V USB Port" = Unlink from [REMOTE], "CI-V USB Baud Rate" = 115200 |
+| Line rate | **4.3 lines/s**, fixed by the radio: the same at scope speed FAST and MID, spans +/-2.5, 10 and 100 kHz, and host baud 9600-921600 (at 9600 a real serial line could not carry the 2.4 kB/s that arrived, so the 705 ignores the host rate). The 705's CI-V menu has no USB baud or unlink setting (unlike the IC-7300). The waterfall holds each line until the next |
+| Scope only while shown | With the radio in a menu, the scope reads off (`27 10` = 00) and no waveform data is sent |
 
-Every setting changed during the spike (scope output, speed) was read first and put back.
+Every setting changed during the spike (scope output, speed, span) was read first and put
+back.
+
+**CI-V core** (`device/civ.py`, done): framing, a stream parser that survives split reads,
+noise and collisions, BCD frequencies (LSB first) and levels (MSB first), the mode table,
+and `ScopeAssembler`, which rebuilds 475-point lines and drops torn ones. Tested against
+the bytes captured from the radio (`tests/data/ic705_scope_2s.bin`), not only against its
+own encoder.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
