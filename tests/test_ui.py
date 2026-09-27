@@ -2994,6 +2994,21 @@ class FakeTransceiver:
         self.lines = []
         self.tuned = []
         self.stats = {"lines": 0, "overflows": 0, "timeouts": 0, "errors": 0}
+        from src.rgc_sdr.device.icom import IC705_CONTROLS
+        self.controls = IC705_CONTROLS
+        self.state = {"af": 0, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
+                      "agc": 1, "nb": 0, "nr": 1, "att": 0}
+        self.mode, self.filter, self.smeter, self.refused = "fm", 1, 109, None
+        self.set_calls = []
+
+    def set_control(self, key, value):
+        self.set_calls.append((key, value))
+        self.state[key] = value
+
+    def set_mode(self, mode, filter_number=None):
+        self.set_calls.append(("mode", mode, filter_number))
+        self.mode = mode
+        self.filter = filter_number or self.filter
 
     caps = property(lambda self: self._caps)
     sample_rate = property(lambda self: self.span)
@@ -3031,7 +3046,8 @@ def test_transceiver_hides_what_needs_iq(qapp):
     win = window_for(FakeTransceiver(), fft_size=1024)
     for widget in (win._zoom_combo, win._fft_combo, win._scan_button):
         assert widget.isHidden()
-    assert not win._mode_combo.isEnabled() and not win._rec_iq_button.isEnabled()
+    assert not win._rec_iq_button.isEnabled() and not win._rec_audio_button.isEnabled()
+    assert not win._squelch_check.isEnabled() and not win._offset_spin.isEnabled()
     assert win.spectrum.getAxis("left").labelText == "scope level"
     win.close()
 
@@ -3070,12 +3086,81 @@ def test_tuning_from_the_app_tunes_the_radio(qapp):
     win.close()
 
 
-def test_transceiver_audio_is_refused_for_now(qapp):
-    win = window_for(FakeTransceiver(), fft_size=1024, enable_audio=False)
-    win._audio_ok = True
-    win.set_mode("fm")
-    assert win.audio is None
-    assert "IC-705" in win._audio_status()
+def test_mode_list_is_the_radios_and_sets_the_radio(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024, enable_audio=False)
+    modes = [win._mode_combo.itemData(i) for i in range(win._mode_combo.count())]
+    assert modes == ["lsb", "usb", "am", "cw", "rtty", "fm", "wfm"]
+    assert win.mode == "fm" and win._mode_combo.isEnabled()       # no audio device needed
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert ("mode", "usb", None) in src.set_calls
+    assert win.audio is None                                      # the radio demodulates
+    win.close()
+
+
+def test_bw_offers_the_radios_filters(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    assert [win._bw_audio_combo.itemText(i) for i in range(3)] == ["FIL1", "FIL2", "FIL3"]
+    win._bw_audio_combo.setCurrentIndex(2)
+    assert src.set_calls[-1] == ("mode", "fm", 3)
+    assert win.bandwidth_hz() is None
+    win.close()
+
+
+def test_radio_row_has_the_705s_controls(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    assert not win._radio_row.isHidden()
+    assert set(win._radio_widgets) == {"af", "rf", "sql", "preamp", "att", "agc", "nb", "nr",
+                                       "power"}
+    assert win._radio_widgets["rf"].value() == 100                # 255 shown as 100 %
+    win._radio_widgets["rf"].setValue(50)
+    assert src.set_calls[-1] == ("rf", 128)
+    win._radio_widgets["att"].setChecked(True)
+    assert src.set_calls[-1] == ("att", 1)
+    win.close()
+
+
+def test_front_panel_changes_and_the_meter_are_followed(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    src.state["nb"], src.mode, src.filter, src.smeter = 1, "lsb", 2, 160
+    win._on_frame()
+    assert win._radio_widgets["nb"].isChecked()
+    assert win.mode == "lsb" and win._bw_audio_combo.currentText() == "FIL2"
+    assert win.smeter._s_reading[1] == "S9+20 dB"
+    win.close()
+
+
+def test_a_refusal_is_reported(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    src.refused = "agc"
+    win._on_frame()
+    assert "refused the agc change" in win._audio_status() and src.refused is None
+    src.queue_line(); win._on_frame()          # a status refresh does not lose it
+    assert "refused" in win._status.currentMessage()
+    win.close()
+
+
+def test_a_memory_saved_on_an_sdr_recalls_its_mode_on_the_705(qapp, tmp_path):
+    opened = []
+
+    def factory(driver, centre):
+        src = FakeTransceiver() if driver == "icom705" else ProfiledStub(driver, centre)
+        opened.append(src)
+        return src
+
+    win = window_for(ProfiledStub("airspyhf", 7.1e6), fft_size=1024, source_factory=factory,
+                     availability_fn=fleet(("airspyhf", "icom705")),
+                     settings=Settings(tmp_path / "s.json"))
+    win._freq_spin.setValue(146.9)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    win.save_memory("rptr")
+    win.switch_device("icom705")
+    win.recall_memory("rptr")
+    assert opened[-1].mode == "fm" and opened[-1].tuned[-1] == pytest.approx(146.9e6)
     win.close()
 
 

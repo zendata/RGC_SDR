@@ -63,8 +63,14 @@ The IC-705 is not an SDR, but it is in the same **SDR** menu: plug in its USB ca
 choose **Icom IC-705**. The spectrum and waterfall are the radio's own scope (475 points,
 about 4 lines a second -- the 705's limit over USB), the frequency follows its dial, and
 tuning in the app (frequency box, step, click, memories) tunes the radio. Zoom and FFT
-are the radio's to set, so they are hidden. Audio, modes, gains and transmit from the
-app come in the next steps. Keep the scope showing on the radio: it sends no scope data
+are the radio's to set, so they are hidden.
+
+**Mode** lists the 705's modes and **BW** its filters FIL1-3. The **Radio** row has its
+AF, RF gain, squelch, preamp, attenuator, AGC, noise blanker, noise reduction and TX
+power, as percentages like the radio's own screen, and they follow the radio's knobs.
+The meter reads the radio's S-meter in S-units. If the radio refuses a setting -- the
+705 fixes AGC in FM -- the status bar says so and the control shows the radio's real
+value. The 705's audio and transmitting from the app come next. Keep the scope showing on the radio: it sends no scope data
 while in a menu.
 
 ### Choosing the radio

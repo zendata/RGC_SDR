@@ -29,6 +29,9 @@ class SMeter(QtWidgets.QWidget):
         self._level: float | None = None
         self._peak: float | None = None
         self._snr: float | None = None
+        #: A calibrated radio's own reading (IC-705: 0-255 and "S8"), shown instead
+        #: of dBFS. None for the SDRs, which have no calibration to offer.
+        self._s_reading: tuple[float, str] | None = None
         # Wide enough for the full readout: "-100.0 dBFS   S/N 12.3 dB" was being
         # clipped mid-word at the old width.
         self.setMinimumWidth(360)
@@ -49,7 +52,23 @@ class SMeter(QtWidgets.QWidget):
         self._snr = None
         self.update()
 
+    def set_s_reading(self, fraction: float | None, text: str = "") -> None:
+        """Show a radio's own S-meter: bar at `fraction` of full scale, e.g. "S9+20 dB"."""
+        if fraction is None:
+            self._s_reading = None
+            self.reset()
+            return
+        self._s_reading = (min(1.0, max(0.0, float(fraction))), text)
+        if self._peak is None or fraction > self._peak:
+            self._peak = float(fraction)
+        else:
+            self._peak = max(float(fraction), self._peak - 0.004)
+        self._level = float(fraction)
+        self.setToolTip("The radio's own S-meter")
+        self.update()
+
     def set_level(self, dbfs: float | None, snr_db: float | None = None) -> None:
+        self._s_reading = None
         if dbfs is None:
             self.reset()
             return
@@ -63,6 +82,8 @@ class SMeter(QtWidgets.QWidget):
         self.update()
 
     def _fraction(self, dbfs: float) -> float:
+        if self._s_reading is not None:
+            return dbfs                      # already a fraction of full scale
         span = self.high - self.low
         if span <= 0:
             return 0.0
@@ -100,7 +121,9 @@ class SMeter(QtWidgets.QWidget):
         font = painter.font()
         font.setPointSizeF(max(9.0, font.pointSizeF() - 1.0))
         painter.setFont(font)
-        if self._level is None:
+        if self._s_reading is not None:
+            text = self._s_reading[1]
+        elif self._level is None:
             text = "--"
         else:
             text = f"{self._level:6.1f} dBFS"

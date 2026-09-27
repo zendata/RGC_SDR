@@ -137,7 +137,7 @@ headless-testable and lets modules be swapped independently.
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
-  CI-V core ✅, scope/waterfall ✅, control, audio + TX, then WiFi (Icom's network
+  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX, then WiFi (Icom's network
   protocol). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
@@ -789,6 +789,20 @@ hidden or disabled. Amplitudes 0-160 are drawn at an assumed 0.5 dB a step, top 
 ("scope level") -- Icom does not publish the scale; to be checked against a known level.
 Verified on the radio: dial read, lines arriving, tuning from the app followed by the
 radio and back, settings restored on close.
+
+**Control** (done). Every command read and written on the radio first (2026-09-27):
+mode+filter `04`/`06`; levels `14 01` AF, `14 02` RF, `14 03` SQL, `14 0A` power (0-255
+BCD); `11` attenuator (00 / 20 dB); `16 02` preamp, `16 12` AGC, `16 22` NB, `16 40` NR;
+`15 02` S-meter (0 = S0, 120 = S9, 241 = S9+60). The radio answers FA (NG) to settings
+that do not apply -- AGC MID in FM, filter width in FM -- so writes are matched to their
+FB/FA replies in order, a refusal is reported and the real value read back. Transceive
+reports only frequency and mode, so the meter is polled every 0.25 s and the other
+settings every 1.5 s, which keeps the window in step with the radio's own knobs. In the
+window: Mode lists the 705's modes (and sets them, no audio device needed), BW is
+FIL1-3, the Radio row carries AF/RF/SQL/Pre/ATT/AGC/NB/NR/Power (levels as % like the
+radio's screen), the meter shows S-units, and the app's squelch and listening offset are
+off (the radio demodulates). Memories map mode names both ways (nbfm <-> fm, wbfm <->
+wfm), so a station saved on an SDR recalls on the 705 and vice versa.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

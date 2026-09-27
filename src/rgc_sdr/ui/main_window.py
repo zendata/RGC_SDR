@@ -57,7 +57,14 @@ APP_TITLE = "VK3RQ Super SDR"
 
 #: A transceiver scope's width in points (IC-705: 475, measured) and line rate.
 SCOPE_POINTS = 475
-from ..device.icom import SCOPE_LINES_PER_S  # noqa: E402
+from ..device.icom import SCOPE_LINES_PER_S, s_meter_text  # noqa: E402
+from ..device import civ  # noqa: E402
+
+#: The IC-705 modes offered in the Mode list (D-STAR left out for now).
+TRANSCEIVER_MODES = ("lsb", "usb", "am", "cw", "rtty", "fm", "wfm")
+#: The same modes, named the app's way and the radio's way.
+_TO_RADIO_MODE = {"nbfm": "fm", "wbfm": "wfm"}
+_TO_SDR_MODE = {"fm": "nbfm", "wfm": "wbfm"}
 
 
 def scope_level_db(amplitudes: np.ndarray) -> np.ndarray:
@@ -373,7 +380,8 @@ class MainWindow(QtWidgets.QMainWindow):
         box = self._build_device_controls()
         layout.addWidget(box)
         caps = self.source.caps
-        has_any = bool(caps.has_agc or caps.gain_elements or getattr(caps, "settings", ()))
+        has_any = bool(caps.has_agc or caps.gain_elements or getattr(caps, "settings", ())
+                       or getattr(self.source, "controls", ()))
         self._device_slot.setVisible(has_any)
         self._sync_radio_row()
 
@@ -410,10 +418,23 @@ class MainWindow(QtWidgets.QMainWindow):
             if self.decimator.factor != 1:
                 self.set_decimation(1)
                 self._sync_zoom_combo()
-        # Audio and recording from the IC-705 come in a later phase (PLANNING.md P7).
-        for widget in (self._mode_combo, self._rec_audio_button, self._rec_iq_button):
-            widget.setEnabled(sdr and (widget is not self._mode_combo or self._audio_ok))
-        self._mode_combo.setToolTip("" if sdr else "IC-705 audio and modes come in a later step")
+        # Recording from the IC-705 comes with its audio, later (PLANNING.md P7).
+        for widget in (self._rec_audio_button, self._rec_iq_button):
+            widget.setEnabled(sdr)
+        # The radio demodulates, so the app's squelch and listening offset do not apply;
+        # its own squelch is on the Radio row.
+        self._offset_spin.setEnabled(sdr)
+        if sdr:
+            self._sync_squelch_enabled()
+        else:
+            self._squelch_check.setEnabled(False)
+            self._squelch_spin.setEnabled(False)
+        self._fill_mode_combo()
+        # A transceiver's mode is the radio's, so it needs no audio device to change.
+        self._mode_combo.setEnabled(self._audio_ok or not sdr)
+        self._mode_combo.setToolTip("" if sdr else "The IC-705's mode")
+        self._refresh_bandwidths()
+        self._update_passband()
         self.spectrum.setLabel("left", "power" if sdr else "scope level",
                                units="dBFS" if sdr else "dB")
         self.waterfall.resize_bins(self._sdr_waterfall_bins if sdr else SCOPE_POINTS)
@@ -1368,6 +1389,10 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
         caps = self.source.caps
+        self._radio_widgets = {}
+        if self.is_transceiver:
+            self._build_transceiver_controls(row)
+            return box
 
         self._agc_check = None
         if caps.has_agc:
@@ -1417,6 +1442,92 @@ class MainWindow(QtWidgets.QMainWindow):
         # from things that matter.
         box.setVisible(row.count() > 0)
         return box
+
+    def _build_transceiver_controls(self, row: QtWidgets.QHBoxLayout) -> None:
+        """The radio's own settings (IC-705), as the source describes them."""
+        state = self.source.state
+        for control in self.source.controls:
+            value = state.get(control.key)
+            if control.kind == "switch":
+                widget = QtWidgets.QCheckBox(control.label)
+                widget.setChecked(bool(value))
+                widget.toggled.connect(
+                    lambda on, k=control.key: self.source.set_control(k, 1 if on else 0))
+            elif control.kind == "choice":
+                row.addWidget(QtWidgets.QLabel(control.label))
+                widget = QtWidgets.QComboBox()
+                for label, code in control.choices:
+                    widget.addItem(label, code)
+                if value is not None:
+                    widget.setCurrentIndex(max(0, widget.findData(value)))
+                widget.activated.connect(lambda _i, k=control.key, w=widget:
+                                         self.source.set_control(k, w.currentData()))
+            else:
+                # Levels are 0-255 on the radio and 0-100% on its screen.
+                row.addWidget(QtWidgets.QLabel(control.label))
+                widget = QtWidgets.QSpinBox()
+                widget.setRange(0, 100)
+                widget.setSuffix(" %")
+                widget.setKeyboardTracking(False)
+                if value is not None:
+                    widget.setValue(round(value / 255 * 100))
+                widget.valueChanged.connect(lambda pct, k=control.key:
+                                            self.source.set_control(k, round(pct / 100 * 255)))
+            widget.setToolTip(control.tooltip)
+            self._radio_widgets[control.key] = widget
+            row.addWidget(widget)
+
+    def _sync_transceiver_state(self) -> None:
+        """Follow the radio: its knobs, mode, filter and meter, and any refusal."""
+        src = self.source
+        for key, widget in self._radio_widgets.items():
+            value = src.state.get(key)
+            if value is None or widget.hasFocus():
+                continue                       # leave alone what is being edited
+            widget.blockSignals(True)
+            if isinstance(widget, QtWidgets.QCheckBox):
+                widget.setChecked(bool(value))
+            elif isinstance(widget, QtWidgets.QComboBox):
+                widget.setCurrentIndex(max(0, widget.findData(value)))
+            else:
+                widget.setValue(round(value / 255 * 100))
+            widget.blockSignals(False)
+        if src.mode is not None and src.mode != self.mode:
+            self._mode_combo.blockSignals(True)
+            self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(src.mode)))
+            self._mode_combo.blockSignals(False)
+            self._sync_mode_extras()
+        if src.filter is not None and self._bw_audio_combo.currentData() != src.filter:
+            self._bw_audio_combo.blockSignals(True)
+            self._bw_audio_combo.setCurrentIndex(max(0, self._bw_audio_combo.findData(src.filter)))
+            self._bw_audio_combo.blockSignals(False)
+        if src.smeter is not None:
+            self.smeter.set_s_reading(src.smeter / 255, s_meter_text(src.smeter))
+        if src.refused:
+            what, src.refused = src.refused, None
+            # Kept in the status line itself: a one-off message is overwritten by the
+            # next scope line's status update within a quarter of a second.
+            self._radio_note = (f"IC-705 refused the {what} change in "
+                                f"{(src.mode or '').upper()}", time.monotonic() + 5.0)
+
+    def _fill_mode_combo(self) -> None:
+        """The app's demodulators for an SDR; the radio's own modes for a transceiver."""
+        combo = self._mode_combo
+        current = self.mode
+        combo.blockSignals(True)
+        combo.clear()
+        if self.is_transceiver:
+            for name in TRANSCEIVER_MODES:
+                combo.addItem(name.upper(), name)
+            wanted = getattr(self.source, "mode", None) or _TO_RADIO_MODE.get(current, current)
+        else:
+            combo.addItem("Off", "off")
+            for name in MODES:
+                combo.addItem(name.upper(), name)
+            wanted = _TO_SDR_MODE.get(current, current)
+            wanted = wanted if wanted in MODES else "off"
+        combo.setCurrentIndex(max(0, combo.findData(wanted)))
+        combo.blockSignals(False)
 
     def _make_level_spin(self, value: float) -> QtWidgets.QDoubleSpinBox:
         spin = QtWidgets.QDoubleSpinBox()
@@ -1601,6 +1712,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_passband(self) -> None:
         self._sync_fm_row()          # the band, hence the repeater offset, may have changed
+        if self.is_transceiver:
+            # The radio's filter widths are its own; nothing here knows them.
+            self.spectrum.clear_passband()
+            return
         mode = self.mode
         if mode == "off" or mode not in MODE_SPECS:
             self.spectrum.clear_passband()
@@ -1628,9 +1743,14 @@ class MainWindow(QtWidgets.QMainWindow):
         right, and the status bar explains why nothing is audible.
         """
         self._audio_problem = ""
-        if mode != "off" and self.is_transceiver:
-            self._audio_problem = "IC-705 audio comes in a later step"
-            mode = "off"
+        if self.is_transceiver:
+            radio_mode = _TO_RADIO_MODE.get(mode, mode)
+            if radio_mode in civ.MODE_CODES and radio_mode != getattr(self.source, "mode", None):
+                self.source.set_mode(radio_mode)
+            self._refresh_bandwidths()
+            self._sync_mode_extras()
+            self._update_passband()
+            return
         if self.transmitter is not None and mode != self.transmitter.mode:
             self._tx_button.setChecked(False)      # a different mode means stop sending
         if mode == "off":
@@ -1928,6 +2048,15 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.mode
         self._bw_audio_combo.blockSignals(True)
         self._bw_audio_combo.clear()
+        if self.is_transceiver:
+            # The radio's own three filters; their widths are set on the radio.
+            for number in (1, 2, 3):
+                self._bw_audio_combo.addItem(f"FIL{number}", number)
+            current = getattr(self.source, "filter", None) or 1
+            self._bw_audio_combo.setCurrentIndex(self._bw_audio_combo.findData(current))
+            self._bw_audio_combo.blockSignals(False)
+            self._bw_audio_combo.setEnabled(True)
+            return
         presets = BANDWIDTH_PRESETS.get(mode, ())
         for width in presets:
             label = f"{width / 1e3:g} kHz"
@@ -1942,10 +2071,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bw_audio_combo.setEnabled(bool(presets))
 
     def bandwidth_hz(self) -> float | None:
+        if self.is_transceiver:
+            return None                        # FIL1-3 are filter numbers, not widths
         data = self._bw_audio_combo.currentData()
         return float(data) if data is not None else None
 
     def _on_audio_bandwidth_changed(self) -> None:
+        if self.is_transceiver:
+            number = self._bw_audio_combo.currentData()
+            if number:
+                self.source.set_mode(_TO_RADIO_MODE.get(self.mode, self.mode), number)
+            return
         width = self.bandwidth_hz()
         if width is None:
             return
@@ -2262,7 +2398,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._step_combo.blockSignals(False)
             self._on_step_changed()
         self._apply_fm_snapshot(snap)
-        wanted = snap.mode if snap.mode in MODES else "off"
+        if self.is_transceiver:
+            wanted = _TO_RADIO_MODE.get(snap.mode, snap.mode)
+        else:
+            wanted = _TO_SDR_MODE.get(snap.mode, snap.mode)
+            wanted = wanted if wanted in MODES else "off"
         self._mode_combo.blockSignals(True)
         self._mode_combo.setCurrentIndex(max(0, self._mode_combo.findData(wanted)))
         self._mode_combo.blockSignals(False)
@@ -2487,6 +2627,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _scope_frame(self) -> None:
         """A transceiver's display: its own scope lines, drawn as they arrive (~4/s)."""
+        self._sync_transceiver_state()
         line = self.source.take_scope_line()
         if line is None:
             return
@@ -2508,7 +2649,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_passband()
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
-        self._update_smeter(dbfs, freqs)
         self._rows_pushed += 1
         if self._auto_pending and self._rows_pushed >= 8:
             self._auto_pending = False
@@ -2551,8 +2691,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # The status line is rewritten every frame, so a one-off message would vanish
         # before it could be read: why there is no sound has to live here instead.
         if self.audio is None and self.is_transceiver:
-            lines = self.source.stats.get("lines", 0)
-            return f"  |  IC-705 scope, {lines} lines  |  view and tune only for now"
+            text = f"  |  IC-705 scope, {self.source.stats.get('lines', 0)} lines"
+            note = getattr(self, "_radio_note", None)
+            if note is not None and time.monotonic() < note[1]:
+                text += f"  |  {note[0]}"
+            return text
         if self.audio is None:
             if self.mode == "off":
                 return "  |  audio off (choose a Mode)"
