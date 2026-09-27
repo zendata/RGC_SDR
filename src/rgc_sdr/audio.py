@@ -552,6 +552,12 @@ class Microphone:
 
 RADIO_CODEC = "USB Audio CODEC"
 
+#: Make-up gain for the radio's audio. Measured on the IC-705 (2026-09-28, 3RN 621 kHz
+#: AM at S9+49): -31 dBFS rms, -17 dBFS peak from its sound card -- some 15 dB below the
+#: SDRs' levelled audio at the same Vol. +12 dB brings it level and keeps the peaks
+#: under full scale; the 705's own "USB AF Output Level" can raise it further.
+RADIO_AUDIO_GAIN = 4.0
+
 
 def choose_output_device(devices, name: str) -> int | None:
     """Index of the output device called `name`, or None."""
@@ -613,8 +619,8 @@ class RadioAudio:
 
     def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
         block = self._fifo.pull(frames)
-        gain = 0.0 if self.muted else self.volume
-        outdata[:, 0] = block * gain
+        gain = 0.0 if self.muted else self.volume * RADIO_AUDIO_GAIN
+        outdata[:, 0] = np.clip(block * gain, -1.0, 1.0)
 
     def start(self) -> None:
         if self._streams:

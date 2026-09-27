@@ -582,11 +582,15 @@ def test_received_audio_never_plays_into_the_radios_own_codec():
 
 
 def test_radio_audio_follows_volume_and_mute():
+    from src.rgc_sdr.audio import RADIO_AUDIO_GAIN
     audio = RadioAudio(volume=0.5)
-    audio._captured(np.full((1024, 2), 0.4, dtype=np.float32), 1024, None, None)
+    audio._captured(np.full((1024, 2), 0.1, dtype=np.float32), 1024, None, None)
     out = np.zeros((1024, 1), dtype=np.float32)
     audio._play(out, 1024, None, None)
-    assert np.allclose(out[:, 0], 0.2)
+    assert np.allclose(out[:, 0], 0.1 * 0.5 * RADIO_AUDIO_GAIN)
+    audio._captured(np.full((1024, 2), 0.9, dtype=np.float32), 1024, None, None)
+    audio._play(out, 1024, None, None)
+    assert np.max(out) <= 1.0                        # boosted, but never past full scale
     audio.set_muted(True)
     audio._captured(np.full((1024, 2), 0.4, dtype=np.float32), 1024, None, None)
     audio._play(out, 1024, None, None)
