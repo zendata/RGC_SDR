@@ -48,8 +48,18 @@ SETTINGS_POLL_S = 1.5
 #: the speaker is silenced (AF 0 -- the USB audio does not follow AF: -31.7 dBFS at AF 0)
 #: and TX audio is taken from USB only. DATA OFF MOD was MIC,USB, so the radio's own
 #: microphone was on the air alongside the Mac's.
+#: USB AF Output Level goes to 100% (measured +11.6 dB over the default 50%, so the app
+#: needs almost no gain of its own) and USB AF SQL on: the radio then mutes its USB audio
+#: itself when the squelch closes (measured -34 -> -87 dBFS), instantly.
 DATA_OFF_MOD = (0x01, 0x18)          # 00 MIC, 01 USB, 02 MIC+USB, 03 WLAN
-TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01"}
+#: `1A 05` menu items the app takes over: name -> item number.
+MENU_ITEMS = {
+    "data_off_mod": DATA_OFF_MOD,
+    "usb_af_level": (0x01, 0x10),    # 0000-0255 = 0-100 %
+    "usb_af_sql": (0x01, 0x11),      # 00 off (always open), 01 follows the squelch
+}
+TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01",
+            "usb_af_level": b"\x02\x55", "usb_af_sql": b"\x01"}
 
 #: Where the radio's own settings are kept while the app has changed them, so that a
 #: crash cannot leave the radio with its speaker and microphone switched off.
@@ -583,15 +593,15 @@ class IcomSource(IQSource):
         if name == "af":
             frame = self._ask(0x14, b"\x01")
             return frame.payload[1:3] if frame is not None and len(frame.payload) == 3 else None
-        frame = self._ask(0x1A, bytes([0x05, *DATA_OFF_MOD]))
-        return frame.payload[3:4] if frame is not None and len(frame.payload) == 4 else None
+        frame = self._ask(0x1A, bytes([0x05, *MENU_ITEMS[name]]))
+        return frame.payload[3:] if frame is not None and len(frame.payload) > 3 else None
 
     def _write_takeover(self, name: str, value: bytes) -> None:
         if name == "af":
             self._send(0x14, b"\x01" + value, label="af")
             self.state["af"] = civ.decode_level(value)
         else:
-            self._send(0x1A, bytes([0x05, *DATA_OFF_MOD]) + value, label="data_off_mod")
+            self._send(0x1A, bytes([0x05, *MENU_ITEMS[name]]) + value, label=name)
 
     def _take_over(self) -> None:
         """Silence the speaker and take TX audio from USB, remembering the radio's own

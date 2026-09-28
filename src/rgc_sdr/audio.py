@@ -554,9 +554,10 @@ RADIO_CODEC = "USB Audio CODEC"
 
 #: Make-up gain for the radio's audio. Measured on the IC-705 (2026-09-28, 3RN 621 kHz
 #: AM at S9+49): -31 dBFS rms, -17 dBFS peak from its sound card -- some 15 dB below the
-#: SDRs' levelled audio at the same Vol. +12 dB brings it level and keeps the peaks
-#: under full scale; the 705's own "USB AF Output Level" can raise it further.
-RADIO_AUDIO_GAIN = 4.0
+#: SDRs' levelled audio at the same Vol. The app now sets the 705's own "USB AF Output
+#: Level" to 100 % while it has the radio, which adds 11.6 dB (measured), so no make-up
+#: gain is needed here.
+RADIO_AUDIO_GAIN = 1.0
 
 
 def choose_output_device(devices, name: str) -> int | None:

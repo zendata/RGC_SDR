@@ -25,6 +25,7 @@ class StandInRadio:
         self.meters = {0x13: 60, 0x14: 130, 0x15: 189, 0x16: 121}
         self.squelch = 1                          # open
         self.data_off_mod = 0x02                  # MIC,USB, as found on VK3RQ's radio
+        self.menu = {(0x01, 0x10): bytes.fromhex("0128"), (0x01, 0x11): b"\x00"}
         self.span = None
         self.split = 0x01
         self.rit = {0x01: 0, 0x02: 0}
@@ -104,6 +105,11 @@ class StandInRadio:
         elif cmd == 0x1B:
             self._reply(0x1B, bytes([p[0]]) + (bytes.fromhex("000023") if p[0] == 2
                                                else bytes.fromhex("000885")))
+        elif cmd == 0x1A and p[0] == 0x05 and (p[1], p[2]) in self.menu:
+            if len(p) == 3:
+                self._reply(0x1A, p + self.menu[(p[1], p[2])])
+            else:
+                self.menu[(p[1], p[2])] = bytes(p[3:]); self._reply(civ.OK)
         elif cmd == 0x1A and p[:3] == bytes([0x05, 0x01, 0x18]):
             if len(p) == 3:
                 self._reply(0x1A, p + bytes([self.data_off_mod]))
@@ -303,8 +309,12 @@ def test_the_app_silences_the_speaker_and_takes_tx_audio_from_usb(tmp_path):
     src._take_over()
     settle(src)
     assert radio.levels[0x01] == 0 and radio.data_off_mod == 0x01
+    # USB audio at full level, muted by the radio itself when its squelch closes.
+    assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0255")
+    assert radio.menu[(0x01, 0x11)] == b"\x01"
     saved = json.loads((tmp_path / "restore.json").read_text())
-    assert saved == {"af": "0072", "data_off_mod": "02"}
+    assert saved == {"af": "0072", "data_off_mod": "02", "usb_af_level": "0128",
+                     "usb_af_sql": "00"}
 
 
 def test_handing_back_restores_the_radios_own_settings(tmp_path):
@@ -313,6 +323,7 @@ def test_handing_back_restores_the_radios_own_settings(tmp_path):
     src._take_over(); settle(src)
     src._hand_back(); settle(src)
     assert radio.levels[0x01] == 72 and radio.data_off_mod == 0x02
+    assert radio.menu == {(0x01, 0x10): bytes.fromhex("0128"), (0x01, 0x11): b"\x00"}
     assert not (tmp_path / "restore.json").exists()
 
 
