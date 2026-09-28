@@ -842,6 +842,19 @@ and gates `RadioAudio` on it, so the radio's SQL control works for the Mac audio
 up to ~0.1 s plus the audio buffer later than the radio's speaker. The dead Squelch box
 on the audio row is hidden for a transceiver rather than greyed out.
 
+**Takeover, span, fixed mode** (2026-09-28). Found: the radio's speaker played alongside
+the Mac, and on TX its own microphone went out with the Mac's -- DATA OFF MOD was
+MIC,USB. From Icom's IC-705 CI-V reference guide, `1A 05` items: `01 18` DATA OFF MOD
+(00 MIC, 01 USB, 02 MIC+USB, 03 WLAN), `01 16` USB MOD level, `01 10` USB AF output
+level, `01 11` USB AF SQL. Measured: the USB audio does not follow AF (-31.7 dBFS at AF
+0). So while the app has the radio it sets AF 0 and DATA OFF MOD USB, and restores both
+on close or switch; the originals are written to `ic705_restore.json` meanwhile, and a
+file left by a crash is taken as the truth next time. Verified on the radio: 02 -> 01
+while open -> 02 after, no refusal. Also: the waterfall kept an old zoom when the span
+widened (preserve_span) -- a new span now resets the view and history; the display uses
+the scope's own centre, so fixed mode shows its edges; a Span control (+/-2.5-500 kHz,
+27 15) replaces Zoom for the 705 and follows the radio (verified: 250 -> 50 -> 25 kHz).
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

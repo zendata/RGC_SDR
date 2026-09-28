@@ -3029,17 +3029,28 @@ class FakeTransceiver:
     def read_latest(self, n):
         return np.zeros(0, dtype=np.complex64)
 
-    def queue_line(self, peak_offset_hz=0.0):
+    def queue_line(self, peak_offset_hz=0.0, low=None, high=None):
+        """A centre-mode line around the dial, or a fixed-mode one between edges."""
         amps = np.zeros(475, dtype=np.uint8)
-        amps[int((peak_offset_hz / self.span + 0.5) * 475)] = 150
-        self.lines.append(civ.ScopeLine(True, self.centre - self.span / 2,
-                                        self.centre + self.span / 2, amps, False))
+        centre_mode = low is None
+        if centre_mode:
+            low, high = self.centre - self.span / 2, self.centre + self.span / 2
+        amps[int((peak_offset_hz / (high - low) + 0.5) * 475)] = 150
+        self.lines.append(civ.ScopeLine(centre_mode, low, high, amps, False))
 
     def take_scope_line(self):
         if not self.lines:
             return None
         self.stats["lines"] += 1
-        return self.lines.pop(0)
+        line = self.lines.pop(0)
+        # As IcomSource does: the scope's own geometry.
+        self.span = line.span_hz
+        self.display_center_freq, self.half_span = line.centre_hz, line.span_hz / 2
+        self.centre_mode = line.centre_mode
+        return line
+
+    def set_span(self, half):
+        self.set_calls.append(("span", half))
 
     def set_center_freq(self, hz, flush=True):
         self.tuned.append(hz)
@@ -3311,4 +3322,48 @@ def test_the_705s_squelch_gates_its_audio_and_the_apps_squelch_is_hidden(qapp):
     assert win.radio_audio.squelch_open is True
     win.switch_device("airspyhf")
     assert not win._squelch_check.isHidden()            # back for the SDRs
+    win.close()
+
+
+
+# -- the 705's scope span from the Mac, and following the radio's --------------------
+
+def test_span_control_replaces_zoom_for_the_705_and_sets_the_radio(qapp):
+    src = FakeTransceiver()
+    win = window_for(src, fft_size=1024)
+    assert not win._span_combo.isHidden() and win._zoom_combo.isHidden()
+    win._span_combo.setCurrentIndex(win._span_combo.findData(100e3))
+    win._span_combo.activated.emit(win._span_combo.currentIndex())
+    assert src.set_calls[-1] == ("span", 100e3)
+    win.close()
+
+
+def test_a_new_span_on_the_radio_shows_in_full(qapp):
+    """The bug: a zoom kept from the old span hid most of a wider new one."""
+    src = FakeTransceiver(span=20e3)
+    win = window_for(src, fft_size=1024)
+    src.queue_line(); win._on_frame()
+    src.span = 200e3                                      # SPAN changed on the radio
+    src.queue_line(); win._on_frame()
+    lo, hi = win.waterfall.getViewBox().viewRange()[0]
+    assert hi - lo == pytest.approx(200e3, rel=0.01)
+    assert win._span_combo.currentData() == 100e3         # +/-100 kHz
+    assert win._rows_pushed == 2 and win.waterfall.buffer._written == 1   # old rows gone
+    win.close()
+
+
+def test_fixed_mode_scope_is_drawn_between_its_edges(qapp):
+    src = FakeTransceiver(centre=145.65e6)
+    win = window_for(src, fft_size=1024)
+    src.queue_line(low=144.0e6, high=146.0e6)
+    win._on_frame()
+    lo, hi = win.waterfall.getViewBox().viewRange()[0]
+    assert (lo, hi) == (pytest.approx(144.0e6), pytest.approx(146.0e6))
+    assert not win._span_combo.isEnabled()                # the edges set the span
+    win.close()
+
+
+def test_switching_back_to_an_sdr_hides_span(qapp):
+    win, _ = tx_window(start="airspyhf")
+    assert win._span_combo.isHidden() and not win._zoom_combo.isHidden()
     win.close()

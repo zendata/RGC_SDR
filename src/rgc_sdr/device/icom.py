@@ -15,9 +15,11 @@ the first answers CI-V; the second (USB B, GPS/decode) is silent to it.
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
@@ -41,6 +43,18 @@ REPLY_TIMEOUT_S = 0.5
 #: on the radio's front panel, so those are polled.
 METER_POLL_S = 0.25
 SETTINGS_POLL_S = 1.5
+#: Settings the app changes while it has the radio, and puts back afterwards (menu items
+#: from Icom's IC-705 CI-V reference guide, `1A 05`; checked on the radio 2026-09-28):
+#: the speaker is silenced (AF 0 -- the USB audio does not follow AF: -31.7 dBFS at AF 0)
+#: and TX audio is taken from USB only. DATA OFF MOD was MIC,USB, so the radio's own
+#: microphone was on the air alongside the Mac's.
+DATA_OFF_MOD = (0x01, 0x18)          # 00 MIC, 01 USB, 02 MIC+USB, 03 WLAN
+TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01"}
+
+#: Where the radio's own settings are kept while the app has changed them, so that a
+#: crash cannot leave the radio with its speaker and microphone switched off.
+RESTORE_FILE = Path.home() / "Library" / "Application Support" / "RGC_SDR" / "ic705_restore.json"
+
 #: The 705 does not squelch its USB audio (VK3RQ, 2026-09-28: noise heard with SQL up),
 #: so the app gates it on the radio's squelch state, asked for this often.
 SQUELCH_POLL_S = 0.1
@@ -132,7 +146,8 @@ class IcomSource(IQSource):
     profile = None
 
     def __init__(self, port: str | None = None, address: int = civ.IC705_ADDRESS,
-                 center_freq: float | None = None, transport=None, **_ignored) -> None:
+                 center_freq: float | None = None, transport=None,
+                 restore_file: Path | None = None, **_ignored) -> None:
         if transport is None:
             import serial
 
@@ -173,6 +188,13 @@ class IcomSource(IQSource):
         self._skipped = 0
         self._errors = 0
         self._restore: dict[int, bytes] = {}
+        self.restore_file = Path(restore_file) if restore_file else RESTORE_FILE
+        #: The radio's own values of the TAKEOVER settings, while the app has them.
+        self._taken: dict[str, bytes] = {}
+        #: The scope's own centre (differs from the dial in fixed mode) and half-span.
+        self.display_center_freq: float | None = None
+        self.half_span: float | None = None
+        self.centre_mode = True
 
         from .profiles import profile_for
 
@@ -215,6 +237,9 @@ class IcomSource(IQSource):
                     self._latest = line
                     self._lines += 1
                     self._span = line.span_hz
+                    self.display_center_freq = line.centre_hz
+                    self.half_span = line.span_hz / 2.0
+                    self.centre_mode = line.centre_mode
                     if line.centre_mode:
                         self._freq = line.centre_hz
             return
@@ -390,9 +415,65 @@ class IcomSource(IQSource):
                 "dropped": self._assembler.dropped, "errors": self._errors,
                 "overflows": 0, "timeouts": 0}
 
+    # -- taking over the speaker and the TX audio source --------------------------------
+
+    def _read_takeover(self, name: str) -> bytes | None:
+        if name == "af":
+            frame = self._ask(0x14, b"\x01")
+            return frame.payload[1:3] if frame is not None and len(frame.payload) == 3 else None
+        frame = self._ask(0x1A, bytes([0x05, *DATA_OFF_MOD]))
+        return frame.payload[3:4] if frame is not None and len(frame.payload) == 4 else None
+
+    def _write_takeover(self, name: str, value: bytes) -> None:
+        if name == "af":
+            self._send(0x14, b"\x01" + value, label="af")
+            self.state["af"] = civ.decode_level(value)
+        else:
+            self._send(0x1A, bytes([0x05, *DATA_OFF_MOD]) + value, label="data_off_mod")
+
+    def _take_over(self) -> None:
+        """Silence the speaker and take TX audio from USB, remembering the radio's own
+        settings -- on disk too, so a crash does not lose them. If the file is already
+        there, a previous run did not finish: its values are the radio's real ones."""
+        saved: dict[str, str] = {}
+        try:
+            saved = json.loads(self.restore_file.read_text())
+        except (OSError, ValueError):
+            saved = {}
+        for name in TAKEOVER:
+            if name in saved:
+                self._taken[name] = bytes.fromhex(saved[name])
+            else:
+                value = self._read_takeover(name)
+                if value is not None:
+                    self._taken[name] = value
+        try:
+            self.restore_file.parent.mkdir(parents=True, exist_ok=True)
+            self.restore_file.write_text(json.dumps({k: v.hex() for k, v in self._taken.items()}))
+        except OSError:
+            pass
+        for name, value in TAKEOVER.items():
+            if name in self._taken:
+                self._write_takeover(name, value)
+
+    def _hand_back(self) -> None:
+        for name, value in self._taken.items():
+            self._write_takeover(name, value)
+        self._taken.clear()
+        try:
+            self.restore_file.unlink()
+        except OSError:
+            pass
+
+    def set_span(self, half_span_hz: float) -> None:
+        """The scope's span in centre mode, as a half-span (+/-): 2.5 kHz to 500 kHz."""
+        self._send(civ.CMD_SCOPE, bytes([civ.SCOPE_SPAN, 0x00]) + civ.encode_freq(half_span_hz),
+                   label="span")
+
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._take_over()
         # Remember the scope's on/off and output settings, to put back on close.
         for sub in (civ.SCOPE_ON, civ.SCOPE_OUTPUT):
             was = self._read_setting(sub)
@@ -410,6 +491,7 @@ class IcomSource(IQSource):
         self._running.clear()
         self._thread.join(timeout=1.0)
         self._thread = None
+        self._hand_back()
         # Output first: stop the stream, then the scope as it was.
         for sub in (civ.SCOPE_OUTPUT, civ.SCOPE_ON):
             value = self._restore.get(sub, b"\x00" if sub == civ.SCOPE_OUTPUT else None)

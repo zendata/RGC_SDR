@@ -78,9 +78,15 @@ value.
 Its **audio** plays on the Mac (Vol and Mute work as usual). **TX** -- the red button
 or the space bar -- keys the 705 with the Mac's microphone as the audio, on the 705's
 frequency and at the power set on the Radio row; the meter shows power and SWR while
-transmitting, and the receiver is muted. For the Mac microphone to reach the air, set the
-705's **SET > Connectors > MOD Input > DATA OFF MOD** to **USB** (or **MIC,USB**);
-otherwise the 705 transmits its own microphone. CW and WFM are not transmitted from the
+transmitting, and the receiver is muted.
+
+While the app has the 705 it **silences the radio's speaker** (AF 0 -- the Mac's audio is
+unaffected) and sets **DATA OFF MOD to USB**, so only the Mac microphone goes on air, not
+the radio's own as well. Both are put back when you quit or switch radio, and are kept on
+disk meanwhile, so even a crash cannot leave the radio's speaker and microphone off.
+
+**Span** (in place of Zoom) sets the radio's scope span, ±2.5 to ±500 kHz, and follows
+changes made on the radio; in the radio's fixed scope mode the display shows its edges. CW and WFM are not transmitted from the
 app. **Mic** on the Radio row sets how loud the Mac microphone is sent -- 25% to start,
 with a limiter on the peaks; lower it if you are reported distorted or over-compressed,
 raise it if quiet. It works while transmitting and is remembered for the 705. Keep the scope showing on the radio: it sends no scope data

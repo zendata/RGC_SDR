@@ -19,6 +19,9 @@ class StandInRadio:
         self.smeter = 109
         self.ptt = 0
         self.squelch = 1                          # open
+        self.levels[0x01] = 72                    # AF: the speaker is up
+        self.data_off_mod = 0x02                  # MIC,USB, as found on VK3RQ's radio
+        self.span = None
         self.po, self.swr = 143, 48              # 50 % power, SWR 1.5
         self.parser = civ.FrameParser()
         self.out = bytearray()
@@ -61,6 +64,13 @@ class StandInRadio:
                 self._reply(0x15, bytes([p[0]]) + civ.encode_level(value))
             elif cmd == 0x1C and len(p) == 2:
                 self.ptt = p[1]; self._reply(civ.OK)
+            elif cmd == 0x1A and p[:3] == bytes([0x05, 0x01, 0x18]):
+                if len(p) == 3:
+                    self._reply(0x1A, p + bytes([self.data_off_mod]))
+                else:
+                    self.data_off_mod = p[3]; self._reply(civ.OK)
+            elif cmd == 0x27 and p[:2] == bytes([0x15, 0x00]) and len(p) == 7:
+                self.span = civ.decode_freq(p[2:7]); self._reply(civ.OK)
             elif cmd == 0x27:
                 self._reply(civ.OK if len(p) > 1 else 0x27, p if len(p) == 1 else b"")
         return len(data)
@@ -94,7 +104,7 @@ def test_poll_reads_every_setting_mode_and_the_meter():
     src.poll(now=0.0)
     settle(src)
     assert src.mode == "fm" and src.filter == 1
-    assert src.state == {"af": 0, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
+    assert src.state == {"af": 72, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
                          "agc": 1, "nb": 0, "nr": 1, "att": 0}
     assert src.smeter == 109
 
@@ -232,3 +242,52 @@ def test_squelch_is_polled_often_but_not_while_transmitting():
     radio.written.clear()
     src.poll(now=5.0)
     assert not any(f.cmd == 0x15 and f.payload[:1] == b"\x01" for f in radio.written)
+
+
+
+# -- taking over the speaker and TX audio source, and handing them back ---------------
+
+import json  # noqa: E402
+
+from src.rgc_sdr.device.icom import IcomSource as _Source  # noqa: E402
+
+
+def source_with_file(radio, tmp_path):
+    return _Source(transport=radio, restore_file=tmp_path / "restore.json")
+
+
+def test_the_app_silences_the_speaker_and_takes_tx_audio_from_usb(tmp_path):
+    radio = StandInRadio()
+    src = source_with_file(radio, tmp_path)
+    src._take_over()
+    settle(src)
+    assert radio.levels[0x01] == 0 and radio.data_off_mod == 0x01
+    saved = json.loads((tmp_path / "restore.json").read_text())
+    assert saved == {"af": "0072", "data_off_mod": "02"}
+
+
+def test_handing_back_restores_the_radios_own_settings(tmp_path):
+    radio = StandInRadio()
+    src = source_with_file(radio, tmp_path)
+    src._take_over(); settle(src)
+    src._hand_back(); settle(src)
+    assert radio.levels[0x01] == 72 and radio.data_off_mod == 0x02
+    assert not (tmp_path / "restore.json").exists()
+
+
+def test_after_a_crash_the_real_originals_come_back(tmp_path):
+    """The radio still has the app's values (AF 0, USB); the file has the truth."""
+    (tmp_path / "restore.json").write_text(json.dumps({"af": "0072", "data_off_mod": "02"}))
+    radio = StandInRadio()
+    radio.levels[0x01], radio.data_off_mod = 0, 0x01
+    src = source_with_file(radio, tmp_path)
+    src._take_over(); settle(src)
+    src._hand_back(); settle(src)
+    assert radio.levels[0x01] == 72 and radio.data_off_mod == 0x02
+
+
+def test_span_is_sent_as_a_bcd_half_span():
+    radio, src = radio_and_source()
+    src.set_span(100e3)
+    settle(src)
+    assert radio.span == 100_000

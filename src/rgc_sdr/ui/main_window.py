@@ -420,6 +420,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
                        self._scan_button):
             widget.setVisible(sdr)
+        for widget in (self._span_label, self._span_combo):
+            widget.setVisible(not sdr)
         if not sdr:
             if self._scan_button.isChecked():
                 self._scan_button.setChecked(False)
@@ -1284,6 +1286,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_button.setToolTip("Show or hide the scanner")
         row.addWidget(self._scan_button)
 
+        # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
+        self._span_label = QtWidgets.QLabel("Span")
+        row.addWidget(self._span_label)
+        self._span_combo = QtWidgets.QComboBox()
+        for half in civ.SCOPE_SPANS_HZ:
+            self._span_combo.addItem(f"\u00b1{half / 1e3:g} kHz", half)
+        self._span_combo.setToolTip("The radio's scope span (centre mode)")
+        self._span_combo.activated.connect(self._on_span_chosen)
+        row.addWidget(self._span_combo)
+        self._span_label.hide()
+        self._span_combo.hide()
+
         row.addStretch(1)
         return box
 
@@ -1516,6 +1530,26 @@ class MainWindow(QtWidgets.QMainWindow):
             audio_out.level = self._tx_audio_level          # live, while transmitting
         self._schedule_save()
 
+    def _on_span_chosen(self) -> None:
+        half = self._span_combo.currentData()
+        if half and self.is_transceiver:
+            self.source.set_span(half)
+
+    def _sync_span_combo(self) -> None:
+        src = self.source
+        half = getattr(src, "half_span", None)
+        fixed = not getattr(src, "centre_mode", True)
+        self._span_combo.setEnabled(not fixed)
+        self._span_combo.setToolTip("The radio's scope span (centre mode)" if not fixed else
+                                    "The radio's scope is in fixed mode: its edges set the span")
+        if half is None or self._span_combo.view().isVisible():
+            return
+        index = self._span_combo.findData(half)
+        if index >= 0 and index != self._span_combo.currentIndex():
+            self._span_combo.blockSignals(True)
+            self._span_combo.setCurrentIndex(index)
+            self._span_combo.blockSignals(False)
+
     def _sync_transceiver_state(self) -> None:
         """Follow the radio: its knobs, mode, filter and meter, and any refusal."""
         src = self.source
@@ -1625,8 +1659,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         lines_per_s = SCOPE_LINES_PER_S if self.is_transceiver else float(self.fps)
         history_s = self.waterfall.buffer.rows / lines_per_s
+        # A transceiver's scope has its own centre: in fixed mode, not the dial.
+        centre = getattr(self.source, "display_center_freq", None) or self.source.center_freq
         self.waterfall.set_geometry(
-            self.source.center_freq, self.effective_rate, history_s,
+            centre, self.effective_rate, history_s,
             preserve_span=preserve_span,
         )
 
@@ -2723,11 +2759,19 @@ class MainWindow(QtWidgets.QMainWindow):
         dbfs = scope_level_db(line.amplitudes)
         geometry = (line.centre_hz, line.span_hz)
         if geometry != self._scope_geometry:
-            # The radio's dial or span moved: re-place the display on the new axis.
+            # The radio's dial or span moved: re-place the display on the new axis. A new
+            # span is a new picture -- the old rows were drawn at another scale, and a
+            # zoom kept from the old span would hide most of the new one.
+            span_changed = (self._scope_geometry is None
+                            or line.span_hz != self._scope_geometry[1])
             self._scope_geometry = geometry
             if self.waterfall.buffer.cols != n:
                 self.waterfall.resize_bins(n)
-            self._apply_geometry(preserve_span=True)
+            if span_changed:
+                self.waterfall.clear_history()
+                self.spectrum.reset()
+            self._apply_geometry(preserve_span=not span_changed)
+            self._sync_span_combo()
             self.spectrum.set_center_marker(self.source.center_freq)
             self._freq_spin.blockSignals(True)
             self._freq_spin.setValue(self.source.center_freq / 1e6)
