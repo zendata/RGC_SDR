@@ -3590,3 +3590,105 @@ def test_typing_into_a_unit_box_sends_the_radios_code(qapp):
     QtTest.QTest.keyClick(tone, QtCore.Qt.Key.Key_Return)
     assert radio.writes[-1] == (2, 8, 2)
     win.close()
+
+
+# -- the 705's memory channels -----------------------------------------------------------
+
+from src.rgc_sdr.device.ic705_memory import MemoryChannel, MemorySide  # noqa: E402
+from src.rgc_sdr.ui.memory_window import MemoryWindow  # noqa: E402
+
+
+class MemoryRadio:
+    """Memory side of the radio: a dict of channels, writes recorded."""
+
+    def __init__(self):
+        rpt = MemorySide(freq_hz=438_750_000, mode="fm", duplex=1, tone_mode=1, tone_hz=88.5,
+                         offset_hz=5_000_000)
+        self.mem = {(2, 0): MemoryChannel.simplex(2, 0, rpt, "RHF Olinda"),
+                    (2, 1): MemoryChannel.simplex(2, 1, MemorySide(freq_hz=7_074_000,
+                                                                   mode="usb"), "FT8 40m")}
+        self.writes, self.cleared = [], []
+        self.center_freq, self.mode, self.filter = 146_900_000.0, "fm", 1
+        self.state = {"dup": 0x11, "tone": 1}
+        self.status = {"tone_hz": 91.5, "offset_hz": 600_000}
+
+    def read_memory(self, group, channel):
+        return self.mem.get((group, channel), "blank")
+
+    def write_memory(self, m):
+        self.writes.append(m)
+        self.mem[(m.group, m.channel)] = m
+
+    def clear_memory(self, group, channel):
+        self.cleared.append((group, channel))
+        self.mem.pop((group, channel), None)
+
+
+def memory_window(radio, group=2):
+    win = MemoryWindow(radio, read_now=False)
+    win.group_combo.blockSignals(True)
+    win.group_combo.setCurrentIndex(group)
+    win.group_combo.blockSignals(False)
+    win._fill_empty_rows()
+    for ch in range(100):
+        win.show_channel(group, ch, radio.read_memory(group, ch))
+    win._apply_hiding()
+    return win
+
+
+def test_memory_window_lists_a_group_like_the_radio(qapp):
+    win = memory_window(MemoryRadio())
+    row = [win.table.item(0, c).text() for c in range(6)]
+    assert row == ["02-00", "RHF Olinda", "438.750000", "FM", "DUP− 5 MHz", "TONE 88.5"]
+    assert win.table.isRowHidden(5) and not win.table.isRowHidden(1)   # blanks hidden
+    win.close()
+
+
+def test_memory_window_tunes_and_saves_to_the_app(qapp, monkeypatch):
+    win = memory_window(MemoryRadio())
+    tuned, saved = [], []
+    win.tune_requested.connect(lambda f, m: tuned.append((f, m)))
+    win.save_requested.connect(lambda n, f, m: saved.append((n, f, m)))
+    win.table.selectRow(1)
+    win.tune_selected()
+    assert tuned == [(7_074_000.0, "usb")]
+    monkeypatch.setattr(QtWidgets.QInputDialog, "getText", lambda *a, **k: ("FT8", True))
+    win.save_selected()
+    assert saved == [("FT8", 7_074_000.0, "usb")]
+    win.close()
+
+
+def test_editing_a_name_or_frequency_writes_the_channel(qapp):
+    radio = MemoryRadio()
+    win = memory_window(radio)
+    win.table.item(0, 1).setText("Olinda RPT")
+    assert radio.writes[-1].name == "Olinda RPT"
+    win.table.item(1, 2).setText("7.0745")
+    written = radio.writes[-1]
+    assert written.rx.freq_hz == written.tx.freq_hz == 7_074_500
+    assert win.table.item(1, 2).text() == "7.074500"                  # read back
+    win.close()
+
+
+def test_store_writes_what_the_radio_is_on(qapp, monkeypatch):
+    radio = MemoryRadio()
+    win = memory_window(radio)
+    win.table.selectRow(5)                                             # a blank channel
+    win.table.setRowHidden(5, False)
+    win.store_current()
+    m = radio.writes[-1]
+    assert (m.group, m.channel, m.rx.freq_hz, m.rx.mode) == (2, 5, 146_900_000, "fm")
+    assert m.rx.duplex == 1 and m.rx.tone_mode == 1 and m.rx.tone_hz == 91.5
+    assert m.rx.offset_hz == 600_000
+    monkeypatch.setattr(QtWidgets.QMessageBox, "question",
+                        lambda *a, **k: QtWidgets.QMessageBox.StandardButton.Yes)
+    win.clear_selected()
+    assert radio.cleared == [(2, 5)]
+    win.close()
+
+
+def test_the_memory_key_tunes_the_app(qapp):
+    win, src = panel_window()
+    win.tune_radio_memory(145_650_000.0, "fm")
+    assert win._mode_combo.currentData() == "fm"
+    win.close()

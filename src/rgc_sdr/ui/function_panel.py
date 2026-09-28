@@ -108,6 +108,10 @@ class LevelPopup(QtWidgets.QFrame):
 class FunctionPanel(QtWidgets.QWidget):
     """Buttons for the source's `function` controls; levels from its `popup` ones."""
 
+    #: From the memory window: tune to (frequency, radio mode); save (name, freq, mode).
+    memory_tune = QtCore.pyqtSignal(float, str)
+    memory_save = QtCore.pyqtSignal(str, float, str)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._grid = QtWidgets.QGridLayout(self)
@@ -121,6 +125,8 @@ class FunctionPanel(QtWidgets.QWidget):
         self.multi_button: FunctionButton | None = None
         self.menu_button: FunctionButton | None = None
         self.menu_window = None
+        self.memory_button: FunctionButton | None = None
+        self.memory_window = None
         self.rit_spin: QtWidgets.QSpinBox | None = None
 
     def build(self, source, columns: int = 9) -> None:
@@ -163,6 +169,14 @@ class FunctionPanel(QtWidgets.QWidget):
         menu.setStyleSheet(_OFF)
         self._grid.addWidget(menu, n // columns, n % columns)
         self.menu_button = menu
+        n += 1
+        # MEM: the radio's memory channels.
+        mem = FunctionButton("MEMORY")
+        mem.setToolTip("The radio's memory channels: tune, copy to the app, edit, store")
+        mem.clicked.connect(self.open_memories)
+        mem.setStyleSheet(_OFF)
+        self._grid.addWidget(mem, n // columns, n % columns)
+        self.memory_button = mem
         n += 1
         # RIT / dTX offset, as the MULTI knob sets it when RIT or dTX is on.
         rit_box = QtWidgets.QWidget()
@@ -218,6 +232,18 @@ class FunctionPanel(QtWidgets.QWidget):
             self.menu_window = MenuWindow(self._source, self.window())
         self.menu_window.show()
         self.menu_window.raise_()
+
+    def open_memories(self) -> None:
+        if not hasattr(self._source, "read_memory"):
+            return
+        from .memory_window import MemoryWindow
+
+        if self.memory_window is None or not self.memory_window.isVisible():
+            self.memory_window = MemoryWindow(self._source, self.window())
+            self.memory_window.tune_requested.connect(self.memory_tune)
+            self.memory_window.save_requested.connect(self.memory_save)
+        self.memory_window.show()
+        self.memory_window.raise_()
 
     def open_multi(self) -> None:
         mode = (getattr(self._source, "mode", None) or "").lower()

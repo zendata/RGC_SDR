@@ -264,6 +264,8 @@ class MainWindow(QtWidgets.QMainWindow):
         panel.setSpacing(4)
         self.radio_display = RadioDisplay()
         self.function_panel = FunctionPanel()
+        self.function_panel.memory_tune.connect(self.tune_radio_memory)
+        self.function_panel.memory_save.connect(self.save_radio_memory)
         panel.addWidget(self.radio_display)
         panel.addWidget(self.function_panel)
         self._radio_panel.hide()
@@ -2563,6 +2565,24 @@ class MainWindow(QtWidgets.QMainWindow):
         has_any = bool(self.settings.names())
         self._memory_combo.setEnabled(has_any)
         self._delete_button.setEnabled(has_any)
+
+    def tune_radio_memory(self, freq_hz: float, radio_mode: str) -> None:
+        """Tune to one of the transceiver's own memory channels, as its window asks."""
+        # The mode list holds the radio's own names for a transceiver, the app's for an SDR.
+        mode = radio_mode if self.is_transceiver else _TO_SDR_MODE.get(radio_mode, radio_mode)
+        index = self._mode_combo.findData(mode)
+        if index >= 0:
+            self._mode_combo.setCurrentIndex(index)
+        else:
+            self.set_mode(mode)
+        self._offset_spin.setValue(0.0)
+        self._retune(freq_hz, allow_snap=False)
+
+    def save_radio_memory(self, name: str, freq_hz: float, radio_mode: str) -> None:
+        """Copy a transceiver memory channel into the app's memories: tune it, then save
+        the app's settings there under `name`."""
+        self.tune_radio_memory(freq_hz, radio_mode)
+        self.save_memory(name)
 
     def save_memory(self, name: str) -> bool:
         """Store the current settings. Returns True if an existing name was replaced."""

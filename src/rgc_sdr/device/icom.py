@@ -610,6 +610,33 @@ class IcomSource(IQSource):
         data = bytes.fromhex(f"{int(value):0{digits + digits % 2}d}")
         self._send(0x1A, b"\x05" + self._menu_item(number) + data, label=f"menu {number:04d}")
 
+    # -- memory channels (1A 00) ----------------------------------------------------------
+
+    def read_memory(self, group: int, channel: int):
+        """A memory channel: an `ic705_memory.MemoryChannel`, "blank", or None if the
+        radio did not answer. Blocks -- call it off the UI thread."""
+        from .ic705_memory import MemoryChannel, address
+
+        head = b"\x00" + address(group, channel)
+        frame = self._ask(0x1A, head, prefix=head)
+        if frame is None:
+            return None
+        data = bytes(frame.payload[5:])
+        if data == b"\xff":
+            return "blank"
+        return MemoryChannel.decode(group, channel, data)
+
+    def write_memory(self, memory) -> None:
+        from .ic705_memory import address
+
+        self._send(0x1A, b"\x00" + address(memory.group, memory.channel) + memory.encode(),
+                   label=f"memory {memory.label}")
+
+    def clear_memory(self, group: int, channel: int) -> None:
+        from .ic705_memory import address
+
+        self._send(0x1A, b"\x00" + address(group, channel) + b"\xff", label="memory clear")
+
     def set_rit(self, hz: int) -> None:
         """Set the RIT/dTX offset (CI-V 21 00: two BCD bytes, low first, then the sign;
         checked on the radio: +120 -> 20 01 00, -1234 -> 34 12 01)."""
