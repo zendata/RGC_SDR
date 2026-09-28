@@ -3131,12 +3131,12 @@ def test_radio_row_has_the_705s_controls(qapp):
     src = FakeTransceiver()
     win = window_for(src, fft_size=1024)
     assert not win._radio_row.isHidden()
-    assert set(win._radio_widgets) == {"af", "rf", "sql", "preamp", "att", "agc", "nb", "nr",
-                                       "power"}
+    # Levels in constant use stay on the Radio row; the switches are function keys now.
+    assert set(win._radio_widgets) == {"af", "rf", "sql", "power"}
     assert win._radio_widgets["rf"].value() == 100                # 255 shown as 100 %
     win._radio_widgets["rf"].setValue(50)
     assert src.set_calls[-1] == ("rf", 128)
-    win._radio_widgets["att"].setChecked(True)
+    win.function_panel.buttons["att"].click()
     assert src.set_calls[-1] == ("att", 1)
     win.close()
 
@@ -3146,7 +3146,7 @@ def test_front_panel_changes_and_the_meter_are_followed(qapp):
     win = window_for(src, fft_size=1024)
     src.state["nb"], src.mode, src.filter, src.smeter = 1, "lsb", 2, 160
     win._on_frame()
-    assert win._radio_widgets["nb"].isChecked()
+    assert "f0b429" in win.function_panel.buttons["nb"].styleSheet()      # lit
     assert win.mode == "lsb" and win._bw_audio_combo.currentText() == "FIL2"
     assert win.smeter._s_reading[1] == "S9+20 dB"
     win.close()
@@ -3366,4 +3366,94 @@ def test_fixed_mode_scope_is_drawn_between_its_edges(qapp):
 def test_switching_back_to_an_sdr_hides_span(qapp):
     win, _ = tx_window(start="airspyhf")
     assert win._span_combo.isHidden() and not win._zoom_combo.isHidden()
+    win.close()
+
+
+
+# -- the 705's display and function keys ------------------------------------------------
+
+from src.rgc_sdr.ui.radio_display import format_freq  # noqa: E402
+
+
+def test_frequency_in_the_radios_style():
+    assert format_freq(145_650_000) == "145.650.00"
+    assert format_freq(7_074_120) == "7.074.12"
+    assert format_freq(None) == "---.---.--"
+
+
+def panel_window(**state):
+    src = FakeTransceiver()
+    src.state.update(state)
+    src.status = {"vfo_sel_hz": 146_900_000, "vfo_other_hz": 437_225_000,
+                  "vfo_sel_mode": "fm", "vfo_other_mode": "fm", "offset_hz": 600_000,
+                  "tone_hz": 88.5, "tsql_hz": 91.5, "dtcs": "023", "rit_hz": -1200,
+                  "vd": 189}
+    win = window_for(src, fft_size=1024)
+    win._on_frame()
+    return win, src
+
+
+def test_radio_display_shows_the_705s_screen_information(qapp):
+    win, src = panel_window(split=0x11, tone=2, rit=1, comp=1, bkin=1)
+    d = win.radio_display
+    assert not win._radio_panel.isHidden()
+    assert d.freq.text() == "146.900.00" and d.mode.text() == "FM" and d.filter.text() == "FIL1"
+    assert "437.225.00" in d.other.text()
+    assert d.duplex.text() == "DUP\u2212 600 kHz"
+    assert d.tone.text() == "TSQL 91.5"
+    assert d.rit.text() == "RIT -1.20"
+    assert "f0b429" in d.chips["comp"].styleSheet() and d.chips["bkin"].text() == "BK-IN"
+    assert "f0b429" not in d.chips["vox"].styleSheet()
+    assert d.volts.text() == "12.5 V" or d.volts.text() == "12.6 V"
+    assert d.meter_text.text() == "S S8"
+    win.close()
+
+
+def test_display_meter_on_transmit_is_the_chosen_one(qapp):
+    win, src = panel_window()
+    src.transmitting, src.po, src.swr = True, 143, 80
+    win.radio_display.meter_buttons["SWR"].setChecked(True)
+    win._on_frame()
+    assert win.radio_display.txrx.text() == "TX"
+    assert win.radio_display.meter_text.text() == "SWR 2.0"
+    win.close()
+
+
+def test_function_keys_toggle_and_step_like_the_radio(qapp):
+    win, src = panel_window(agc=1, split=0x00)
+    keys = win.function_panel.buttons
+    expected = {c.key for c in src.controls if c.placement == "function"}
+    assert set(keys) == expected
+    keys["comp"].click()
+    assert src.set_calls[-1] == ("comp", 1)
+    keys["agc"].click()
+    assert src.set_calls[-1] == ("agc", 2)                      # FAST -> MID
+    keys["split"].click(); keys["split"].click()
+    assert [c for c in src.set_calls if c[0] == "split"][-2:] == [("split", 0x01), ("split", 0x11)]
+    win.close()
+
+
+def test_a_long_press_opens_the_level_behind_a_key(qapp):
+    win, src = panel_window(nb=1, nb_level=128)
+    win.function_panel.buttons["nb"].long_pressed.emit()
+    popup = win.function_panel.popup
+    assert popup is not None and popup.slider.value() == 50
+    popup.slider.setValue(80)
+    assert src.set_calls[-1] == ("nb_level", round(0.8 * 255))
+    popup.close()
+    win.close()
+
+
+def test_function_keys_follow_changes_made_on_the_radio(qapp):
+    win, src = panel_window(vox=0)
+    assert "f0b429" not in win.function_panel.buttons["vox"].styleSheet()
+    src.state["vox"] = 1
+    win._on_frame()
+    assert "f0b429" in win.function_panel.buttons["vox"].styleSheet()
+    win.close()
+
+
+def test_sdrs_do_not_show_the_radio_panel(qapp):
+    win, _ = tx_window(start="airspyhf")
+    assert win._radio_panel.isHidden()
     win.close()

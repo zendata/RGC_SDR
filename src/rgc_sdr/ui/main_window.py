@@ -33,6 +33,8 @@ from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
 from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
+from .function_panel import FunctionPanel
+from .radio_display import RadioDisplay
 from ..dsp.modulate import TX_MODES
 from ..transmit import TX_IQ_RATE, TX_TIMEOUT_S, RadioTransmitter, Transmitter
 from ..repeater import CTCSS_TONES, MINUS, PLUS, SIMPLEX, band_for, tx_frequency
@@ -254,6 +256,18 @@ class MainWindow(QtWidgets.QMainWindow):
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.addWidget(self._build_controls(), 0)
+        # A transceiver's own display and function keys, rebuilt from its CI-V state.
+        # Hidden for the SDRs.
+        self._radio_panel = QtWidgets.QWidget()
+        panel = QtWidgets.QVBoxLayout(self._radio_panel)
+        panel.setContentsMargins(0, 2, 0, 2)
+        panel.setSpacing(4)
+        self.radio_display = RadioDisplay()
+        self.function_panel = FunctionPanel()
+        panel.addWidget(self.radio_display)
+        panel.addWidget(self.function_panel)
+        self._radio_panel.hide()
+        layout.addWidget(self._radio_panel, 0)
         layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
@@ -422,6 +436,10 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
+        if hasattr(self, "_radio_panel"):
+            self._radio_panel.setVisible(not sdr)
+            if not sdr:
+                self.function_panel.build(self.source)
         if not sdr:
             if self._scan_button.isChecked():
                 self._scan_button.setChecked(False)
@@ -1478,6 +1496,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """The radio's own settings (IC-705), as the source describes them."""
         state = self.source.state
         for control in self.source.controls:
+            if getattr(control, "placement", "row") != "row":
+                continue                        # function keys and their levels: below
             value = state.get(control.key)
             if control.kind == "switch":
                 widget = QtWidgets.QCheckBox(control.label)
@@ -1553,6 +1573,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_transceiver_state(self) -> None:
         """Follow the radio: its knobs, mode, filter and meter, and any refusal."""
         src = self.source
+        if hasattr(self, "radio_display"):
+            self.radio_display.update_from(src)
+            self.function_panel.sync()
         for key, widget in self._radio_widgets.items():
             value = src.state.get(key)
             if value is None or widget.hasFocus():

@@ -70,31 +70,112 @@ class RadioControl:
     kind: str
     choices: tuple[tuple[str, int], ...] = ()
     tooltip: str = ""
+    #: Where the window shows it: "row" (the Radio row), "function" (a button on the
+    #: function panel, like the 705's FUNCTION screen) or "popup" (a level opened from
+    #: a function button, as a long touch does on the radio).
+    placement: str = "row"
+    #: For a function button: the level its long press opens.
+    level: str | None = None
 
 
-#: The IC-705 settings offered in the window, each confirmed on the radio (7o).
+#: The IC-705 settings offered in the window. Every command read on the radio first
+#: (2026-09-28); from Icom's IC-705 CI-V reference guide, command table pp. 3-4.
 IC705_CONTROLS: tuple[RadioControl, ...] = (
-    RadioControl("af", "AF", "level", tooltip="The radio's own speaker volume"),
+    # Radio row: the levels in constant use.
+    RadioControl("af", "AF", "level", tooltip="The radio's own speaker volume (the app "
+                 "sets it to 0 while it has the radio)"),
     RadioControl("rf", "RF", "level", tooltip="RF gain"),
     RadioControl("sql", "SQL", "level", tooltip="The radio's squelch"),
-    RadioControl("preamp", "Pre", "choice", (("Off", 0), ("P.AMP1", 1), ("P.AMP2", 2)),
-                 tooltip="Preamplifier"),
-    RadioControl("att", "ATT", "switch", tooltip="20 dB attenuator"),
-    RadioControl("agc", "AGC", "choice", (("Fast", 1), ("Mid", 2), ("Slow", 3)),
-                 tooltip="The 705 fixes AGC in FM, and refuses a change there"),
-    RadioControl("nb", "NB", "switch", tooltip="Noise blanker"),
-    RadioControl("nr", "NR", "switch", tooltip="Noise reduction"),
     RadioControl("power", "Power", "level", tooltip="TX power, 0.1-10 W"),
+    # Function panel: the FUNCTION screen's keys.
+    RadioControl("preamp", "P.AMP", "choice", (("OFF", 0), ("P.AMP1", 1), ("P.AMP2", 2)),
+                 tooltip="Preamplifier (one step on 144/430 MHz)", placement="function"),
+    RadioControl("att", "ATT", "switch", tooltip="20 dB attenuator (HF and 50 MHz)",
+                 placement="function"),
+    RadioControl("agc", "AGC", "choice", (("FAST", 1), ("MID", 2), ("SLOW", 3)),
+                 tooltip="AGC time constant; fixed in FM", placement="function"),
+    RadioControl("nb", "NB", "switch", tooltip="Noise blanker", placement="function",
+                 level="nb_level"),
+    RadioControl("nr", "NR", "switch", tooltip="Noise reduction", placement="function",
+                 level="nr_level"),
+    RadioControl("anotch", "A-NOTCH", "switch", tooltip="Auto notch", placement="function"),
+    RadioControl("mnotch", "NOTCH", "switch", tooltip="Manual notch", placement="function",
+                 level="notch"),
+    RadioControl("comp", "COMP", "switch", tooltip="Speech compressor", placement="function",
+                 level="comp_level"),
+    RadioControl("vox", "VOX", "switch", tooltip="VOX", placement="function",
+                 level="vox_gain"),
+    RadioControl("bkin", "BK-IN", "choice", (("OFF", 0), ("SEMI", 1), ("FULL", 2)),
+                 tooltip="CW break-in", placement="function"),
+    RadioControl("moni", "MONI", "switch", tooltip="Transmit monitor", placement="function",
+                 level="moni_level"),
+    RadioControl("tone", "TONE", "choice", (("OFF", 0), ("TONE", 1), ("TSQL", 2), ("DTCS", 3)),
+                 tooltip="Repeater tone / tone squelch / DTCS", placement="function"),
+    RadioControl("split", "SPLIT", "choice",
+                 (("SIMP", 0x00), ("SPLIT", 0x01), ("DUP\u2212", 0x11), ("DUP+", 0x12)),
+                 tooltip="Split, or repeater duplex", placement="function"),
+    RadioControl("rit", "RIT", "switch", tooltip="Receive incremental tuning",
+                 placement="function"),
+    RadioControl("dtx", "\u0394TX", "switch", tooltip="Transmit offset", placement="function"),
+    RadioControl("lock", "LOCK", "switch", tooltip="Dial lock", placement="function"),
+    # Levels behind the function buttons, and the passband controls.
+    RadioControl("nb_level", "NB level", "level", placement="popup"),
+    RadioControl("nr_level", "NR level", "level", placement="popup"),
+    RadioControl("notch", "Notch position", "level", placement="popup"),
+    RadioControl("comp_level", "COMP level", "level", placement="popup"),
+    RadioControl("vox_gain", "VOX gain", "level", placement="popup"),
+    RadioControl("moni_level", "MONI level", "level", placement="popup"),
 )
 
 # key -> (command, sub-command or None, form): "level" is 2-byte BCD, "byte" one byte,
-# "att" is 00 (off) or 20 (the 20 dB attenuator).
+# "att" is 00 (off) or 20 (the 20 dB attenuator), "split" is command 0F's own values.
 _CONTROL_CI_V = {
     "af": (0x14, 0x01, "level"), "rf": (0x14, 0x02, "level"), "sql": (0x14, 0x03, "level"),
     "power": (0x14, 0x0A, "level"), "preamp": (0x16, 0x02, "byte"),
     "agc": (0x16, 0x12, "byte"), "nb": (0x16, 0x22, "byte"), "nr": (0x16, 0x40, "byte"),
     "att": (0x11, None, "att"),
+    "anotch": (0x16, 0x41, "byte"), "mnotch": (0x16, 0x48, "byte"),
+    "comp": (0x16, 0x44, "byte"), "moni": (0x16, 0x45, "byte"), "vox": (0x16, 0x46, "byte"),
+    "bkin": (0x16, 0x47, "byte"), "lock": (0x16, 0x50, "byte"), "tone": (0x16, 0x5D, "byte"),
+    "rit": (0x21, 0x01, "byte"), "dtx": (0x21, 0x02, "byte"),
+    "split": (0x0F, None, "split"),
+    "nb_level": (0x14, 0x12, "level"), "nr_level": (0x14, 0x06, "level"),
+    "notch": (0x14, 0x0D, "level"), "comp_level": (0x14, 0x0E, "level"),
+    "vox_gain": (0x14, 0x16, "level"), "moni_level": (0x14, 0x15, "level"),
 }
+
+#: Read-only display state, asked for with the settings: VFO A/B, RIT, duplex offset,
+#: tones and step. (command, payload) pairs.
+_STATUS_READS = (
+    (0x25, b"\x00"), (0x25, b"\x01"), (0x26, b"\x00"), (0x26, b"\x01"),
+    (0x21, b"\x00"), (0x0C, b""), (0x1B, b"\x00"), (0x1B, b"\x01"), (0x1B, b"\x02"),
+    (0x15, b"\x15"),                                  # Vd: battery / supply volts
+)
+
+
+def _bcd_int(data: bytes) -> int:
+    """Big-endian BCD digits as an integer: 00 08 85 -> 885."""
+    value = 0
+    for b in data:
+        value = value * 100 + ((b >> 4) * 10 + (b & 0x0F))
+    return value
+
+
+VD_POINTS = ((0, 0.0), (75, 5.0), (241, 16.0))
+ID_POINTS = ((0, 0.0), (121, 2.0), (241, 4.0))
+COMP_POINTS = ((0, 0.0), (130, 15.0), (210, 25.5))
+
+
+def supply_volts(raw: int) -> float:
+    return _piecewise(raw, VD_POINTS)
+
+
+def drain_amps(raw: int) -> float:
+    return _piecewise(raw, ID_POINTS)
+
+
+def comp_db(raw: int) -> float:
+    return _piecewise(raw, COMP_POINTS)
 _BY_COMMAND = {(cmd, sub): key for key, (cmd, sub, _form) in _CONTROL_CI_V.items()}
 
 
@@ -168,8 +249,13 @@ class IcomSource(IQSource):
         self.mode: str | None = None
         self.filter: int | None = None
         self.smeter: int | None = None
-        #: Writes awaiting FB/FA, oldest first, and the latest one the radio refused.
-        self._pending: list[str] = []
+        #: Every command sent and not yet answered, oldest first: (command, label, is a
+        #: write). Replies come back in order, so a data reply settles the entry for its
+        #: command, FB the oldest write, FA the oldest entry -- a read can be refused too
+        #: (twin PBT in WFM, measured). `refused` is the latest refused write.
+        self._pending: list[tuple[int, str | None, bool]] = []
+        #: The radio's display state: VFOs, RIT, offset, tones, meters. See _STATUS_READS.
+        self.status: dict[str, object] = {}
         self.refused: str | None = None
         self._next_meter = 0.0
         self._next_settings = 0.0
@@ -219,11 +305,31 @@ class IcomSource(IQSource):
     # -- CI-V plumbing --------------------------------------------------------------
 
     def _send(self, cmd: int, payload: bytes | tuple = b"", label: str | None = None) -> None:
-        """Send; `label` marks a write, whose FB/FA answer is matched to it in order."""
+        """Send; `label` marks a write, so that a refusal can be reported against it."""
         with self._write_lock:
-            if label is not None:
-                self._pending.append(label)
+            self._pending.append((cmd, label, label is not None))
+            del self._pending[:-256]                  # a lost reply must not grow it forever
             self._serial.write(civ.encode(cmd, payload, to=self.address))
+
+    def _settle_pending(self, frame: civ.Frame) -> str | None:
+        """Match a reply to what it answers. Returns the label of a refused write."""
+        with self._write_lock:
+            pending = self._pending
+            if frame.is_ok:
+                while pending:
+                    if pending.pop(0)[2]:
+                        break
+                return None
+            if frame.is_ng:
+                if pending:
+                    _cmd, label, is_write = pending.pop(0)
+                    return label if is_write else None
+                return None
+            for i, (cmd, _label, _write) in enumerate(pending):
+                if cmd == frame.cmd:
+                    del pending[: i + 1]
+                    break
+            return None
 
     def _handle(self, frame: civ.Frame) -> None:
         if frame.frm != self.address:
@@ -254,13 +360,15 @@ class IcomSource(IQSource):
 
     def _update_state(self, frame: civ.Frame) -> None:
         cmd, payload = frame.cmd, frame.payload
+        if frame.to != 0x00:                       # a reply to us, not a transceive report
+            refused = self._settle_pending(frame)
+            if refused is not None:
+                self.refused = refused
+                if refused in _CONTROL_CI_V:
+                    self._read_control(refused)    # show what the radio really has
         if frame.is_ok or frame.is_ng:
-            with self._write_lock:
-                label = self._pending.pop(0) if self._pending else None
-            if frame.is_ng and label is not None:
-                self.refused = label
-                if label in _CONTROL_CI_V:
-                    self._read_control(label)      # show what the radio really has
+            return
+        if self._update_status(cmd, payload):
             return
         if cmd in (civ.CMD_READ_MODE, civ.CMD_TRANSCEIVE_MODE) and payload:
             self.mode = civ.MODES.get(payload[0], self.mode)
@@ -278,6 +386,13 @@ class IcomSource(IQSource):
                 self.po = value
             elif payload[0] == 0x12:
                 self.swr = value
+            else:
+                name = {0x13: "alc", 0x14: "comp_meter", 0x15: "vd", 0x16: "id"}.get(payload[0])
+                if name:
+                    self.status[name] = value
+            return
+        if cmd == 0x0F and len(payload) == 1:
+            self.state["split"] = payload[0]
             return
         if cmd == 0x11 and len(payload) == 1:
             self.state["att"] = 1 if payload[0] else 0
@@ -293,6 +408,41 @@ class IcomSource(IQSource):
             elif form == "byte" and len(value) == 1:
                 self.state[key] = value[0]
 
+    def _update_status(self, cmd: int, payload: bytes) -> bool:
+        """The display-only replies. True if the frame was one of them."""
+        n = len(payload)
+        if cmd == 0x25 and n == 6:
+            self.status["vfo_sel_hz" if payload[0] == 0 else "vfo_other_hz"] = \
+                civ.decode_freq(payload[1:6])
+            return True
+        if cmd == 0x26 and n >= 2:
+            which = "vfo_sel" if payload[0] == 0 else "vfo_other"
+            self.status[which + "_mode"] = civ.MODES.get(payload[1], "dv" if payload[1] == 0x17
+                                                         else f"{payload[1]:02x}")
+            if n >= 3:
+                self.status[which + "_data"] = bool(payload[2])
+            if n >= 4:
+                self.status[which + "_filter"] = payload[3]
+            return True
+        if cmd == 0x21 and n == 4 and payload[0] == 0x00:
+            hz = civ.decode_freq(payload[1:3])
+            self.status["rit_hz"] = -hz if payload[3] == 0x01 else hz
+            return True
+        if cmd == 0x0C and n == 3:
+            self.status["offset_hz"] = civ.decode_freq(payload) * 100    # 100 Hz units
+            return True
+        if cmd == 0x1B and n == 4 and payload[0] in (0x00, 0x01):
+            self.status["tone_hz" if payload[0] == 0 else "tsql_hz"] = _bcd_int(payload[1:4]) / 10
+            return True
+        if cmd == 0x1B and n == 4 and payload[0] == 0x02:
+            self.status["dtcs"] = f"{_bcd_int(payload[2:4]):03d}"
+            self.status["dtcs_polarity"] = payload[1]
+            return True
+        if cmd == 0x15 and n == 2 and payload[0] == 0x07:
+            self.status["ovf"] = bool(payload[1])
+            return True
+        return False
+
     def _read_control(self, key: str) -> None:
         cmd, sub, _form = _CONTROL_CI_V[key]
         self._send(cmd, b"" if sub is None else bytes([sub]))
@@ -306,15 +456,18 @@ class IcomSource(IQSource):
         if now >= self._next_meter:
             self._next_meter = now + METER_POLL_S
             if self.transmitting:
-                self._send(0x15, b"\x11")        # power out
-                self._send(0x15, b"\x12")        # SWR
+                for meter in (0x11, 0x12, 0x13, 0x14, 0x16):     # Po, SWR, ALC, COMP, Id
+                    self._send(0x15, bytes([meter]))
             else:
                 self._send(0x15, b"\x02")        # S-meter
+                self._send(0x15, b"\x07")        # overflow
         if now >= self._next_settings:
             self._next_settings = now + SETTINGS_POLL_S
             self._send(civ.CMD_READ_MODE)
             for key in _CONTROL_CI_V:
                 self._read_control(key)
+            for cmd, payload in _STATUS_READS:
+                self._send(cmd, payload)
 
     # -- control ------------------------------------------------------------------------
 
@@ -326,13 +479,22 @@ class IcomSource(IQSource):
         """Change one of the radio's settings. A refusal (FA) sets `refused` and the
         radio's real value is read back into `state`."""
         cmd, sub, form = _CONTROL_CI_V[key]
+        self.state[key] = int(value)            # optimistic; a refusal corrects it
+        if form == "split":
+            # 0F writes: 00 split off, 01 split on, 10 simplex, 11 DUP-, 12 DUP+. Reads
+            # give 00 for "neither", so leaving split or duplex takes both off.
+            if value == 0x00:
+                self._send(0x0F, b"\x00", label=key)
+                self._send(0x0F, b"\x10", label=key)
+            else:
+                self._send(0x0F, bytes([int(value)]), label=key)
+            return
         if form == "level":
             data = civ.encode_level(int(value))
         elif form == "att":
             data = bytes([0x20 if value else 0x00])
         else:
             data = bytes([int(value)])
-        self.state[key] = int(value)            # optimistic; a refusal corrects it
         self._send(cmd, (b"" if sub is None else bytes([sub])) + data, label=key)
 
     def set_ptt(self, on: bool) -> None:

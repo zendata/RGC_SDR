@@ -8,21 +8,27 @@ from src.rgc_sdr.device.icom import IcomSource, s_meter_text
 
 
 class StandInRadio:
-    """Just enough IC-705 to answer the app: frequency, mode, settings, meter."""
+    """Just enough IC-705 to answer the app, with the values read from VK3RQ's radio
+    (2026-09-27/28): frequency, mode, levels, switches, meters, VFOs, tones, offset."""
 
     def __init__(self):
         self.freq = 145_650_000
         self.mode, self.filter = 0x05, 0x01           # FM, FIL1
-        self.levels = {0x01: 0, 0x02: 255, 0x03: 85, 0x0A: 3}
-        self.switches = {0x02: 0, 0x12: 1, 0x22: 0, 0x40: 1}
+        self.levels = {0x01: 72, 0x02: 255, 0x03: 85, 0x0A: 3, 0x12: 128, 0x06: 88,
+                       0x0D: 129, 0x0E: 151, 0x16: 128, 0x15: 128}
+        self.switches = {0x02: 0, 0x12: 1, 0x22: 0, 0x40: 1, 0x41: 0, 0x48: 0, 0x44: 0,
+                         0x45: 0, 0x46: 0, 0x47: 1, 0x50: 0, 0x5D: 0}
         self.att = 0x00
         self.smeter = 109
         self.ptt = 0
+        self.po, self.swr = 143, 48              # 50 % power, SWR 1.5
+        self.meters = {0x13: 60, 0x14: 130, 0x15: 189, 0x16: 121}
         self.squelch = 1                          # open
-        self.levels[0x01] = 72                    # AF: the speaker is up
         self.data_off_mod = 0x02                  # MIC,USB, as found on VK3RQ's radio
         self.span = None
-        self.po, self.swr = 143, 48              # 50 % power, SWR 1.5
+        self.split = 0x01
+        self.rit = {0x01: 0, 0x02: 0}
+        self.rit_hz = -1200
         self.parser = civ.FrameParser()
         self.out = bytearray()
         self.written = []
@@ -33,47 +39,80 @@ class StandInRadio:
     def write(self, data):
         for f in self.parser.feed(data):
             self.written.append(f)
-            cmd, p = f.cmd, f.payload
-            if cmd == 0x03:
-                self._reply(0x03, civ.encode_freq(self.freq))
-            elif cmd == 0x05:
-                self.freq = civ.decode_freq(p); self._reply(civ.OK)
-            elif cmd == 0x04:
-                self._reply(0x04, bytes([self.mode, self.filter]))
-            elif cmd == 0x06:
-                self.mode, self.filter = p[0], p[1]; self._reply(civ.OK)
-            elif cmd == 0x14 and len(p) == 1:
-                self._reply(0x14, bytes([p[0]]) + civ.encode_level(self.levels[p[0]]))
-            elif cmd == 0x14:
-                self.levels[p[0]] = civ.decode_level(p[1:3]); self._reply(civ.OK)
-            elif cmd == 0x16 and len(p) == 1:
-                self._reply(0x16, bytes([p[0], self.switches[p[0]]]))
-            elif cmd == 0x16:
-                if p[0] == 0x12 and self.mode == 0x05:        # AGC is fixed in FM
-                    self._reply(civ.NG)
-                else:
-                    self.switches[p[0]] = p[1]; self._reply(civ.OK)
-            elif cmd == 0x11 and not p:
-                self._reply(0x11, bytes([self.att]))
-            elif cmd == 0x11:
-                self.att = p[0]; self._reply(civ.OK)
-            elif cmd == 0x15 and p[0] == 0x01:        # squelch status: one byte, as measured
-                self._reply(0x15, bytes([0x01, self.squelch]))
-            elif cmd == 0x15:
-                value = {0x02: self.smeter, 0x11: self.po, 0x12: self.swr}[p[0]]
-                self._reply(0x15, bytes([p[0]]) + civ.encode_level(value))
-            elif cmd == 0x1C and len(p) == 2:
-                self.ptt = p[1]; self._reply(civ.OK)
-            elif cmd == 0x1A and p[:3] == bytes([0x05, 0x01, 0x18]):
-                if len(p) == 3:
-                    self._reply(0x1A, p + bytes([self.data_off_mod]))
-                else:
-                    self.data_off_mod = p[3]; self._reply(civ.OK)
-            elif cmd == 0x27 and p[:2] == bytes([0x15, 0x00]) and len(p) == 7:
-                self.span = civ.decode_freq(p[2:7]); self._reply(civ.OK)
-            elif cmd == 0x27:
-                self._reply(civ.OK if len(p) > 1 else 0x27, p if len(p) == 1 else b"")
+            self._answer(f.cmd, f.payload)
         return len(data)
+
+    def _answer(self, cmd, p):
+        ng = lambda: self._reply(civ.NG)
+        if cmd == 0x03:
+            self._reply(0x03, civ.encode_freq(self.freq))
+        elif cmd == 0x05:
+            self.freq = civ.decode_freq(p); self._reply(civ.OK)
+        elif cmd == 0x04:
+            self._reply(0x04, bytes([self.mode, self.filter]))
+        elif cmd == 0x06:
+            self.mode, self.filter = p[0], p[1]; self._reply(civ.OK)
+        elif cmd == 0x14:
+            if p[0] not in self.levels:
+                return ng()                                  # e.g. twin PBT in FM/WFM
+            if len(p) == 1:
+                self._reply(0x14, bytes([p[0]]) + civ.encode_level(self.levels[p[0]]))
+            else:
+                self.levels[p[0]] = civ.decode_level(p[1:3]); self._reply(civ.OK)
+        elif cmd == 0x16:
+            if len(p) == 1:
+                self._reply(0x16, bytes([p[0], self.switches[p[0]]]))
+            elif p[0] == 0x12 and self.mode == 0x05:         # AGC is fixed in FM
+                ng()
+            else:
+                self.switches[p[0]] = p[1]; self._reply(civ.OK)
+        elif cmd == 0x11:
+            if p:
+                self.att = p[0]; self._reply(civ.OK)
+            else:
+                self._reply(0x11, bytes([self.att]))
+        elif cmd == 0x15:
+            if p[0] == 0x01:
+                self._reply(0x15, bytes([0x01, self.squelch]))
+            elif p[0] == 0x07:
+                self._reply(0x15, b"\x07\x00")
+            else:
+                value = {0x02: self.smeter, 0x11: self.po, 0x12: self.swr, **self.meters}[p[0]]
+                self._reply(0x15, bytes([p[0]]) + civ.encode_level(value))
+        elif cmd == 0x1C and len(p) == 2:
+            self.ptt = p[1]; self._reply(civ.OK)
+        elif cmd == 0x0F:
+            if not p:
+                self._reply(0x0F, bytes([self.split]))
+            else:
+                self.split = {0x00: 0x00, 0x10: 0x00}.get(p[0], p[0]); self._reply(civ.OK)
+        elif cmd == 0x21:
+            if p[0] == 0x00:
+                digits = civ.encode_freq(abs(self.rit_hz), nbytes=2)
+                self._reply(0x21, b"\x00" + digits + (b"\x01" if self.rit_hz < 0 else b"\x00"))
+            elif len(p) == 1:
+                self._reply(0x21, bytes([p[0], self.rit[p[0]]]))
+            else:
+                self.rit[p[0]] = p[1]; self._reply(civ.OK)
+        elif cmd == 0x25:
+            hz = 101_900_000 if p[0] == 0 else 437_225_000
+            self._reply(0x25, bytes([p[0]]) + civ.encode_freq(hz))
+        elif cmd == 0x26:
+            self._reply(0x26, bytes([p[0], 0x06 if p[0] == 0 else 0x05, 0x00, 0x01]))
+        elif cmd == 0x0C:
+            self._reply(0x0C, bytes.fromhex("006000"))       # 600 kHz, as read
+        elif cmd == 0x1B:
+            self._reply(0x1B, bytes([p[0]]) + (bytes.fromhex("000023") if p[0] == 2
+                                               else bytes.fromhex("000885")))
+        elif cmd == 0x1A and p[:3] == bytes([0x05, 0x01, 0x18]):
+            if len(p) == 3:
+                self._reply(0x1A, p + bytes([self.data_off_mod]))
+            else:
+                self.data_off_mod = p[3]; self._reply(civ.OK)
+        elif cmd == 0x27 and p[:2] == bytes([0x15, 0x00]) and len(p) == 7:
+            self.span = civ.decode_freq(p[2:7]); self._reply(civ.OK)
+        elif cmd == 0x27:
+            self._reply(civ.OK if len(p) > 1 else 0x27, p if len(p) == 1 else b"")
 
     def read(self, n):
         data, self.out = bytes(self.out[:n]), self.out[n:]
@@ -104,8 +143,10 @@ def test_poll_reads_every_setting_mode_and_the_meter():
     src.poll(now=0.0)
     settle(src)
     assert src.mode == "fm" and src.filter == 1
-    assert src.state == {"af": 72, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
-                         "agc": 1, "nb": 0, "nr": 1, "att": 0}
+    expected = {"af": 72, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
+                "agc": 1, "nb": 0, "nr": 1, "att": 0, "bkin": 1, "split": 1,
+                "comp_level": 151, "notch": 129}
+    assert {k: src.state.get(k) for k in expected} == expected
     assert src.smeter == 109
 
 
@@ -291,3 +332,68 @@ def test_span_is_sent_as_a_bcd_half_span():
     src.set_span(100e3)
     settle(src)
     assert radio.span == 100_000
+
+
+
+# -- the radio's display: VFOs, RIT, offset, tones, meters -----------------------------
+
+from src.rgc_sdr.device.icom import comp_db, drain_amps, supply_volts  # noqa: E402
+
+
+def test_display_state_decodes_as_read_from_the_radio():
+    radio, src = radio_and_source()
+    src.poll(now=0.0)
+    settle(src, rounds=10)
+    st = src.status
+    assert st["vfo_sel_hz"] == 101_900_000 and st["vfo_other_hz"] == 437_225_000
+    assert st["vfo_sel_mode"] == "wfm" and st["vfo_other_mode"] == "fm"
+    assert st["vfo_sel_filter"] == 1 and st["vfo_sel_data"] is False
+    assert st["offset_hz"] == 600_000                  # 00 60 00, in 100 Hz units
+    assert st["tone_hz"] == pytest.approx(88.5) and st["tsql_hz"] == pytest.approx(88.5)
+    assert st["dtcs"] == "023"
+    assert st["rit_hz"] == -1200
+    assert supply_volts(st["vd"]) == pytest.approx(12.55, abs=0.05)
+
+
+def test_transmit_meters_include_alc_comp_and_current():
+    radio, src = radio_and_source()
+    src.set_ptt(True)
+    src.poll(now=0.0)
+    settle(src, rounds=10)
+    assert comp_db(src.status["comp_meter"]) == pytest.approx(15.0)
+    assert drain_amps(src.status["id"]) == pytest.approx(2.0)
+    assert src.status["alc"] == 60
+
+
+def test_leaving_split_or_duplex_takes_both_off():
+    radio, src = radio_and_source()
+    src.set_control("split", 0x11)                     # DUP-
+    settle(src)
+    assert radio.split == 0x11
+    src.set_control("split", 0x00)
+    settle(src)
+    writes = [f.payload for f in radio.written if f.cmd == 0x0F and f.payload]
+    assert writes[-2:] == [b"\x00", b"\x10"] and radio.split == 0x00
+
+
+def test_a_refused_read_is_not_blamed_on_a_write():
+    """Twin PBT reads come back FA in FM/WFM (measured). That must not mark a
+    change made in the same batch as refused, nor shift the matching after it."""
+    radio, src = radio_and_source()
+    src._send(0x14, b"\x07")                          # PBT1 read: FA
+    src.set_control("rf", 100)                         # a write: FB
+    src.set_control("agc", 2)                          # a write refused in FM: FA
+    settle(src)
+    assert src.refused == "agc"
+    assert src._pending == [] or all(not w for _c, _l, w in src._pending)
+
+
+@pytest.mark.parametrize("key,value,cmd,payload", [
+    ("comp", 1, 0x16, b"\x44\x01"), ("bkin", 2, 0x16, b"\x47\x02"),
+    ("tone", 2, 0x16, b"\x5d\x02"), ("rit", 1, 0x21, b"\x01\x01"),
+    ("notch", 200, 0x14, b"\x0d\x02\x00")])
+def test_function_controls_write_the_documented_commands(key, value, cmd, payload):
+    radio, src = radio_and_source()
+    src.set_control(key, value)
+    written = radio.written[-1]
+    assert (written.cmd, written.payload) == (cmd, payload)
