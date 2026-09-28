@@ -105,6 +105,8 @@ class StandInRadio:
         elif cmd == 0x1B:
             self._reply(0x1B, bytes([p[0]]) + (bytes.fromhex("000023") if p[0] == 2
                                                else bytes.fromhex("000885")))
+        elif cmd == 0x1A and p[0] == 0x05 and len(p) > 3 and (p[1], p[2]) != (0x01, 0x18):
+            self.menu[(p[1], p[2])] = bytes(p[3:]); self._reply(civ.OK)
         elif cmd == 0x1A and p[0] == 0x05 and (p[1], p[2]) in self.menu:
             if len(p) == 3:
                 self._reply(0x1A, p + self.menu[(p[1], p[2])])
@@ -440,3 +442,69 @@ def test_rit_offset_is_written_as_the_radio_takes_it(hz, payload):
     radio, src = radio_and_source()
     src.set_rit(hz)
     assert (radio.written[-1].cmd, radio.written[-1].payload) == (0x21, payload)
+
+
+# -- the SET menu ----------------------------------------------------------------------
+
+from src.rgc_sdr.device.ic705_menu import MENU_ITEMS  # noqa: E402
+
+
+def test_menu_table_has_icoms_items():
+    rows = {r[0]: r for r in MENU_ITEMS}
+    assert len(rows) == len(MENU_ITEMS) >= 350
+    assert rows[110][1:3] == ("SET > Connectors > USB AF/IF Output", "AF Output Level")
+    assert rows[111][6] == {0: "OFF (Open)", 1: "ON"}
+    assert rows[118][6] == {0: "MIC", 1: "USB", 2: "MIC, USB", 3: "WLAN"}
+    assert rows[2][7] == (0, -5.0, 10, 5.0, "")           # RX tone: 00 = -5 ~ 10 = +5
+    assert rows[1][8] is True                              # "see p. 19": shown, not edited
+
+
+def test_menu_items_read_and_write_as_bcd(tmp_path):
+    radio = StandInRadio()
+    radio.menu[(0x00, 0x29)] = bytes.fromhex("0200")      # beep level 200
+    src = source_with_file(radio, tmp_path)
+    assert src.read_menu(29) == 200
+    src.write_menu(29, 55, 4)
+    assert radio.menu[(0x00, 0x29)] == bytes.fromhex("0055")
+    src.write_menu(45, 1, 2)                               # a one-byte item
+    assert radio.written[-1].payload == bytes.fromhex("05004501")
+
+
+def test_menu_items_the_app_depends_on_are_locked(tmp_path):
+    src = source_with_file(StandInRadio(), tmp_path)
+    for number in (110, 111, 118, 131, 132):
+        with pytest.raises(PermissionError):
+            src.write_menu(number, 0, 2)
+
+
+def test_taken_over_items_show_the_radios_own_value(tmp_path):
+    radio = StandInRadio()
+    src = source_with_file(radio, tmp_path)
+    src._take_over(); settle(src)
+    assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0255")   # the app's value
+    assert src.read_menu(110) == 128                            # the radio's own
+
+
+class DropsFirstWriteRadio(StandInRadio):
+    """A radio that ignores a menu write the first time -- as the real one did when the
+    hand-back writes were sent back-to-back and the port closed straight after."""
+
+    def __init__(self):
+        super().__init__()
+        self.dropped = set()
+
+    def _answer(self, cmd, p):
+        if cmd == 0x1A and len(p) > 3 and (p[1], p[2]) not in self.dropped:
+            self.dropped.add((p[1], p[2]))
+            return                                      # lost: no change, no reply
+        super()._answer(cmd, p)
+
+
+def test_hand_back_is_confirmed_and_retried(tmp_path):
+    radio = DropsFirstWriteRadio()
+    src = source_with_file(radio, tmp_path)
+    src._taken = {"usb_af_level": bytes.fromhex("0128"), "usb_af_sql": b"\x00"}
+    radio.menu[(0x01, 0x10)], radio.menu[(0x01, 0x11)] = bytes.fromhex("0255"), b"\x01"
+    src._hand_back()
+    assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0128")
+    assert radio.menu[(0x01, 0x11)] == b"\x00"

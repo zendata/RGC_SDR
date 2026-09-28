@@ -13,7 +13,7 @@ import pytest
 pytest.importorskip("PyQt6")
 pytest.importorskip("pyqtgraph")
 
-from PyQt6 import QtCore, QtGui, QtWidgets  # noqa: E402
+from PyQt6 import QtCore, QtGui, QtTest, QtWidgets  # noqa: E402
 
 from src.rgc_sdr.device.source import (  # noqa: E402
     DeviceCaps,
@@ -3518,4 +3518,75 @@ def test_rit_offset_follows_the_radio_and_sets_it(qapp):
     win._on_frame()
     assert spin.value() == -40
     assert ("rit_hz", -40) not in src.set_calls                 # following is not setting
+    win.close()
+
+
+# -- the SET menu window ----------------------------------------------------------------
+
+from src.rgc_sdr.ui.menu_window import MenuWindow, ScaledSpin  # noqa: E402
+
+
+class MenuRadio:
+    def __init__(self):
+        self.values = {29: 128, 30: 1, 2: 7, 111: 0}
+        self.writes = []
+
+    def read_menu(self, number):
+        return self.values.get(number)
+
+    def write_menu(self, number, value, digits):
+        from src.rgc_sdr.device.icom import MENU_LOCKED
+        if number in MENU_LOCKED:
+            raise PermissionError(MENU_LOCKED[number])
+        self.writes.append((number, value, digits))
+
+
+def test_menu_window_shows_values_and_sends_changes(qapp):
+    radio = MenuRadio()
+    win = MenuWindow(radio, read_now=False)
+    for n, v in radio.values.items():
+        win.show_value(n, v)
+    assert radio.writes == []                               # showing is not sending
+    beep_limit = win.editors[30]                            # 00=OFF, 01=ON
+    assert beep_limit.currentText() == "ON" and beep_limit.isEnabled()
+    beep_limit.setCurrentIndex(beep_limit.findData(0))
+    assert radio.writes[-1] == (30, 0, 2)
+    tone = win.editors[2]                                   # RX tone: shown as -5..+5
+    assert isinstance(tone, ScaledSpin) and tone.text() == "2"
+    tone.setValue(0)
+    assert radio.writes[-1] == (2, 0, 2)
+    assert not win.editors[111].isEnabled()                 # locked: the app uses it
+    win.close()
+
+
+def test_menu_window_search_narrows_the_tree(qapp):
+    win = MenuWindow(MenuRadio(), read_now=False)
+    win.filter("af sql")
+    shown = [n for n, item in win._items.items() if not item.isHidden()]
+    assert 111 in shown and 29 not in shown
+    win.filter("")
+    assert all(not item.isHidden() for item in win._items.values())
+    win.close()
+
+
+def test_menu_window_reads_the_radio_in_the_background(qapp):
+    radio = MenuRadio()
+    win = MenuWindow(radio)
+    deadline = QtCore.QDeadlineTimer(5000)
+    while win._thread is not None and not deadline.hasExpired():
+        qapp.processEvents()
+    assert win.editors[30].currentText() == "ON"
+    win.close()
+
+
+def test_typing_into_a_unit_box_sends_the_radios_code(qapp):
+    """RX tone shows -5..+5 for codes 0..10: typing +3 must send code 8."""
+    radio = MenuRadio()
+    win = MenuWindow(radio, read_now=False)
+    win.show_value(2, 5)
+    tone = win.editors[2]
+    tone.lineEdit().selectAll()
+    QtTest.QTest.keyClicks(tone, "3")
+    QtTest.QTest.keyClick(tone, QtCore.Qt.Key.Key_Return)
+    assert radio.writes[-1] == (2, 8, 2)
     win.close()

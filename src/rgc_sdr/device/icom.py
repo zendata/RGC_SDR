@@ -61,6 +61,18 @@ MENU_ITEMS = {
 TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01",
             "usb_af_level": b"\x02\x55", "usb_af_sql": b"\x01"}
 
+#: SET-menu items the app has taken over: item number -> TAKEOVER name. The menu window
+#: shows the radio's own value for these, not the app's.
+MENU_TAKEN = {110: "usb_af_level", 111: "usb_af_sql", 118: "data_off_mod"}
+#: SET-menu items the menu window will not change, and why.
+MENU_LOCKED = {
+    110: "Set by the app while it has the radio (put back when it lets go)",
+    111: "Set by the app while it has the radio (put back when it lets go)",
+    118: "Set by the app while it has the radio (put back when it lets go)",
+    131: "The app needs CI-V Transceive on to follow the radio's dial",
+    132: "Echo Back on would confuse the app's reading of the radio's replies",
+}
+
 #: Where the radio's own settings are kept while the app has changed them, so that a
 #: crash cannot leave the radio with its speaker and microphone switched off.
 RESTORE_FILE = Path.home() / "Library" / "Application Support" / "RGC_SDR" / "ic705_restore.json"
@@ -570,6 +582,34 @@ class IcomSource(IQSource):
             data = bytes([int(value)])
         self._send(cmd, (b"" if sub is None else bytes([sub])) + data, label=key)
 
+    # -- the SET menu (1A 05) ------------------------------------------------------------
+
+    @staticmethod
+    def _menu_item(number: int) -> bytes:
+        return bytes.fromhex(f"{number:04d}")          # item 0110 -> 01 10
+
+    def read_menu(self, number: int) -> int | None:
+        """One SET-menu item's value (its BCD data as a number), or None if the radio did
+        not answer. Blocks for up to REPLY_TIMEOUT_S -- call it off the UI thread."""
+        head = b"\x05" + self._menu_item(number)
+        frame = self._ask(0x1A, head, prefix=head)
+        if frame is None or len(frame.payload) <= 3:
+            return None
+        data = bytes(frame.payload[3:])
+        if number in MENU_TAKEN and MENU_TAKEN[number] in self._taken:
+            data = self._taken[MENU_TAKEN[number]]      # the radio's own, not the app's
+        try:
+            return int(data.hex())
+        except ValueError:
+            return None
+
+    def write_menu(self, number: int, value: int, digits: int) -> None:
+        """Set a SET-menu item. Refused if it is one the app itself depends on."""
+        if number in MENU_LOCKED:
+            raise PermissionError(MENU_LOCKED[number])
+        data = bytes.fromhex(f"{int(value):0{digits + digits % 2}d}")
+        self._send(0x1A, b"\x05" + self._menu_item(number) + data, label=f"menu {number:04d}")
+
     def set_rit(self, hz: int) -> None:
         """Set the RIT/dTX offset (CI-V 21 00: two BCD bytes, low first, then the sign;
         checked on the radio: +120 -> 20 01 00, -1234 -> 34 12 01)."""
@@ -607,8 +647,12 @@ class IcomSource(IQSource):
             self.poll()
             self._pump_once()
 
-    def _ask(self, cmd: int, payload: bytes | tuple = b"") -> civ.Frame | None:
-        """Send a query and wait for the answer with the same command."""
+    def _ask(self, cmd: int, payload: bytes | tuple = b"",
+             prefix: bytes | None = None) -> civ.Frame | None:
+        """Send a query and wait for the answer with the same command. With `prefix`, only
+        an answer whose data starts with it counts, and refusals are not taken as the
+        answer (the poller's own reads can be refused meanwhile): a refused query just
+        times out."""
         with self._lock:
             self._replies.clear()
         self._reply_event.clear()
@@ -621,7 +665,10 @@ class IcomSource(IQSource):
                 self._reply_event.wait(0.05)
             with self._lock:
                 for frame in self._replies:
-                    if frame.cmd == cmd or frame.is_ng:
+                    if prefix is not None:
+                        if frame.cmd == cmd and bytes(frame.payload[:len(prefix)]) == prefix:
+                            return frame
+                    elif frame.cmd == cmd or frame.is_ng:
                         return frame
         return None
 
@@ -699,9 +746,28 @@ class IcomSource(IQSource):
             if name in self._taken:
                 self._write_takeover(name, value)
 
+    def _confirmed(self, timeout: float = REPLY_TIMEOUT_S) -> bool:
+        """Wait, reading inline, until every write sent has been answered. The radio
+        drops commands sent back-to-back while it is busy (found 2026-09-28: the last two
+        hand-back writes were lost when the port closed straight after), so the hand-back
+        goes one write at a time."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._write_lock:
+                if not any(write for _cmd, _label, write in self._pending):
+                    return True
+            if self._thread is None:
+                self._pump_once()
+            else:
+                time.sleep(0.01)
+        return False
+
     def _hand_back(self) -> None:
         for name, value in self._taken.items():
-            self._write_takeover(name, value)
+            for _attempt in range(3):
+                self._write_takeover(name, value)
+                if self._confirmed():
+                    break
         self._taken.clear()
         try:
             self.restore_file.unlink()
@@ -734,12 +800,18 @@ class IcomSource(IQSource):
         self._running.clear()
         self._thread.join(timeout=1.0)
         self._thread = None
+        # The scope stream off first, so the radio is not busy sending while the
+        # settings go back; each one is confirmed before the next.
+        with self._write_lock:
+            self._pending.clear()
+        out = self._restore.get(civ.SCOPE_OUTPUT, b"\x00")
+        self._send(civ.CMD_SCOPE, bytes([civ.SCOPE_OUTPUT]) + out[:1], label="scope")
+        self._confirmed()
         self._hand_back()
-        # Output first: stop the stream, then the scope as it was.
-        for sub in (civ.SCOPE_OUTPUT, civ.SCOPE_ON):
-            value = self._restore.get(sub, b"\x00" if sub == civ.SCOPE_OUTPUT else None)
-            if value is not None:
-                self._send(civ.CMD_SCOPE, bytes([sub]) + value[:1], label="scope")
+        on = self._restore.get(civ.SCOPE_ON)
+        if on is not None:
+            self._send(civ.CMD_SCOPE, bytes([civ.SCOPE_ON]) + on[:1], label="scope")
+            self._confirmed()
         self._restore.clear()
 
     def close(self) -> None:

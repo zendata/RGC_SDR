@@ -119,6 +119,8 @@ class FunctionPanel(QtWidgets.QWidget):
         self._syncing = False
         self.popup: LevelPopup | None = None
         self.multi_button: FunctionButton | None = None
+        self.menu_button: FunctionButton | None = None
+        self.menu_window = None
         self.rit_spin: QtWidgets.QSpinBox | None = None
 
     def build(self, source, columns: int = 9) -> None:
@@ -153,6 +155,14 @@ class FunctionPanel(QtWidgets.QWidget):
         multi.setStyleSheet(_OFF)
         self._grid.addWidget(multi, n // columns, n % columns)
         self.multi_button = multi
+        n += 1
+        # MENU: the radio's SET menus, in a window of their own.
+        menu = FunctionButton("MENU")
+        menu.setToolTip("The radio's SET menus: every item, searchable")
+        menu.clicked.connect(self.open_menu)
+        menu.setStyleSheet(_OFF)
+        self._grid.addWidget(menu, n // columns, n % columns)
+        self.menu_button = menu
         n += 1
         # RIT / dTX offset, as the MULTI knob sets it when RIT or dTX is on.
         rit_box = QtWidgets.QWidget()
@@ -198,6 +208,16 @@ class FunctionPanel(QtWidgets.QWidget):
 
     def open_level(self, key: str) -> None:
         self._popup(self._controls[key].levels, self.buttons[key])
+
+    def open_menu(self) -> None:
+        if not hasattr(self._source, "read_menu"):
+            return
+        from .menu_window import MenuWindow
+
+        if self.menu_window is None or not self.menu_window.isVisible():
+            self.menu_window = MenuWindow(self._source, self.window())
+        self.menu_window.show()
+        self.menu_window.raise_()
 
     def open_multi(self) -> None:
         mode = (getattr(self._source, "mode", None) or "").lower()
