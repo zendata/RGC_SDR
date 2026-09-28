@@ -84,8 +84,8 @@ class RadioControl:
     #: function panel, like the 705's FUNCTION screen) or "popup" (a level opened from
     #: a function button, as a long touch does on the radio).
     placement: str = "row"
-    #: For a function button: the level its long press opens.
-    level: str | None = None
+    #: For a function button: the levels its long press opens (the radio's function menu).
+    levels: tuple[str, ...] = ()
 
 
 #: The IC-705 settings offered in the window. Every command read on the radio first
@@ -98,47 +98,55 @@ IC705_CONTROLS: tuple[RadioControl, ...] = (
     RadioControl("sql", "SQL", "level", tooltip="The radio's squelch"),
     RadioControl("power", "Power", "level", tooltip="TX power, 0.1-10 W"),
     # Function panel: the FUNCTION screen's keys.
+    # The FUNCTION screen's keys (IC-705 Basic Manual p. 2-6), long press -> its menu.
     RadioControl("preamp", "P.AMP", "choice", (("OFF", 0), ("P.AMP1", 1), ("P.AMP2", 2)),
-                 tooltip="Preamplifier (one step on 144/430 MHz)", placement="function"),
+                 tooltip="Preamplifier (144/430 MHz: on/off only)", placement="function"),
     RadioControl("att", "ATT", "switch", tooltip="20 dB attenuator (HF and 50 MHz)",
                  placement="function"),
     RadioControl("agc", "AGC", "choice", (("FAST", 1), ("MID", 2), ("SLOW", 3)),
-                 tooltip="AGC time constant; fixed in FM", placement="function"),
-    RadioControl("nb", "NB", "switch", tooltip="Noise blanker", placement="function",
-                 level="nb_level"),
+                 tooltip="AGC time constant; fixed in FM, WFM and DV", placement="function"),
+    RadioControl("notch", "NOTCH", "choice", (("OFF", 0), ("AN", 1), ("MN", 2)),
+                 tooltip="Auto notch (SSB/AM/FM) or manual notch (SSB/CW/RTTY/AM)",
+                 placement="function", levels=("notch_pos",)),
+    RadioControl("nb", "NB", "switch", tooltip="Noise blanker (SSB/CW/RTTY/AM)",
+                 placement="function", levels=("nb_level",)),
     RadioControl("nr", "NR", "switch", tooltip="Noise reduction", placement="function",
-                 level="nr_level"),
-    RadioControl("anotch", "A-NOTCH", "switch", tooltip="Auto notch", placement="function"),
-    RadioControl("mnotch", "NOTCH", "switch", tooltip="Manual notch", placement="function",
-                 level="notch"),
-    RadioControl("comp", "COMP", "switch", tooltip="Speech compressor", placement="function",
-                 level="comp_level"),
+                 levels=("nr_level",)),
+    RadioControl("split", "SPLIT", "switch", tooltip="Split: transmit on the other VFO",
+                 placement="function"),
     RadioControl("vox", "VOX", "switch", tooltip="VOX", placement="function",
-                 level="vox_gain"),
-    RadioControl("bkin", "BK-IN", "choice", (("OFF", 0), ("SEMI", 1), ("FULL", 2)),
-                 tooltip="CW break-in", placement="function"),
+                 levels=("vox_gain", "anti_vox")),
+    RadioControl("comp", "COMP", "switch", tooltip="Speech compressor (SSB)",
+                 placement="function", levels=("comp_level",)),
     RadioControl("moni", "MONI", "switch", tooltip="Transmit monitor", placement="function",
-                 level="moni_level"),
-    RadioControl("tone", "TONE", "choice", (("OFF", 0), ("TONE", 1), ("TSQL", 2), ("DTCS", 3)),
-                 tooltip="Repeater tone / tone squelch / DTCS", placement="function"),
-    RadioControl("split", "SPLIT", "choice",
-                 (("SIMP", 0x00), ("SPLIT", 0x01), ("DUP\u2212", 0x11), ("DUP+", 0x12)),
-                 tooltip="Split, or repeater duplex", placement="function"),
+                 levels=("moni_level",)),
+    RadioControl("bkin", "BKIN", "choice", (("OFF", 0), ("BKIN", 1), ("F-BKIN", 2)),
+                 tooltip="CW break-in: semi or full", placement="function",
+                 levels=("bkin_delay",)),
+    RadioControl("tone", "TONE", "choice",
+                 (("OFF", 0), ("TONE", 1), ("TSQL", 2), ("DTCS", 3), ("DTCS(T)", 6),
+                  ("TONE(T)/DTCS(R)", 7), ("DTCS(T)/TSQL(R)", 8), ("TONE(T)/TSQL(R)", 9)),
+                 tooltip="Repeater tone, tone squelch, DTCS", placement="function"),
+    RadioControl("dup", "DUP", "choice", (("OFF", 0x10), ("DUP\u2212", 0x11), ("DUP+", 0x12)),
+                 tooltip="Repeater duplex", placement="function"),
     RadioControl("rit", "RIT", "switch", tooltip="Receive incremental tuning",
                  placement="function"),
     RadioControl("dtx", "\u0394TX", "switch", tooltip="Transmit offset", placement="function"),
     RadioControl("lock", "LOCK", "switch", tooltip="Dial lock", placement="function"),
-    # Levels behind the function buttons, and the passband controls.
+    # The levels in those menus.
     RadioControl("nb_level", "NB level", "level", placement="popup"),
     RadioControl("nr_level", "NR level", "level", placement="popup"),
-    RadioControl("notch", "Notch position", "level", placement="popup"),
+    RadioControl("notch_pos", "Notch position", "level", placement="popup"),
     RadioControl("comp_level", "COMP level", "level", placement="popup"),
     RadioControl("vox_gain", "VOX gain", "level", placement="popup"),
+    RadioControl("anti_vox", "Anti-VOX", "level", placement="popup"),
     RadioControl("moni_level", "MONI level", "level", placement="popup"),
+    RadioControl("bkin_delay", "BK-IN delay", "level", placement="popup"),
 )
 
 # key -> (command, sub-command or None, form): "level" is 2-byte BCD, "byte" one byte,
-# "att" is 00 (off) or 20 (the 20 dB attenuator), "split" is command 0F's own values.
+# "att" is 00 (off) or 20 (the 20 dB attenuator); "split" and "dup" share command 0F;
+# "notch" is made of the auto and manual notch switches.
 _CONTROL_CI_V = {
     "af": (0x14, 0x01, "level"), "rf": (0x14, 0x02, "level"), "sql": (0x14, 0x03, "level"),
     "power": (0x14, 0x0A, "level"), "preamp": (0x16, 0x02, "byte"),
@@ -148,11 +156,15 @@ _CONTROL_CI_V = {
     "comp": (0x16, 0x44, "byte"), "moni": (0x16, 0x45, "byte"), "vox": (0x16, 0x46, "byte"),
     "bkin": (0x16, 0x47, "byte"), "lock": (0x16, 0x50, "byte"), "tone": (0x16, 0x5D, "byte"),
     "rit": (0x21, 0x01, "byte"), "dtx": (0x21, 0x02, "byte"),
-    "split": (0x0F, None, "split"),
+    "split": (0x0F, None, "split"), "dup": (0x0F, None, "dup"),
+    "notch": (None, None, "notch"),
     "nb_level": (0x14, 0x12, "level"), "nr_level": (0x14, 0x06, "level"),
-    "notch": (0x14, 0x0D, "level"), "comp_level": (0x14, 0x0E, "level"),
-    "vox_gain": (0x14, 0x16, "level"), "moni_level": (0x14, 0x15, "level"),
+    "notch_pos": (0x14, 0x0D, "level"), "comp_level": (0x14, 0x0E, "level"),
+    "vox_gain": (0x14, 0x16, "level"), "anti_vox": (0x14, 0x17, "level"),
+    "moni_level": (0x14, 0x15, "level"), "bkin_delay": (0x14, 0x0F, "level"),
 }
+#: Keys read through others: DUP comes with SPLIT's 0F, NOTCH from the two notch switches.
+_READ_VIA = {"dup": ("split",), "notch": ("anotch", "mnotch")}
 
 #: Read-only display state, asked for with the settings: VFO A/B, RIT, duplex offset,
 #: tones and step. (command, payload) pairs.
@@ -186,7 +198,8 @@ def drain_amps(raw: int) -> float:
 
 def comp_db(raw: int) -> float:
     return _piecewise(raw, COMP_POINTS)
-_BY_COMMAND = {(cmd, sub): key for key, (cmd, sub, _form) in _CONTROL_CI_V.items()}
+_BY_COMMAND = {(cmd, sub): key for key, (cmd, sub, _form) in _CONTROL_CI_V.items()
+               if key not in _READ_VIA}
 
 
 def _piecewise(raw: int, points: tuple[tuple[int, float], ...]) -> float:
@@ -402,7 +415,9 @@ class IcomSource(IQSource):
                     self.status[name] = value
             return
         if cmd == 0x0F and len(payload) == 1:
-            self.state["split"] = payload[0]
+            # One value for both: 00 neither, 01 split, 11 DUP-, 12 DUP+.
+            self.state["split"] = 1 if payload[0] == 0x01 else 0
+            self.state["dup"] = payload[0] if payload[0] in (0x11, 0x12) else 0x10
             return
         if cmd == 0x11 and len(payload) == 1:
             self.state["att"] = 1 if payload[0] else 0
@@ -417,6 +432,9 @@ class IcomSource(IQSource):
                 self.state[key] = civ.decode_level(value)
             elif form == "byte" and len(value) == 1:
                 self.state[key] = value[0]
+            if key in ("anotch", "mnotch"):
+                self.state["notch"] = 1 if self.state.get("anotch") else \
+                    2 if self.state.get("mnotch") else 0
 
     def _update_status(self, cmd: int, payload: bytes) -> bool:
         """The display-only replies. True if the frame was one of them."""
@@ -454,6 +472,10 @@ class IcomSource(IQSource):
         return False
 
     def _read_control(self, key: str) -> None:
+        if key in _READ_VIA:
+            for other in _READ_VIA[key]:
+                self._read_control(other)
+            return
         cmd, sub, _form = _CONTROL_CI_V[key]
         self._send(cmd, b"" if sub is None else bytes([sub]))
 
@@ -466,7 +488,7 @@ class IcomSource(IQSource):
         if now >= self._next_meter:
             self._next_meter = now + METER_POLL_S
             if self.transmitting:
-                for meter in (0x11, 0x12, 0x13, 0x14, 0x16):     # Po, SWR, ALC, COMP, Id
+                for meter in (0x11, 0x12, 0x13, 0x14, 0x15, 0x16):  # Po SWR ALC COMP Vd Id
                     self._send(0x15, bytes([meter]))
             else:
                 self._send(0x15, b"\x02")        # S-meter
@@ -475,7 +497,8 @@ class IcomSource(IQSource):
             self._next_settings = now + SETTINGS_POLL_S
             self._send(civ.CMD_READ_MODE)
             for key in _CONTROL_CI_V:
-                self._read_control(key)
+                if key not in _READ_VIA:
+                    self._read_control(key)
             for cmd, payload in _STATUS_READS:
                 self._send(cmd, payload)
 
@@ -491,13 +514,22 @@ class IcomSource(IQSource):
         cmd, sub, form = _CONTROL_CI_V[key]
         self.state[key] = int(value)            # optimistic; a refusal corrects it
         if form == "split":
-            # 0F writes: 00 split off, 01 split on, 10 simplex, 11 DUP-, 12 DUP+. Reads
-            # give 00 for "neither", so leaving split or duplex takes both off.
-            if value == 0x00:
-                self._send(0x0F, b"\x00", label=key)
-                self._send(0x0F, b"\x10", label=key)
-            else:
-                self._send(0x0F, bytes([int(value)]), label=key)
+            # 0F writes: 00 split off, 01 split on, 10 simplex, 11 DUP-, 12 DUP+.
+            self._send(0x0F, b"\x01" if value else b"\x00", label=key)
+            if value:
+                self.state["dup"] = 0x10
+            return
+        if form == "dup":
+            self._send(0x0F, bytes([int(value)]), label=key)
+            if value != 0x10:
+                self.state["split"] = 0
+            return
+        if form == "notch":
+            # One key on the radio: OFF -> AN -> MN. Off goes first so both are never on.
+            auto, manual = int(value) == 1, int(value) == 2
+            self.state["anotch"], self.state["mnotch"] = int(auto), int(manual)
+            for sub_cmd, on in sorted(((0x41, auto), (0x48, manual)), key=lambda t: t[1]):
+                self._send(0x16, bytes([sub_cmd, 0x01 if on else 0x00]), label=key)
             return
         if form == "level":
             data = civ.encode_level(int(value))

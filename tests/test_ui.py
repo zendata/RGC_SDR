@@ -3394,7 +3394,8 @@ def panel_window(**state):
 
 
 def test_radio_display_shows_the_705s_screen_information(qapp):
-    win, src = panel_window(split=0x11, tone=2, rit=1, comp=1, bkin=1)
+    win, src = panel_window(split=0, dup=0x11, tone=2, rit=1, comp=1, bkin=1, notch=1,
+                            rf=200)
     d = win.radio_display
     assert not win._radio_panel.isHidden()
     assert d.freq.text() == "146.900.00" and d.mode.text() == "FM" and d.filter.text() == "FIL1"
@@ -3404,6 +3405,7 @@ def test_radio_display_shows_the_705s_screen_information(qapp):
     assert d.rit.text() == "RIT -1.20"
     assert "f0b429" in d.chips["comp"].styleSheet() and d.chips["bkin"].text() == "BK-IN"
     assert "f0b429" not in d.chips["vox"].styleSheet()
+    assert d.chips["notch"].text() == "AN" and "f0b429" in d.chips["rfg"].styleSheet()
     assert d.volts.text() == "12.5 V" or d.volts.text() == "12.6 V"
     assert d.meter_text.text() == "S S8"
     win.close()
@@ -3420,7 +3422,7 @@ def test_display_meter_on_transmit_is_the_chosen_one(qapp):
 
 
 def test_function_keys_toggle_and_step_like_the_radio(qapp):
-    win, src = panel_window(agc=1, split=0x00)
+    win, src = panel_window(agc=1, split=0, dup=0x10)
     keys = win.function_panel.buttons
     expected = {c.key for c in src.controls if c.placement == "function"}
     assert set(keys) == expected
@@ -3428,8 +3430,12 @@ def test_function_keys_toggle_and_step_like_the_radio(qapp):
     assert src.set_calls[-1] == ("comp", 1)
     keys["agc"].click()
     assert src.set_calls[-1] == ("agc", 2)                      # FAST -> MID
-    keys["split"].click(); keys["split"].click()
-    assert [c for c in src.set_calls if c[0] == "split"][-2:] == [("split", 0x01), ("split", 0x11)]
+    keys["split"].click()
+    assert src.set_calls[-1] == ("split", 1)
+    keys["dup"].click()
+    assert src.set_calls[-1] == ("dup", 0x11)                  # OFF -> DUP-
+    keys["notch"].click()
+    assert src.set_calls[-1] == ("notch", 1)                   # OFF -> AN
     win.close()
 
 
@@ -3440,6 +3446,19 @@ def test_a_long_press_opens_the_level_behind_a_key(qapp):
     assert popup is not None and popup.slider.value() == 50
     popup.slider.setValue(80)
     assert src.set_calls[-1] == ("nb_level", round(0.8 * 255))
+    popup.close()
+    win.close()
+
+
+def test_a_key_with_several_levels_shows_them_all(qapp):
+    """VOX's menu on the radio has gain and anti-VOX; both come up."""
+    win, src = panel_window(vox_gain=255, anti_vox=0)
+    win.function_panel.buttons["vox"].long_pressed.emit()
+    popup = win.function_panel.popup
+    assert [k for k in popup.sliders] == ["vox_gain", "anti_vox"]
+    assert popup.sliders["vox_gain"].value() == 100
+    popup.sliders["anti_vox"].setValue(40)
+    assert src.set_calls[-1] == ("anti_vox", round(0.4 * 255))
     popup.close()
     win.close()
 

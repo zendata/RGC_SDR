@@ -21,7 +21,7 @@ _RX = "color: #10141a; background: #37b24d; border-radius: 3px; padding: 2px 8px
 _WARN = "color: white; background: #d62828; border-radius: 3px; padding: 1px 5px;"
 
 #: Meters as the radio names them; the first is shown on receive, the rest on transmit.
-METERS = ("S", "Po", "SWR", "ALC", "COMP", "Id")
+METERS = ("S", "Po", "SWR", "ALC", "COMP", "Vd", "Id")
 
 
 def format_freq(hz: float | None) -> str:
@@ -52,10 +52,25 @@ def meter_reading(meter: str, src) -> tuple[float, str] | None:
     if meter == "COMP":
         raw = status.get("comp_meter")
         return None if raw is None else (min(raw / 210, 1.0), f"{comp_db(raw):.1f} dB")
+    if meter == "Vd":
+        raw = status.get("vd")
+        return None if raw is None else (min(raw / 241, 1.0), f"{supply_volts(raw):.1f} V")
     if meter == "Id":
         raw = status.get("id")
         return None if raw is None else (min(raw / 241, 1.0), f"{drain_amps(raw):.2f} A")
     return None
+
+
+def tone_text(mode, status) -> str:
+    """The tone indicator for the 705's tone setting (16 5D), with its tone or code."""
+    tone = f"{status['tone_hz']:.1f}" if status.get("tone_hz") else "?"
+    tsql = f"{status['tsql_hz']:.1f}" if status.get("tsql_hz") else "?"
+    dtcs = status.get("dtcs") or "?"
+    return {
+        1: f"TONE {tone}", 2: f"TSQL {tsql}", 3: f"DTCS {dtcs}", 6: f"DTCS(T) {dtcs}",
+        7: f"TONE {tone} / DTCS {dtcs}", 8: f"DTCS {dtcs} / TSQL {tsql}",
+        9: f"TONE {tone} / TSQL {tsql}",
+    }.get(mode, "")
 
 
 class _Bar(QtWidgets.QWidget):
@@ -89,8 +104,8 @@ class RadioDisplay(QtWidgets.QFrame):
     #: Indicator chips: (state key, label, how to tell it is on).
     CHIPS = (
         ("preamp", None), ("att", "ATT"), ("agc", None), ("nb", "NB"), ("nr", "NR"),
-        ("anotch", "A-NOTCH"), ("mnotch", "NOTCH"), ("comp", "COMP"), ("vox", "VOX"),
-        ("bkin", None), ("moni", "MONI"), ("lock", "LOCK"),
+        ("notch", None), ("comp", "COMP"), ("vox", "VOX"), ("bkin", None),
+        ("moni", "MONI"), ("lock", "LOCK"), ("rfg", "RFG"),
     )
 
     def __init__(self, parent=None) -> None:
@@ -210,13 +225,13 @@ class RadioDisplay(QtWidgets.QFrame):
         other_mode = (status.get("vfo_other_mode") or "").upper()
         self.other.setText(f"⇄ {format_freq(other)}  {other_mode}" if other else "")
 
-        split = state.get("split")
+        dup = state.get("dup")
         offset = status.get("offset_hz")
-        if split == 0x01:
+        if state.get("split"):
             self.duplex.setText("SPLIT")
             self.duplex.setStyleSheet(_LIT)
-        elif split in (0x11, 0x12):
-            sign = "−" if split == 0x11 else "+"
+        elif dup in (0x11, 0x12):
+            sign = "−" if dup == 0x11 else "+"
             text = f"DUP{sign}"
             if offset:
                 text += f" {offset / 1e3:g} kHz"
@@ -225,15 +240,7 @@ class RadioDisplay(QtWidgets.QFrame):
         else:
             self.duplex.setText("")
 
-        tone_mode = state.get("tone")
-        if tone_mode == 1 and status.get("tone_hz"):
-            self.tone.setText(f"TONE {status['tone_hz']:.1f}")
-        elif tone_mode == 2 and status.get("tsql_hz"):
-            self.tone.setText(f"TSQL {status['tsql_hz']:.1f}")
-        elif tone_mode == 3 and status.get("dtcs"):
-            self.tone.setText(f"DTCS {status['dtcs']}")
-        else:
-            self.tone.setText("")
+        self.tone.setText(tone_text(state.get("tone"), status))
         self.tone.setStyleSheet(_LIT if self.tone.text() else "")
 
         rit_hz = status.get("rit_hz")
@@ -256,6 +263,13 @@ class RadioDisplay(QtWidgets.QFrame):
             elif key == "bkin":
                 chip.setText({1: "BK-IN", 2: "F-BKIN"}.get(value, "BK-IN"))
                 lit = bool(value)
+            elif key == "notch":
+                chip.setText({1: "AN", 2: "MN"}.get(value, "NOTCH"))
+                lit = bool(value)
+            elif key == "rfg":
+                # "RFG" shows on the radio whenever the RF gain is turned down.
+                rf = state.get("rf")
+                lit = rf is not None and rf < 255
             else:
                 lit = bool(value)
             chip.setStyleSheet(_LIT if lit else _DIM)

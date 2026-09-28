@@ -2,8 +2,9 @@
 
 On/off keys light when on; multi-setting keys (P.AMP, AGC, BK-IN, TONE, SPLIT) step to
 the next setting on each click and show it. A right-click -- or pressing and holding, as
-a long touch on the radio -- opens the level behind a key (NB, NR, NOTCH, COMP, VOX,
-MONI). The buttons follow the radio: a change made on its own screen shows here.
+a long touch on the radio -- opens the levels behind a key, as the radio's function menu
+does (NB, NR, NOTCH, VOX, COMP, MONI, BKIN). The buttons follow the radio: a change made
+on its own screen shows here.
 """
 
 from __future__ import annotations
@@ -57,27 +58,37 @@ class FunctionButton(QtWidgets.QPushButton):
 
 
 class LevelPopup(QtWidgets.QFrame):
-    """A slider for one level, shown under its function key."""
+    """Sliders for a key's levels, shown under it. `levels` is ((key, title, percent), ...);
+    `on_change(key, percent)` is called when a slider is let go or stepped."""
 
-    def __init__(self, title: str, percent: int, on_change, parent=None) -> None:
+    def __init__(self, levels, on_change, parent=None) -> None:
         super().__init__(parent, QtCore.Qt.WindowType.Popup)
         self.setStyleSheet("QFrame { background: #11161d; border: 1px solid #2c3645; }"
                            " QLabel { color: #d8dee9; }")
-        layout = QtWidgets.QHBoxLayout(self)
-        layout.addWidget(QtWidgets.QLabel(title))
-        self.slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-        self.slider.setRange(0, 100)
-        self.slider.setValue(percent)
-        self.slider.setFixedWidth(200)
-        layout.addWidget(self.slider)
-        self.value = QtWidgets.QLabel(f"{percent}%")
-        self.value.setMinimumWidth(40)
-        layout.addWidget(self.value)
-        self.slider.valueChanged.connect(lambda v: self.value.setText(f"{v}%"))
-        # Sent when let go, not on every step of a drag.
-        self.slider.sliderReleased.connect(lambda: on_change(self.slider.value()))
-        self.slider.valueChanged.connect(
-            lambda v: None if self.slider.isSliderDown() else on_change(v))
+        grid = QtWidgets.QGridLayout(self)
+        self.sliders: dict[str, QtWidgets.QSlider] = {}
+        for row, (key, title, percent) in enumerate(levels):
+            grid.addWidget(QtWidgets.QLabel(title), row, 0)
+            slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+            slider.setRange(0, 100)
+            slider.setValue(percent)
+            slider.setFixedWidth(200)
+            grid.addWidget(slider, row, 1)
+            value = QtWidgets.QLabel(f"{percent}%")
+            value.setMinimumWidth(40)
+            grid.addWidget(value, row, 2)
+            slider.valueChanged.connect(lambda v, lab=value: lab.setText(f"{v}%"))
+            # Sent when let go, not on every step of a drag.
+            slider.sliderReleased.connect(
+                lambda k=key, sl=slider: on_change(k, sl.value()))
+            slider.valueChanged.connect(
+                lambda v, k=key, sl=slider: None if sl.isSliderDown() else on_change(k, v))
+            self.sliders[key] = slider
+
+    @property
+    def slider(self) -> QtWidgets.QSlider:
+        """The first slider -- most keys have only one."""
+        return next(iter(self.sliders.values()))
 
 
 class FunctionPanel(QtWidgets.QWidget):
@@ -105,11 +116,11 @@ class FunctionPanel(QtWidgets.QWidget):
         for i, control in enumerate(functions):
             button = FunctionButton(control.label)
             tip = control.tooltip
-            if control.level:
-                tip += "\nRight-click or hold for its level"
+            if control.levels:
+                tip += "\nRight-click or hold for its levels"
             button.setToolTip(tip)
             button.clicked.connect(lambda _c=False, k=control.key: self._clicked(k))
-            if control.level:
+            if control.levels:
                 button.long_pressed.connect(lambda k=control.key: self.open_level(k))
             self._grid.addWidget(button, i // columns, i % columns)
             self.buttons[control.key] = button
@@ -125,20 +136,19 @@ class FunctionPanel(QtWidgets.QWidget):
             new = 0 if value else 1
         else:
             codes = [code for _label, code in control.choices]
-            new = codes[(codes.index(value) + 1) % len(codes)] if value in codes else codes[0]
+            # Not yet reported: take it as the first setting, so a click still moves it.
+            now = codes.index(value) if value in codes else 0
+            new = codes[(now + 1) % len(codes)]
         self._source.set_control(key, new)
         self.sync()
 
     def open_level(self, key: str) -> None:
-        level_key = self._controls[key].level
-        level = self._controls.get(level_key)
-        if level is None:
+        levels = [(k, self._controls[k].label, round((self._value(k) or 0) / 255 * 100))
+                  for k in self._controls[key].levels if k in self._controls]
+        if not levels:
             return
-        raw = self._value(level_key)
-        percent = round((raw or 0) / 255 * 100)
-        popup = LevelPopup(level.label, percent,
-                           lambda pct, k=level_key: self._source.set_control(
-                               k, round(pct / 100 * 255)), self)
+        popup = LevelPopup(levels, lambda k, pct: self._source.set_control(
+            k, round(pct / 100 * 255)), self)
         button = self.buttons[key]
         popup.move(button.mapToGlobal(QtCore.QPoint(0, button.height())))
         popup.show()
@@ -153,8 +163,9 @@ class FunctionPanel(QtWidgets.QWidget):
                 setting = {code: text for text, code in control.choices}.get(value)
                 if setting is None:
                     text = control.label
-                elif control.key in ("split", "tone"):
-                    text = setting               # "DUP-", "TSQL": the setting says it all
+                elif control.key in ("dup", "tone", "notch") and \
+                        value != control.choices[0][1]:
+                    text = setting               # "DUP-", "TSQL", "AN": says it all
                 else:
                     text = f"{control.label}\n{setting}"      # "AGC" over "FAST"
                 # Lit when not off. AGC has no off: lit whenever the radio reports it.

@@ -151,7 +151,7 @@ def test_poll_reads_every_setting_mode_and_the_meter():
     assert src.mode == "fm" and src.filter == 1
     expected = {"af": 72, "rf": 255, "sql": 85, "power": 3, "preamp": 0,
                 "agc": 1, "nb": 0, "nr": 1, "att": 0, "bkin": 1, "split": 1,
-                "comp_level": 151, "notch": 129}
+                "dup": 0x10, "notch": 0, "comp_level": 151, "notch_pos": 129}
     assert {k: src.state.get(k) for k in expected} == expected
     assert src.smeter == 109
 
@@ -376,15 +376,34 @@ def test_transmit_meters_include_alc_comp_and_current():
     assert src.status["alc"] == 60
 
 
-def test_leaving_split_or_duplex_takes_both_off():
+def test_split_and_duplex_are_separate_keys_on_one_command():
+    """0F carries both (Basic Manual p. 2-6 has SPLIT and DUP keys): one read sets both
+    keys, and turning one on turns the other off."""
     radio, src = radio_and_source()
-    src.set_control("split", 0x11)                     # DUP-
+    src.set_control("dup", 0x11)                       # DUP-
     settle(src)
     assert radio.split == 0x11
-    src.set_control("split", 0x00)
+    src._read_control("split"); settle(src)
+    assert src.state["dup"] == 0x11 and src.state["split"] == 0
+    src.set_control("split", 1)
     settle(src)
-    writes = [f.payload for f in radio.written if f.cmd == 0x0F and f.payload]
-    assert writes[-2:] == [b"\x00", b"\x10"] and radio.split == 0x00
+    assert radio.split == 0x01
+    src._read_control("split"); settle(src)
+    assert src.state["dup"] == 0x10 and src.state["split"] == 1
+    src.set_control("split", 0)
+    settle(src)
+    assert radio.split == 0x00
+
+
+@pytest.mark.parametrize("value,auto,manual", [(1, 1, 0), (2, 0, 1), (0, 0, 0)])
+def test_notch_is_one_key_off_auto_manual(value, auto, manual):
+    radio, src = radio_and_source()
+    radio.switches[0x41], radio.switches[0x48] = 1, 1 - auto   # something else on first
+    src.set_control("notch", value)
+    settle(src)
+    assert (radio.switches[0x41], radio.switches[0x48]) == (auto, manual)
+    src._read_control("notch"); settle(src)
+    assert src.state["notch"] == value
 
 
 def test_a_refused_read_is_not_blamed_on_a_write():
@@ -402,7 +421,9 @@ def test_a_refused_read_is_not_blamed_on_a_write():
 @pytest.mark.parametrize("key,value,cmd,payload", [
     ("comp", 1, 0x16, b"\x44\x01"), ("bkin", 2, 0x16, b"\x47\x02"),
     ("tone", 2, 0x16, b"\x5d\x02"), ("rit", 1, 0x21, b"\x01\x01"),
-    ("notch", 200, 0x14, b"\x0d\x02\x00")])
+    ("notch_pos", 200, 0x14, b"\x0d\x02\x00"), ("anti_vox", 255, 0x14, b"\x17\x02\x55"),
+    ("bkin_delay", 0, 0x14, b"\x0f\x00\x00"), ("tone", 9, 0x16, b"\x5d\x09"),
+    ("dup", 0x12, 0x0F, b"\x12")])
 def test_function_controls_write_the_documented_commands(key, value, cmd, payload):
     radio, src = radio_and_source()
     src.set_control(key, value)
