@@ -91,7 +91,7 @@ def _piecewise(raw: int, points: tuple[tuple[int, float], ...]) -> float:
 
 
 #: Icom's documented meter calibration (IC-7300/705 CI-V guides): raw -> % power, SWR.
-#: Not yet checked against the 705 itself -- verify at the first transmission.
+#: Confirmed on VK3RQ's IC-705 on air (2026-09-28): power and SWR agree with the radio.
 PO_POINTS = ((0, 0.0), (143, 50.0), (213, 100.0))
 SWR_POINTS = ((0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0))
 

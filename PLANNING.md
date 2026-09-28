@@ -137,7 +137,7 @@ headless-testable and lets modules be swapped independently.
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
-  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX (built; to verify on the radio), then WiFi (Icom's network
+  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), then WiFi (Icom's network
   protocol). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
@@ -819,7 +819,8 @@ the S-meter.
 To verify on the radio: (1) the 705 transmits the Mac microphone only with its voice
 modulation input on USB (SET > Connectors > MOD Input > DATA OFF MOD = USB or MIC,USB);
 (2) the power and SWR scales are Icom's documented ones (0/143/213 = 0/50/100 %;
-0/48/80/120 = SWR 1.0/1.5/2.0/3.0), from the IC-7300 guide, unchecked on the 705;
+0/48/80/120 = SWR 1.0/1.5/2.0/3.0), from the IC-7300 guide -- **confirmed on air
+2026-09-28: both agree with the 705's own display**;
 (3) receive audio level and latency.
 
 Found by the new tests: with the app *starting* on the 705, switching to an SDR raised
