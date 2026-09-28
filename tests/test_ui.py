@@ -3272,3 +3272,27 @@ def test_tx_on_the_705_is_refused_in_cw(qapp):
     assert not win.transmitting and ("ptt", True) not in win.source.set_calls
     assert "CW transmit is not supported" in win._status.currentMessage()
     win.close()
+
+
+
+def test_mic_level_control_for_the_705_is_live_and_saved(qapp, tmp_path, monkeypatch):
+    import src.rgc_sdr.ui.main_window as mw
+    from src.rgc_sdr.audio import CodecOutput
+
+    real = mw.RadioTransmitter
+    monkeypatch.setattr(mw, "RadioTransmitter", lambda radio, mode, audio_out=None:
+                        real(radio, mode, mic=FakeMic(), audio_out=audio_out))
+    monkeypatch.setattr(CodecOutput, "start", lambda self, mic: None)   # no sound card
+    monkeypatch.setattr(CodecOutput, "stop", lambda self: None)
+
+    win = radio_window()
+    win._transmitter_factory = win._make_transmitter
+    assert win._mic_level_spin.value() == 25                      # -12 dB to start
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._tx_button.click()
+    assert win.transmitter.audio_out.level == pytest.approx(0.25)
+    win._mic_level_spin.setValue(10)
+    assert win.transmitter.audio_out.level == pytest.approx(0.10)   # live, while keyed
+    win._tx_button.click()
+    assert win.current_radio_settings().tx_audio_level == pytest.approx(0.10)
+    win.close()

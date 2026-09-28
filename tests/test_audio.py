@@ -597,11 +597,37 @@ def test_radio_audio_follows_volume_and_mute():
     assert np.all(out == 0.0)
 
 
-def test_microphone_goes_to_both_codec_channels():
-    out = CodecOutput()
+def test_microphone_goes_to_both_codec_channels_at_the_tx_level():
+    out = CodecOutput(level=0.25)
     mic = Microphone()
     mic._callback(np.full((512, 1), 0.3, dtype=np.float32), 512, None, None)
     out._mic = mic
     buf = np.zeros((512, 2), dtype=np.float32)
     out._play(buf, 512, None, None)
-    assert np.allclose(buf, 0.3)
+    assert np.allclose(buf[:, 0], buf[:, 1])
+    assert np.allclose(buf, 0.3 * 0.25)
+
+
+def test_default_tx_level_is_12_db_down():
+    """Full level was reported too hot and distorted on air (2026-09-28)."""
+    from src.rgc_sdr.audio import DEFAULT_TX_AUDIO_LEVEL
+    assert 20 * np.log10(DEFAULT_TX_AUDIO_LEVEL) == pytest.approx(-12.0, abs=0.1)
+
+
+def test_limiter_holds_peaks_under_the_ceiling_without_hard_clipping():
+    from src.rgc_sdr.audio import TX_LIMIT
+    out = CodecOutput(level=1.0)
+    t = np.arange(1024) / 48e3
+    loud = 0.95 * np.sin(2 * np.pi * 440 * t)
+    first = out._shape(loud)
+    assert np.max(np.abs(first)) <= TX_LIMIT + 1e-6
+    steady = out._shape(loud)                          # settled: scaled, not clipped
+    assert np.max(np.abs(steady)) == pytest.approx(TX_LIMIT, rel=0.02)
+    clipped = np.sum(np.isclose(np.abs(steady), TX_LIMIT, atol=1e-4))
+    assert clipped < 20, f"{clipped} samples flattened: that is clipping, not limiting"
+
+
+def test_quiet_speech_passes_the_limiter_untouched():
+    out = CodecOutput(level=0.25)
+    quiet = 0.2 * np.sin(2 * np.pi * 300 * np.arange(1024) / 48e3)
+    assert np.allclose(out._shape(quiet), quiet * 0.25, atol=1e-6)

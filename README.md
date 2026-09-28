@@ -78,7 +78,9 @@ frequency and at the power set on the Radio row; the meter shows power and SWR w
 transmitting, and the receiver is muted. For the Mac microphone to reach the air, set the
 705's **SET > Connectors > MOD Input > DATA OFF MOD** to **USB** (or **MIC,USB**);
 otherwise the 705 transmits its own microphone. CW and WFM are not transmitted from the
-app. Keep the scope showing on the radio: it sends no scope data
+app. **Mic** on the Radio row sets how loud the Mac microphone is sent -- 25% to start,
+with a limiter on the peaks; lower it if you are reported distorted or over-compressed,
+raise it if quiet. It works while transmitting and is remembered for the 705. Keep the scope showing on the radio: it sends no scope data
 while in a menu.
 
 ### Choosing the radio

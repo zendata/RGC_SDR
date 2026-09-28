@@ -825,6 +825,15 @@ modulation input on USB (SET > Connectors > MOD Input > DATA OFF MOD = USB or MI
 Found by the new tests: with the app *starting* on the 705, switching to an SDR raised
 AttributeError (`_agc_check` was never set on the transceiver path). Fixed.
 
+**On the radio, 2026-09-28.** Receive audio verified: 3RN 621 kHz AM (S9+49) played with
+no underruns; the codec delivers -31 dBFS rms / -17 dBFS peak, so a fixed +12 dB brings
+it level with the SDRs. **TX verified on air** with DATA OFF MOD on USB: the Mac
+microphone was carried, but reported **too hot, over-compressed and distorted** -- sent
+at full level into a USB MOD level set for the 705's own microphone (which sounds fine).
+The app now sends it at 25% (-12 dB) by default, with a peak limiter (ceiling 0.5,
+instant ramped attack, gradual release) and a **Mic** % control on the Radio row, live
+while keyed and saved per radio. Next on-air check: the right Mic % by report.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image

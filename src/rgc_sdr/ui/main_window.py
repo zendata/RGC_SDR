@@ -176,6 +176,10 @@ class MainWindow(QtWidgets.QMainWindow):
         #: Builds a Transmitter for a mode. Injectable so tests never open the microphone.
         self._transmitter_factory = transmitter_factory or self._make_transmitter
         self.transmitter: Transmitter | None = None
+        from ..audio import DEFAULT_TX_AUDIO_LEVEL
+
+        #: Mac microphone level sent to a transceiver for TX (0-1), saved per radio.
+        self._tx_audio_level = DEFAULT_TX_AUDIO_LEVEL
         #: A transceiver's received audio on the Mac (RadioAudio), while one is in use.
         #: Injectable so tests never open a sound device.
         self.radio_audio = None
@@ -562,6 +566,7 @@ class MainWindow(QtWidgets.QMainWindow):
             min_db=self._levels[0] if explicit else None,
             max_db=self._levels[1] if explicit else None,
             tx_gains=dict(self._tx_gains),
+            tx_audio_level=self._tx_audio_level if self.is_transceiver else None,
         )
 
     def apply_radio_hardware(self, radio: RadioSettings) -> None:
@@ -585,6 +590,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._bw_combo.setCurrentIndex(index)
                 self.source.set_bandwidth(radio.if_bandwidth_hz)
                 self._if_bw_chosen = True
+        if radio.tx_audio_level is not None:
+            self._tx_audio_level = min(1.0, max(0.01, radio.tx_audio_level))
         self._rebuild_device_controls()       # show what was just set
         tx = caps.tx
         if tx is not None:
@@ -1487,6 +1494,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self._radio_widgets[control.key] = widget
             row.addWidget(widget)
 
+        # The app's own: how loud the Mac microphone is sent to the radio. Not a radio
+        # setting, so not in `_radio_widgets` (which follow the radio's state).
+        row.addSpacing(12)
+        row.addWidget(QtWidgets.QLabel("Mic"))
+        mic = QtWidgets.QSpinBox()
+        mic.setRange(1, 100)
+        mic.setSuffix(" %")
+        mic.setKeyboardTracking(False)
+        mic.setValue(round(self._tx_audio_level * 100))
+        mic.setToolTip("Mac microphone level sent to the radio for TX. Lower it if the\n"
+                       "audio is reported distorted or over-compressed; it can be\n"
+                       "changed while transmitting.")
+        mic.valueChanged.connect(self._on_tx_audio_level)
+        self._mic_level_spin = mic
+        row.addWidget(mic)
+    def _on_tx_audio_level(self, percent: int) -> None:
+        self._tx_audio_level = percent / 100.0
+        audio_out = getattr(self.transmitter, "audio_out", None)
+        if audio_out is not None:
+            audio_out.level = self._tx_audio_level          # live, while transmitting
+        self._schedule_save()
+
     def _sync_transceiver_state(self) -> None:
         """Follow the radio: its knobs, mode, filter and meter, and any refusal."""
         src = self.source
@@ -1964,7 +1993,10 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         if self.is_transceiver:
             # The radio modulates: the app keys it and feeds it the microphone.
-            return RadioTransmitter(self.source, _TO_RADIO_MODE.get(mode, mode))
+            from ..audio import CodecOutput
+
+            return RadioTransmitter(self.source, _TO_RADIO_MODE.get(mode, mode),
+                                    audio_out=CodecOutput(level=self._tx_audio_level))
         opener = getattr(self.source, "open_tx_sink", None)
         sink = opener(self.tx_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
         return Transmitter(mode, sink=sink, tone=self.tx_tone())

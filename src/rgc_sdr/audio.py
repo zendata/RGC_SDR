@@ -651,23 +651,56 @@ class RadioAudio:
         self._fifo.clear()
 
 
+#: Microphone level sent to a transceiver, as a fraction of full scale. On air (VK3RQ,
+#: 2026-09-28) the MacBook microphone at full level into the 705 (USB MOD level set for
+#: its own mic) was reported too hot, over-compressed and distorted. 25% (-12 dB) to
+#: start; the Mic control on the Radio row adjusts it.
+DEFAULT_TX_AUDIO_LEVEL = 0.25
+
+#: The limiter's ceiling: peaks above this are turned down, smoothly, not clipped.
+TX_LIMIT = 0.5
+
+
 class CodecOutput:
     """Sends microphone audio to a transceiver's USB sound card, for it to transmit.
 
     The 705 takes it only if its voice modulation input is set to USB ("DATA OFF MOD":
-    USB or MIC,USB); otherwise it transmits its own microphone.
+    USB or MIC,USB); otherwise it transmits its own microphone. The level is scaled by
+    `level` and a peak limiter keeps loud syllables below TX_LIMIT without clipping:
+    gain reduction is instant and ramped across the block, recovery gradual.
     """
 
+    RELEASE_PER_BLOCK = 0.05
+
     def __init__(self, samplerate: float = 48_000.0, blocksize: int = 1024,
-                 codec: str = RADIO_CODEC) -> None:
+                 codec: str = RADIO_CODEC, level: float = DEFAULT_TX_AUDIO_LEVEL) -> None:
         self.samplerate = float(samplerate)
         self.blocksize = int(blocksize)
         self.codec = codec
+        #: Adjustable while transmitting.
+        self.level = float(level)
+        self._limit_gain = 1.0
         self._stream = None
         self._mic = None
 
+    def _shape(self, block: np.ndarray) -> np.ndarray:
+        """Level, then limit."""
+        y = block.astype(np.float32) * self.level
+        peak = float(np.max(np.abs(y))) if y.size else 0.0
+        wanted = min(1.0, TX_LIMIT / peak) if peak > 0 else 1.0
+        previous = self._limit_gain
+        if wanted < previous:
+            self._limit_gain = wanted                        # attack at once
+        else:
+            self._limit_gain = min(wanted, previous + self.RELEASE_PER_BLOCK)
+        ramp = np.linspace(previous, self._limit_gain, y.size, dtype=np.float32)
+        # The ramp starts above the new gain on an attack; cap it so no sample passes
+        # the ceiling on its way down.
+        return np.clip(y * ramp, -TX_LIMIT, TX_LIMIT)
+
     def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
         block = self._mic.read(frames) if self._mic is not None else np.zeros(frames)
+        block = self._shape(block)
         outdata[:, 0] = block
         if outdata.shape[1] > 1:
             outdata[:, 1] = block
