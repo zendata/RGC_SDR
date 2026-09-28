@@ -41,6 +41,9 @@ REPLY_TIMEOUT_S = 0.5
 #: on the radio's front panel, so those are polled.
 METER_POLL_S = 0.25
 SETTINGS_POLL_S = 1.5
+#: The 705 does not squelch its USB audio (VK3RQ, 2026-09-28: noise heard with SQL up),
+#: so the app gates it on the radio's squelch state, asked for this often.
+SQUELCH_POLL_S = 0.1
 
 
 @dataclass(frozen=True)
@@ -155,6 +158,9 @@ class IcomSource(IQSource):
         self.refused: str | None = None
         self._next_meter = 0.0
         self._next_settings = 0.0
+        self._next_squelch = 0.0
+        #: The radio's squelch: True open, False closed, None not yet known.
+        self.squelch_open: bool | None = None
         self._parser = civ.FrameParser()
         self._assembler = civ.ScopeAssembler()
         self._lock = threading.Lock()
@@ -236,6 +242,9 @@ class IcomSource(IQSource):
             if len(payload) > 1:
                 self.filter = payload[1]
             return
+        if cmd == 0x15 and len(payload) == 2 and payload[0] == 0x01:
+            self.squelch_open = bool(payload[1])
+            return
         if cmd == 0x15 and len(payload) == 3:
             value = civ.decode_level(payload[1:3])
             if payload[0] == 0x02:
@@ -266,6 +275,9 @@ class IcomSource(IQSource):
     def poll(self, now: float | None = None) -> None:
         """Ask for the meter, and now and then everything else. Called by the reader."""
         now = time.monotonic() if now is None else now
+        if now >= self._next_squelch and not self.transmitting:
+            self._next_squelch = now + SQUELCH_POLL_S
+            self._send(0x15, b"\x01")            # squelch open?
         if now >= self._next_meter:
             self._next_meter = now + METER_POLL_S
             if self.transmitting:

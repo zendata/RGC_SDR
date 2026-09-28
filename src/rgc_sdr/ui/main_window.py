@@ -429,14 +429,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Recording from the IC-705 comes with its audio, later (PLANNING.md P7).
         for widget in (self._rec_audio_button, self._rec_iq_button):
             widget.setEnabled(sdr)
-        # The radio demodulates, so the app's squelch and listening offset do not apply;
-        # its own squelch is on the Radio row.
+        # The radio demodulates, so the app's listening offset does not apply, and its
+        # squelch is the radio's own (SQL, Radio row) -- hidden here rather than greyed
+        # out, so there is one squelch control, not a dead one beside it.
         self._offset_spin.setEnabled(sdr)
+        self._squelch_check.setVisible(sdr)
+        self._squelch_spin.setVisible(sdr)
         if sdr:
             self._sync_squelch_enabled()
-        else:
-            self._squelch_check.setEnabled(False)
-            self._squelch_spin.setEnabled(False)
         if sdr:
             self._stop_radio_audio()
         else:
@@ -1540,6 +1540,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._bw_audio_combo.blockSignals(True)
             self._bw_audio_combo.setCurrentIndex(max(0, self._bw_audio_combo.findData(src.filter)))
             self._bw_audio_combo.blockSignals(False)
+        if self.radio_audio is not None:
+            # The 705 sends its audio unsquelched; silence it while its squelch is shut.
+            self.radio_audio.squelch_open = getattr(src, "squelch_open", None) is not False
         if getattr(src, "transmitting", False):
             if src.po is not None:
                 text = f"Po {power_percent(src.po):.0f}%"

@@ -631,3 +631,17 @@ def test_quiet_speech_passes_the_limiter_untouched():
     out = CodecOutput(level=0.25)
     quiet = 0.2 * np.sin(2 * np.pi * 300 * np.arange(1024) / 48e3)
     assert np.allclose(out._shape(quiet), quiet * 0.25, atol=1e-6)
+
+
+
+def test_radio_audio_is_silent_while_the_radios_squelch_is_shut():
+    audio = RadioAudio(volume=0.5)
+    out = np.zeros((1024, 1), dtype=np.float32)
+    audio.squelch_open = False
+    audio._captured(np.full((1024, 2), 0.1, dtype=np.float32), 1024, None, None)
+    audio._play(out, 1024, None, None)
+    assert np.all(out == 0.0)
+    audio.squelch_open = True
+    audio._captured(np.full((1024, 2), 0.1, dtype=np.float32), 1024, None, None)
+    audio._play(out, 1024, None, None)
+    assert np.all(out > 0.0)

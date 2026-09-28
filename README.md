@@ -65,7 +65,10 @@ about 4 lines a second -- the 705's limit over USB), the frequency follows its d
 tuning in the app (frequency box, step, click, memories) tunes the radio. Zoom and FFT
 are the radio's to set, so they are hidden.
 
-**Mode** lists the 705's modes and **BW** its filters FIL1-3. The **Radio** row has its
+**Mode** lists the 705's modes and **BW** its filters FIL1-3. Squelch is the radio's own
+**SQL** on the Radio row (the app's Squelch box is hidden for the 705); the 705 does not
+squelch the audio it sends over USB, so the app follows its squelch and silences the
+audio while it is shut. The **Radio** row has its
 AF, RF gain, squelch, preamp, attenuator, AGC, noise blanker, noise reduction and TX
 power, as percentages like the radio's own screen, and they follow the radio's knobs.
 The meter reads the radio's S-meter in S-units. If the radio refuses a setting -- the

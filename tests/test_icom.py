@@ -18,6 +18,7 @@ class StandInRadio:
         self.att = 0x00
         self.smeter = 109
         self.ptt = 0
+        self.squelch = 1                          # open
         self.po, self.swr = 143, 48              # 50 % power, SWR 1.5
         self.parser = civ.FrameParser()
         self.out = bytearray()
@@ -53,6 +54,8 @@ class StandInRadio:
                 self._reply(0x11, bytes([self.att]))
             elif cmd == 0x11:
                 self.att = p[0]; self._reply(civ.OK)
+            elif cmd == 0x15 and p[0] == 0x01:        # squelch status: one byte, as measured
+                self._reply(0x15, bytes([0x01, self.squelch]))
             elif cmd == 0x15:
                 value = {0x02: self.smeter, 0x11: self.po, 0x12: self.swr}[p[0]]
                 self._reply(0x15, bytes([p[0]]) + civ.encode_level(value))
@@ -203,3 +206,29 @@ def test_power_meter_scale(raw, percent):
 @pytest.mark.parametrize("raw,swr", [(0, 1.0), (48, 1.5), (80, 2.0), (120, 3.0), (100, 2.5)])
 def test_swr_meter_scale(raw, swr):
     assert swr_value(raw) == pytest.approx(swr)
+
+
+
+# -- the radio's squelch, which the 705 does not apply to its USB audio ---------------
+
+def test_squelch_state_is_followed():
+    radio, src = radio_and_source()
+    src.poll(now=0.0)
+    settle(src)
+    assert src.squelch_open is True
+    radio.squelch = 0
+    src.poll(now=1.0)
+    settle(src)
+    assert src.squelch_open is False
+
+
+def test_squelch_is_polled_often_but_not_while_transmitting():
+    radio, src = radio_and_source()
+    for i in range(10):
+        src.poll(now=i * 0.1)
+    asked = sum(1 for f in radio.written if f.cmd == 0x15 and f.payload[:1] == b"\x01")
+    assert asked == 10
+    src.set_ptt(True)
+    radio.written.clear()
+    src.poll(now=5.0)
+    assert not any(f.cmd == 0x15 and f.payload[:1] == b"\x01" for f in radio.written)

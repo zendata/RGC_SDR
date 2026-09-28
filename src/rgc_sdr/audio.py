@@ -594,6 +594,9 @@ class RadioAudio:
         self.codec = codec
         self.volume = float(volume)
         self.muted = False
+        #: The radio's squelch, applied here because the 705 does not squelch its USB
+        #: audio. Set by the window from the radio's reported state.
+        self.squelch_open = True
         self._fifo = AudioFifo(int(self.samplerate * 0.5))
         self._streams: list = []
 
@@ -619,7 +622,8 @@ class RadioAudio:
 
     def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
         block = self._fifo.pull(frames)
-        gain = 0.0 if self.muted else self.volume * RADIO_AUDIO_GAIN
+        silent = self.muted or not self.squelch_open
+        gain = 0.0 if silent else self.volume * RADIO_AUDIO_GAIN
         outdata[:, 0] = np.clip(block * gain, -1.0, 1.0)
 
     def start(self) -> None:

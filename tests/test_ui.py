@@ -3296,3 +3296,19 @@ def test_mic_level_control_for_the_705_is_live_and_saved(qapp, tmp_path, monkeyp
     win._tx_button.click()
     assert win.current_radio_settings().tx_audio_level == pytest.approx(0.10)
     win.close()
+
+
+
+def test_the_705s_squelch_gates_its_audio_and_the_apps_squelch_is_hidden(qapp):
+    win = radio_window()
+    assert win._squelch_check.isHidden() and win._squelch_spin.isHidden()
+    src = win.source
+    src.squelch_open = False
+    win._on_frame()
+    assert win.radio_audio.squelch_open is False
+    src.squelch_open = True
+    win._on_frame()
+    assert win.radio_audio.squelch_open is True
+    win.switch_device("airspyhf")
+    assert not win._squelch_check.isHidden()            # back for the SDRs
+    win.close()

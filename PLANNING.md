@@ -835,6 +835,13 @@ The app now sends it at 25% (-12 dB) by default, with a peak limiter (ceiling 0.
 instant ramped attack, gradual release) and a **Mic** % control on the Radio row, live
 while keyed and saved per radio. Next on-air check: the right Mic % by report.
 
+**Squelch** (2026-09-28): with the app's squelch greyed out and the radio's SQL turned up,
+noise was still heard -- the 705 does not squelch its USB audio (its speaker, yes). The
+app now polls the squelch state (`15 01`, one byte, 01 open) every 0.1 s while receiving
+and gates `RadioAudio` on it, so the radio's SQL control works for the Mac audio too, at
+up to ~0.1 s plus the audio buffer later than the radio's speaker. The dead Squelch box
+on the audio row is hidden for a transceiver rather than greyed out.
+
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
   tone lands in the expected bin; full-scale complex tone reads 0.0 dBFS; no mirror image
