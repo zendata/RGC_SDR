@@ -3009,6 +3009,10 @@ class FakeTransceiver:
         self.set_calls.append((key, value))
         self.state[key] = value
 
+    def set_rit(self, hz):
+        self.set_calls.append(("rit_hz", hz))
+        self.status["rit_hz"] = hz
+
     def set_ptt(self, on):
         self.set_calls.append(("ptt", on))
         self.transmitting = on
@@ -3443,9 +3447,9 @@ def test_a_long_press_opens_the_level_behind_a_key(qapp):
     win, src = panel_window(nb=1, nb_level=128)
     win.function_panel.buttons["nb"].long_pressed.emit()
     popup = win.function_panel.popup
-    assert popup is not None and popup.slider.value() == 50
-    popup.slider.setValue(80)
-    assert src.set_calls[-1] == ("nb_level", round(0.8 * 255))
+    assert popup is not None and popup.slider.value() == 128
+    popup.slider.setValue(200)
+    assert src.set_calls[-1] == ("nb_level", 200)
     popup.close()
     win.close()
 
@@ -3456,9 +3460,9 @@ def test_a_key_with_several_levels_shows_them_all(qapp):
     win.function_panel.buttons["vox"].long_pressed.emit()
     popup = win.function_panel.popup
     assert [k for k in popup.sliders] == ["vox_gain", "anti_vox"]
-    assert popup.sliders["vox_gain"].value() == 100
-    popup.sliders["anti_vox"].setValue(40)
-    assert src.set_calls[-1] == ("anti_vox", round(0.4 * 255))
+    assert popup.sliders["vox_gain"].value() == 255
+    popup.sliders["anti_vox"].setValue(100)
+    assert src.set_calls[-1] == ("anti_vox", 100)
     popup.close()
     win.close()
 
@@ -3475,4 +3479,43 @@ def test_function_keys_follow_changes_made_on_the_radio(qapp):
 def test_sdrs_do_not_show_the_radio_panel(qapp):
     win, _ = tx_window(start="airspyhf")
     assert win._radio_panel.isHidden()
+    win.close()
+
+
+
+from src.rgc_sdr.ui.function_panel import level_text  # noqa: E402
+
+
+def test_levels_show_the_radios_own_units():
+    assert level_text(128, (300, 900, " Hz")) == "601 Hz"      # CW pitch, 128 = 600 Hz
+    assert level_text(0, (6, 48, " WPM")) == "6 WPM"
+    assert level_text(255, (2.0, 13.0, "d")) == "13.0d"         # BK-IN delay
+    assert level_text(128, (-100, 100, "")) == "+0"             # PBT centre
+    assert level_text(255, None) == "100%"
+
+
+@pytest.mark.parametrize("mode,keys", [
+    ("usb", ["power", "mic_gain", "comp_level", "moni_level", "pbt1", "pbt2"]),
+    ("cw", ["power", "key_speed", "cw_pitch", "moni_level", "pbt1", "pbt2"]),
+    ("fm", ["power", "mic_gain", "moni_level"])])
+def test_multi_opens_the_modes_menu(qapp, mode, keys):
+    win, src = panel_window(cw_pitch=128)
+    src.mode = mode
+    win.function_panel.multi_button.click()
+    popup = win.function_panel.popup
+    assert list(popup.sliders) == keys
+    popup.close()
+    win.close()
+
+
+def test_rit_offset_follows_the_radio_and_sets_it(qapp):
+    win, src = panel_window(rit=1)
+    spin = win.function_panel.rit_spin
+    assert spin.value() == -1200                                # from the radio
+    spin.setValue(250)
+    assert src.set_calls[-1] == ("rit_hz", 250)
+    src.status["rit_hz"] = -40                                  # turned on the radio
+    win._on_frame()
+    assert spin.value() == -40
+    assert ("rit_hz", -40) not in src.set_calls                 # following is not setting
     win.close()

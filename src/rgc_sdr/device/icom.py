@@ -86,6 +86,8 @@ class RadioControl:
     placement: str = "row"
     #: For a function button: the levels its long press opens (the radio's function menu).
     levels: tuple[str, ...] = ()
+    #: For a level: what 0-255 means on the radio, (at 0, at 255, unit); None shows %.
+    scale: tuple[float, float, str] | None = None
 
 
 #: The IC-705 settings offered in the window. Every command read on the radio first
@@ -135,13 +137,22 @@ IC705_CONTROLS: tuple[RadioControl, ...] = (
     RadioControl("lock", "LOCK", "switch", tooltip="Dial lock", placement="function"),
     # The levels in those menus.
     RadioControl("nb_level", "NB level", "level", placement="popup"),
-    RadioControl("nr_level", "NR level", "level", placement="popup"),
+    RadioControl("nr_level", "NR level", "level", placement="popup", scale=(0, 15, "")),
     RadioControl("notch_pos", "Notch position", "level", placement="popup"),
-    RadioControl("comp_level", "COMP level", "level", placement="popup"),
+    RadioControl("comp_level", "COMP level", "level", placement="popup", scale=(0, 10, "")),
     RadioControl("vox_gain", "VOX gain", "level", placement="popup"),
     RadioControl("anti_vox", "Anti-VOX", "level", placement="popup"),
     RadioControl("moni_level", "MONI level", "level", placement="popup"),
-    RadioControl("bkin_delay", "BK-IN delay", "level", placement="popup"),
+    RadioControl("bkin_delay", "BK-IN delay", "level", placement="popup",
+                 scale=(2.0, 13.0, "d")),
+    # The MULTI knob's menu (Basic Manual p. 2-7), and twin PBT.
+    RadioControl("mic_gain", "MIC gain", "level", placement="popup"),
+    RadioControl("key_speed", "Key speed", "level", placement="popup",
+                 scale=(6, 48, " WPM")),
+    RadioControl("cw_pitch", "CW pitch", "level", placement="popup",
+                 scale=(300, 900, " Hz")),
+    RadioControl("pbt1", "PBT1", "level", placement="popup", scale=(-100, 100, "")),
+    RadioControl("pbt2", "PBT2", "level", placement="popup", scale=(-100, 100, "")),
 )
 
 # key -> (command, sub-command or None, form): "level" is 2-byte BCD, "byte" one byte,
@@ -162,7 +173,27 @@ _CONTROL_CI_V = {
     "notch_pos": (0x14, 0x0D, "level"), "comp_level": (0x14, 0x0E, "level"),
     "vox_gain": (0x14, 0x16, "level"), "anti_vox": (0x14, 0x17, "level"),
     "moni_level": (0x14, 0x15, "level"), "bkin_delay": (0x14, 0x0F, "level"),
+    "mic_gain": (0x14, 0x0B, "level"), "key_speed": (0x14, 0x0C, "level"),
+    "cw_pitch": (0x14, 0x09, "level"),
+    # Twin PBT: 128 is centre. Refused (FA) in FM, WFM and DV, where it does not apply.
+    "pbt1": (0x14, 0x07, "level"), "pbt2": (0x14, 0x08, "level"),
 }
+
+#: What the MULTI knob offers in each mode (Basic Manual p. 2-7), plus twin PBT where it
+#: works (SSB, CW, RTTY, AM -- p. 4-4).
+MULTI_BY_MODE = {
+    "lsb": ("power", "mic_gain", "comp_level", "moni_level", "pbt1", "pbt2"),
+    "usb": ("power", "mic_gain", "comp_level", "moni_level", "pbt1", "pbt2"),
+    "cw": ("power", "key_speed", "cw_pitch", "moni_level", "pbt1", "pbt2"),
+    "cw-r": ("power", "key_speed", "cw_pitch", "moni_level", "pbt1", "pbt2"),
+    "rtty": ("power", "moni_level", "pbt1", "pbt2"),
+    "rtty-r": ("power", "moni_level", "pbt1", "pbt2"),
+    "am": ("power", "mic_gain", "moni_level", "pbt1", "pbt2"),
+    "fm": ("power", "mic_gain", "moni_level"),
+    "wfm": ("power",),
+}
+#: RIT / dTX offset limit, Hz (Basic Manual p. 11-2).
+RIT_LIMIT_HZ = 9999
 #: Keys read through others: DUP comes with SPLIT's 0F, NOTCH from the two notch switches.
 _READ_VIA = {"dup": ("split",), "notch": ("anotch", "mnotch")}
 
@@ -538,6 +569,14 @@ class IcomSource(IQSource):
         else:
             data = bytes([int(value)])
         self._send(cmd, (b"" if sub is None else bytes([sub])) + data, label=key)
+
+    def set_rit(self, hz: int) -> None:
+        """Set the RIT/dTX offset (CI-V 21 00: two BCD bytes, low first, then the sign;
+        checked on the radio: +120 -> 20 01 00, -1234 -> 34 12 01)."""
+        hz = max(-RIT_LIMIT_HZ, min(RIT_LIMIT_HZ, int(round(hz))))
+        self.status["rit_hz"] = hz
+        self._send(0x21, b"\x00" + civ.encode_freq(abs(hz), nbytes=2)
+                   + (b"\x01" if hz < 0 else b"\x00"), label="rit_hz")
 
     def set_ptt(self, on: bool) -> None:
         """Key or unkey the transmitter (CI-V 1C 00)."""

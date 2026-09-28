@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtWidgets
 
+from ..device.icom import MULTI_BY_MODE, RIT_LIMIT_HZ
+
 _OFF = ("QPushButton { color: #c8d1dc; background: #1a2029; border: 1px solid #2c3645;"
         " border-radius: 4px; padding: 4px 6px; }")
 _ON = ("QPushButton { color: #10141a; background: #f0b429; border: 1px solid #f0b429;"
@@ -57,9 +59,20 @@ class FunctionButton(QtWidgets.QPushButton):
         super().mouseReleaseEvent(event)
 
 
+def level_text(raw: int, scale) -> str:
+    """A 0-255 level as the radio shows it: in its own units, or as a percentage."""
+    if scale is None:
+        return f"{round(raw / 255 * 100)}%"
+    low, high, unit = scale
+    value = low + raw / 255 * (high - low)
+    return f"{value:.1f}{unit}" if isinstance(low, float) else f"{round(value):+d}" \
+        if low < 0 else f"{round(value)}{unit}"
+
+
 class LevelPopup(QtWidgets.QFrame):
-    """Sliders for a key's levels, shown under it. `levels` is ((key, title, percent), ...);
-    `on_change(key, percent)` is called when a slider is let go or stepped."""
+    """Sliders for a menu of levels, shown under its key. `levels` is
+    ((key, title, raw 0-255, scale), ...); `on_change(key, raw)` is called when a slider
+    is let go or stepped."""
 
     def __init__(self, levels, on_change, parent=None) -> None:
         super().__init__(parent, QtCore.Qt.WindowType.Popup)
@@ -67,17 +80,18 @@ class LevelPopup(QtWidgets.QFrame):
                            " QLabel { color: #d8dee9; }")
         grid = QtWidgets.QGridLayout(self)
         self.sliders: dict[str, QtWidgets.QSlider] = {}
-        for row, (key, title, percent) in enumerate(levels):
+        for row, (key, title, raw, scale) in enumerate(levels):
             grid.addWidget(QtWidgets.QLabel(title), row, 0)
             slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
-            slider.setRange(0, 100)
-            slider.setValue(percent)
-            slider.setFixedWidth(200)
+            slider.setRange(0, 255)
+            slider.setValue(int(raw))
+            slider.setFixedWidth(220)
             grid.addWidget(slider, row, 1)
-            value = QtWidgets.QLabel(f"{percent}%")
-            value.setMinimumWidth(40)
+            value = QtWidgets.QLabel(level_text(int(raw), scale))
+            value.setMinimumWidth(64)
             grid.addWidget(value, row, 2)
-            slider.valueChanged.connect(lambda v, lab=value: lab.setText(f"{v}%"))
+            slider.valueChanged.connect(
+                lambda v, lab=value, sc=scale: lab.setText(level_text(v, sc)))
             # Sent when let go, not on every step of a drag.
             slider.sliderReleased.connect(
                 lambda k=key, sl=slider: on_change(k, sl.value()))
@@ -102,12 +116,17 @@ class FunctionPanel(QtWidgets.QWidget):
         self.buttons: dict[str, FunctionButton] = {}
         self._controls: dict = {}
         self._source = None
+        self._syncing = False
         self.popup: LevelPopup | None = None
+        self.multi_button: FunctionButton | None = None
+        self.rit_spin: QtWidgets.QSpinBox | None = None
 
     def build(self, source, columns: int = 9) -> None:
-        """Lay out a button per function control of `source`."""
-        for button in self.buttons.values():
-            button.deleteLater()
+        """Lay out a button per function control of `source`, then MULTI and RIT."""
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            if item.widget() is not None:
+                item.widget().deleteLater()
         self.buttons.clear()
         self._source = source
         controls = getattr(source, "controls", ()) or ()
@@ -124,6 +143,36 @@ class FunctionPanel(QtWidgets.QWidget):
                 button.long_pressed.connect(lambda k=control.key: self.open_level(k))
             self._grid.addWidget(button, i // columns, i % columns)
             self.buttons[control.key] = button
+        n = len(functions)
+        # MULTI: the radio's multi-function knob menu for the current mode.
+        multi = FunctionButton("MULTI")
+        multi.setToolTip("The MULTI knob's menu for this mode: RF power, MIC gain, COMP, "
+                         "key speed, CW pitch, monitor, twin PBT")
+        multi.clicked.connect(self.open_multi)
+        multi.long_pressed.connect(self.open_multi)
+        multi.setStyleSheet(_OFF)
+        self._grid.addWidget(multi, n // columns, n % columns)
+        self.multi_button = multi
+        n += 1
+        # RIT / dTX offset, as the MULTI knob sets it when RIT or dTX is on.
+        rit_box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(rit_box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(2)
+        self.rit_spin = QtWidgets.QSpinBox()
+        self.rit_spin.setRange(-RIT_LIMIT_HZ, RIT_LIMIT_HZ)
+        self.rit_spin.setSingleStep(10)
+        self.rit_spin.setSuffix(" Hz")
+        self.rit_spin.setKeyboardTracking(False)
+        self.rit_spin.setToolTip("RIT / \u0394TX offset, \u00b19.999 kHz")
+        self.rit_spin.valueChanged.connect(self._rit_changed)
+        clear = QtWidgets.QPushButton("CLR")
+        clear.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        clear.setToolTip("Clear the RIT / \u0394TX offset")
+        clear.clicked.connect(lambda: self.rit_spin.setValue(0))
+        row.addWidget(self.rit_spin)
+        row.addWidget(clear)
+        self._grid.addWidget(rit_box, n // columns, n % columns, 1, 2)
         self.sync()
 
     def _value(self, key: str):
@@ -142,20 +191,36 @@ class FunctionPanel(QtWidgets.QWidget):
         self._source.set_control(key, new)
         self.sync()
 
+    def _rit_changed(self, hz: int) -> None:
+        if self._syncing:
+            return
+        self._source.set_rit(hz)
+
     def open_level(self, key: str) -> None:
-        levels = [(k, self._controls[k].label, round((self._value(k) or 0) / 255 * 100))
-                  for k in self._controls[key].levels if k in self._controls]
+        self._popup(self._controls[key].levels, self.buttons[key])
+
+    def open_multi(self) -> None:
+        mode = (getattr(self._source, "mode", None) or "").lower()
+        self._popup(MULTI_BY_MODE.get(mode, ("power",)), self.multi_button)
+
+    def _popup(self, keys, button) -> None:
+        levels = [(k, self._controls[k].label, self._value(k) or 0, self._controls[k].scale)
+                  for k in keys if k in self._controls]
         if not levels:
             return
-        popup = LevelPopup(levels, lambda k, pct: self._source.set_control(
-            k, round(pct / 100 * 255)), self)
-        button = self.buttons[key]
+        popup = LevelPopup(levels, lambda k, raw: self._source.set_control(k, int(raw)), self)
         popup.move(button.mapToGlobal(QtCore.QPoint(0, button.height())))
         popup.show()
         self.popup = popup
 
     def sync(self) -> None:
         """Show the radio's current settings on the buttons."""
+        rit = (getattr(self._source, "status", {}) or {}).get("rit_hz")
+        if self.rit_spin is not None and rit is not None and not self.rit_spin.hasFocus() \
+                and self.rit_spin.value() != rit:
+            self._syncing = True
+            self.rit_spin.setValue(int(rit))
+            self._syncing = False
         for key, button in self.buttons.items():
             control = self._controls[key]
             value = self._value(key)

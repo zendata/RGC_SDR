@@ -429,3 +429,14 @@ def test_function_controls_write_the_documented_commands(key, value, cmd, payloa
     src.set_control(key, value)
     written = radio.written[-1]
     assert (written.cmd, written.payload) == (cmd, payload)
+
+
+
+@pytest.mark.parametrize("hz,payload", [(120, b"\x00\x20\x01\x00"),
+                                        (-1234, b"\x00\x34\x12\x01"),
+                                        (20000, b"\x00\x99\x99\x00")])
+def test_rit_offset_is_written_as_the_radio_takes_it(hz, payload):
+    """Formats checked on the radio 2026-09-28; the limit is +-9.999 kHz."""
+    radio, src = radio_and_source()
+    src.set_rit(hz)
+    assert (radio.written[-1].cmd, radio.written[-1].payload) == (0x21, payload)
