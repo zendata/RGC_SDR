@@ -585,3 +585,13 @@ def test_channel_step_wraps():
     src.select_call(0)
     src.step_channel(-1)
     assert src.call_channel == 3
+
+
+@pytest.mark.parametrize("split,dup,expected", [
+    (0, 0x10, 145_650_000), (1, 0x10, 437_225_000),
+    (0, 0x11, 145_050_000), (0, 0x12, 146_250_000)])
+def test_tx_frequency_follows_split_and_duplex(split, dup, expected):
+    radio, src = radio_and_source()
+    src.state.update(split=split, dup=dup)
+    src.status.update(vfo_other_hz=437_225_000, offset_hz=600_000)
+    assert src.tx_freq_hz == expected

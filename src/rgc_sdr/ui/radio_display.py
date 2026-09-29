@@ -21,6 +21,13 @@ _TX = "color: white; background: #d62828; border-radius: 3px; padding: 2px 8px; 
 _RX = "color: #10141a; background: #37b24d; border-radius: 3px; padding: 2px 8px; font-weight: bold;"
 _WARN = "color: white; background: #d62828; border-radius: 3px; padding: 1px 5px;"
 
+#: The frequency readouts: 50 % up on the first version's 26 pt (VK3RQ, 2026-09-29).
+FREQ_POINTS = 39
+
+_MEM_STEP = ("QPushButton { color: #10141a; background: #4fc3f7; border: none;"
+             " border-radius: 4px; padding: 3px 10px; font-weight: bold; }"
+             " QPushButton:disabled { color: #5c6773; background: #1a2029; }")
+
 #: Meters as the radio names them; the first is shown on receive, the rest on transmit.
 METERS = ("S", "Po", "SWR", "ALC", "COMP", "Vd", "Id")
 
@@ -33,6 +40,16 @@ def format_freq(hz: float | None) -> str:
     mhz, rest = divmod(hz, 1_000_000)
     khz, hertz = divmod(rest, 1_000)
     return f"{mhz}.{khz:03d}.{hertz // 10:02d}"
+
+
+def split_tx_hz(src) -> float | None:
+    """The transmit frequency when SPLIT is on -- the other VFO, or a memory channel's
+    transmit side -- and None otherwise."""
+    state = getattr(src, "state", {}) or {}
+    status = getattr(src, "status", {}) or {}
+    if not state.get("split"):
+        return None
+    return status.get("vfo_other_hz")
 
 
 def meter_reading(meter: str, src) -> tuple[float, str] | None:
@@ -128,17 +145,25 @@ class RadioDisplay(QtWidgets.QFrame):
         self.txrx = QtWidgets.QLabel("RX")
         self.txrx.setStyleSheet(_RX)
         top.addWidget(self.txrx)
-        self.freq = QtWidgets.QLabel(format_freq(None))
+        # The operating frequency, then its mode straight after it.
         big = QtGui.QFont(mono)
-        big.setPointSize(26)
+        big.setPointSize(FREQ_POINTS)
         big.setBold(True)
+        self.freq = QtWidgets.QLabel(format_freq(None))
         self.freq.setFont(big)
         self.freq.setStyleSheet("color: #f5f7fa;")
         top.addWidget(self.freq)
-        # Right of the frequency, as on the radio: VFO A/B or MEMO and the channel.
-        # Clicking it opens the VFO/MEMORY screen; the arrows step memory channels.
-        vfo_box = QtWidgets.QHBoxLayout()
-        vfo_box.setSpacing(2)
+        top.addSpacing(4)
+        self.mode = QtWidgets.QLabel("")
+        mode_font = QtGui.QFont(mono)
+        mode_font.setPointSize(19)
+        mode_font.setBold(True)
+        self.mode.setFont(mode_font)
+        self.mode.setStyleSheet("color: #66d9ef;")
+        top.addWidget(self.mode)
+        top.addSpacing(10)
+        # As on the radio: VFO A/B or MEMO and the channel. Clicking it opens the
+        # VFO/MEMORY screen; Mem Up / Mem Down step the memory channels.
         self.vfo_indicator = QtWidgets.QPushButton("VFO/MEMO ?")
         self.vfo_indicator.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.vfo_indicator.setStyleSheet(_INDICATOR)
@@ -146,28 +171,20 @@ class RadioDisplay(QtWidgets.QFrame):
             "VFO/MEMORY: click for the radio's VFO/MEMORY keys.\nThe radio does not report "
             "this over CI-V, so it shows what was last chosen from the Mac.")
         self.vfo_indicator.clicked.connect(self.open_vfo_panel)
-        vfo_box.addWidget(self.vfo_indicator)
-        arrows = QtWidgets.QVBoxLayout()
-        arrows.setSpacing(0)
-        self.channel_up = QtWidgets.QToolButton()
-        self.channel_up.setArrowType(QtCore.Qt.ArrowType.UpArrow)
-        self.channel_down = QtWidgets.QToolButton()
-        self.channel_down.setArrowType(QtCore.Qt.ArrowType.DownArrow)
+        top.addWidget(self.vfo_indicator)
+        top.addSpacing(14)
+        steps = QtWidgets.QVBoxLayout()
+        steps.setSpacing(3)
+        self.channel_up = QtWidgets.QPushButton("Mem Up")
+        self.channel_down = QtWidgets.QPushButton("Mem Down")
         for button, step in ((self.channel_up, 1), (self.channel_down, -1)):
-            button.setFixedSize(18, 14)
             button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
-            button.setToolTip("Next / previous memory channel")
+            button.setStyleSheet(_MEM_STEP)
+            button.setToolTip("Next / previous memory channel (in MEMO or CALL)")
             button.clicked.connect(lambda _c=False, st=step: self._step(st))
-            arrows.addWidget(button)
-        vfo_box.addLayout(arrows)
-        top.addLayout(vfo_box)
-        self.mode = QtWidgets.QLabel("")
-        mode_font = QtGui.QFont(mono)
-        mode_font.setPointSize(15)
-        mode_font.setBold(True)
-        self.mode.setFont(mode_font)
-        self.mode.setStyleSheet("color: #66d9ef;")
-        top.addWidget(self.mode)
+            steps.addWidget(button)
+        top.addLayout(steps)
+        top.addSpacing(14)
         self.filter = QtWidgets.QLabel("")
         self.filter.setStyleSheet(_DIM)
         top.addWidget(self.filter)
@@ -179,12 +196,17 @@ class RadioDisplay(QtWidgets.QFrame):
         self.rit = QtWidgets.QLabel("")
         top.addWidget(self.rit)
         top.addStretch(1)
+        # The other VFO: shown only in SPLIT, where it is the transmit frequency, at the
+        # same size as the main one. While transmitting the two swap, as on the radio.
+        self.other_label = QtWidgets.QLabel("TX")
+        self.other_label.setStyleSheet(_LIT)
+        top.addWidget(self.other_label)
         self.other = QtWidgets.QLabel("")
+        self.other.setFont(big)
+        self.other.setStyleSheet("color: #f0b429;")
+        top.addWidget(self.other)
         small = QtGui.QFont(mono)
         small.setPointSize(12)
-        self.other.setFont(small)
-        self.other.setStyleSheet("color: #8b98a8;")
-        top.addWidget(self.other)
         outer.addLayout(top)
 
         # Line 2: the function indicators, lit when on.
@@ -263,16 +285,27 @@ class RadioDisplay(QtWidgets.QFrame):
 
         self.txrx.setText("TX" if transmitting else "RX")
         self.txrx.setStyleSheet(_TX if transmitting else _RX)
-        self.freq.setText(format_freq(status.get("vfo_sel_hz") or getattr(src, "center_freq", None)))
+        rx_hz = status.get("vfo_sel_hz") or getattr(src, "center_freq", None)
+        tx_hz = split_tx_hz(src)
+        if tx_hz is not None and transmitting:
+            # Transmitting split: the radio shows the TX frequency as the main readout.
+            self.freq.setText(format_freq(tx_hz))
+            self.other_label.setText("RX")
+            self.other.setText(format_freq(rx_hz))
+        else:
+            self.freq.setText(format_freq(rx_hz))
+            self.other_label.setText("TX")
+            self.other.setText(format_freq(tx_hz) if tx_hz is not None else "")
+        self.other.setVisible(tx_hz is not None)
+        self.other_label.setVisible(tx_hz is not None)
         mode = (getattr(src, "mode", None) or status.get("vfo_sel_mode") or "").upper()
+        if tx_hz is not None and transmitting and status.get("vfo_other_mode"):
+            mode = str(status["vfo_other_mode"]).upper()     # the TX side's own mode
         if status.get("vfo_sel_data"):
             mode += "-D"
         self.mode.setText(mode)
         flt = getattr(src, "filter", None) or status.get("vfo_sel_filter")
         self.filter.setText(f"FIL{flt}" if flt else "")
-        other = status.get("vfo_other_hz")
-        other_mode = (status.get("vfo_other_mode") or "").upper()
-        self.other.setText(f"⇄ {format_freq(other)}  {other_mode}" if other else "")
 
         dup = state.get("dup")
         offset = status.get("offset_hz")

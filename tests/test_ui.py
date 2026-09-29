@@ -3403,7 +3403,7 @@ def test_radio_display_shows_the_705s_screen_information(qapp):
     d = win.radio_display
     assert not win._radio_panel.isHidden()
     assert d.freq.text() == "146.900.00" and d.mode.text() == "FM" and d.filter.text() == "FIL1"
-    assert "437.225.00" in d.other.text()
+    assert d.other.isHidden()                                # not split: hidden
     assert d.duplex.text() == "DUP\u2212 600 kHz"
     assert d.tone.text() == "TSQL 91.5"
     assert d.rit.text() == "RIT -1.20"
@@ -3770,4 +3770,34 @@ def test_display_shows_the_indicator_and_opens_the_screen(qapp):
     d = win.radio_display
     assert d.vfo_indicator.text() == "VFO/MEMO ?"
     assert not d.channel_up.isEnabled()
+    win.close()
+
+
+def test_other_vfo_shows_only_in_split_and_swaps_on_transmit(qapp):
+    win, src = panel_window(split=0)
+    d = win.radio_display
+    src.status["vfo_other_hz"] = 14_180_000
+    win._on_frame()
+    assert d.other.isHidden() and d.freq.text() == "146.900.00"       # memory/simplex
+    src.state["split"] = 1
+    win._on_frame()
+    assert not d.other.isHidden() and d.other.text() == "14.180.00"
+    assert d.other_label.text() == "TX" and d.other.font().pointSize() == d.freq.font().pointSize()
+    src.transmitting = True
+    win._on_frame()
+    src.status["vfo_other_mode"] = "usb"
+    win._on_frame()
+    assert d.freq.text() == "14.180.00" and d.other.text() == "146.900.00"
+    assert d.mode.text() == "USB"                                      # the TX side's mode
+    assert d.other_label.text() == "RX"
+    win.close()
+
+
+def test_mode_sits_straight_after_the_frequency(qapp):
+    win, src = panel_window()
+    d = win.radio_display
+    row = d.freq.parentWidget().layout().itemAt(0).layout()
+    widgets = [row.itemAt(i).widget() for i in range(row.count())]
+    assert widgets.index(d.mode) <= widgets.index(d.freq) + 2         # spacing between
+    assert d.channel_up.text() == "Mem Up" and d.channel_down.text() == "Mem Down"
     win.close()

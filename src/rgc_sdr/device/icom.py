@@ -653,6 +653,21 @@ class IcomSource(IQSource):
 
         self._send(0x1A, b"\x00" + address(group, channel) + b"\xff", label="memory clear")
 
+    @property
+    def tx_freq_hz(self) -> float:
+        """Where the radio transmits: the other VFO in SPLIT (or a memory channel's
+        transmit side, which 25 01 also reads), the offset away in DUP-/DUP+, else the
+        operating frequency. The radio does the switching itself; this is for display."""
+        if self.state.get("split") and self.status.get("vfo_other_hz"):
+            return float(self.status["vfo_other_hz"])
+        offset = float(self.status.get("offset_hz") or 0)
+        dup = self.state.get("dup")
+        if dup == 0x11:
+            return self.center_freq - offset
+        if dup == 0x12:
+            return self.center_freq + offset
+        return self.center_freq
+
     # -- VFO / memory keys (the radio's VFO/MEMORY screen) ----------------------------------
 
     def select_vfo(self, which: str | None = None) -> None:

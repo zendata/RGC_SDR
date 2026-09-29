@@ -155,7 +155,8 @@ class RadioTransmitter:
 
     @property
     def tx_freq(self) -> float:
-        return self.radio.center_freq
+        """Where the radio is transmitting: split and duplex are the radio's own doing."""
+        return getattr(self.radio, "tx_freq_hz", self.radio.center_freq)
 
     @property
     def active(self) -> bool:
