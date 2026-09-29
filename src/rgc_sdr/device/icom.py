@@ -51,24 +51,29 @@ SETTINGS_POLL_S = 1.5
 #: USB AF Output Level goes to 100% (measured +11.6 dB over the default 50%, so the app
 #: needs almost no gain of its own) and USB AF SQL on: the radio then mutes its USB audio
 #: itself when the squelch closes (measured -34 -> -87 dBFS), instantly.
+#: DATA MOD is the TX audio source in the data modes (USB-D, FM-D ...); VK3RQ's was MIC,
+#: so there the radio's microphone would have gone out instead of the Mac's.
 DATA_OFF_MOD = (0x01, 0x18)          # 00 MIC, 01 USB, 02 MIC+USB, 03 WLAN
 #: `1A 05` menu items the app takes over: name -> item number.
 MENU_ITEMS = {
     "data_off_mod": DATA_OFF_MOD,
+    "data_mod": (0x01, 0x19),        # 00 MIC, 01 USB, 02 MIC+USB, 03 WLAN
     "usb_af_level": (0x01, 0x10),    # 0000-0255 = 0-100 %
     "usb_af_sql": (0x01, 0x11),      # 00 off (always open), 01 follows the squelch
 }
-TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01",
+TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01", "data_mod": b"\x01",
             "usb_af_level": b"\x02\x55", "usb_af_sql": b"\x01"}
 
 #: SET-menu items the app has taken over: item number -> TAKEOVER name. The menu window
 #: shows the radio's own value for these, not the app's.
-MENU_TAKEN = {110: "usb_af_level", 111: "usb_af_sql", 118: "data_off_mod"}
+MENU_TAKEN = {110: "usb_af_level", 111: "usb_af_sql", 118: "data_off_mod",
+              119: "data_mod"}
 #: SET-menu items the menu window will not change, and why.
 MENU_LOCKED = {
     110: "Set by the app while it has the radio (put back when it lets go)",
     111: "Set by the app while it has the radio (put back when it lets go)",
     118: "Set by the app while it has the radio (put back when it lets go)",
+    119: "Set by the app while it has the radio (put back when it lets go)",
     131: "The app needs CI-V Transceive on to follow the radio's dial",
     132: "Echo Back on would confuse the app's reading of the radio's replies",
 }
@@ -735,10 +740,13 @@ class IcomSource(IQSource):
     # -- taking over the speaker and the TX audio source --------------------------------
 
     def _read_takeover(self, name: str) -> bytes | None:
+        # Matched on the exact reply: while the poller runs, other 14 xx and FA answers
+        # arrive too, and taking one of those for AF would restore the wrong level.
         if name == "af":
-            frame = self._ask(0x14, b"\x01")
+            frame = self._ask(0x14, b"\x01", prefix=b"\x01")
             return frame.payload[1:3] if frame is not None and len(frame.payload) == 3 else None
-        frame = self._ask(0x1A, bytes([0x05, *MENU_ITEMS[name]]))
+        head = bytes([0x05, *MENU_ITEMS[name]])
+        frame = self._ask(0x1A, head, prefix=head)
         return frame.payload[3:] if frame is not None and len(frame.payload) > 3 else None
 
     def _write_takeover(self, name: str, value: bytes) -> None:
