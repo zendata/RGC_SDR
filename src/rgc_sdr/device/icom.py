@@ -327,6 +327,17 @@ class IcomSource(IQSource):
         self._pending: list[tuple[int, str | None, bool]] = []
         #: The radio's display state: VFOs, RIT, offset, tones, meters. See _STATUS_READS.
         self.status: dict[str, object] = {}
+        #: VFO / memory state, as the app last set it: the radio does not report it over
+        #: CI-V (07 and 08 only set; checked 2026-09-29), so None until chosen from here.
+        #: "A", "B", "MEMO" or "CALL".
+        self.vfo_mode: str | None = None
+        self.last_vfo = "A"
+        self.memo_group = 0
+        self.memo_channel = 0
+        self.call_channel = 0
+        #: The selected memory channel as read back (an ic705_memory.MemoryChannel), or
+        #: "blank"; None while unknown.
+        self.memo_contents = None
         self.refused: str | None = None
         self._next_meter = 0.0
         self._next_settings = 0.0
@@ -641,6 +652,97 @@ class IcomSource(IQSource):
         from .ic705_memory import address
 
         self._send(0x1A, b"\x00" + address(group, channel) + b"\xff", label="memory clear")
+
+    # -- VFO / memory keys (the radio's VFO/MEMORY screen) ----------------------------------
+
+    def select_vfo(self, which: str | None = None) -> None:
+        """VFO mode (07), on VFO `which` ("A"/"B") or the last one used."""
+        which = which or self.last_vfo
+        self._send(0x07, b"", label="vfo")
+        self._send(0x07, b"\x00" if which == "A" else b"\x01", label="vfo")
+        self.vfo_mode = self.last_vfo = which
+
+    def swap_vfo(self) -> None:
+        """A/B: the other VFO."""
+        self.select_vfo("B" if self.last_vfo == "A" else "A")
+
+    def equalize_vfo(self) -> None:
+        """A=B: copy the displayed VFO to the other (07 A0; the A/B key held)."""
+        self._send(0x07, b"\xa0", label="vfo")
+
+    def select_memory(self, group: int | None = None, channel: int | None = None) -> None:
+        """Memory mode (08), optionally on a group (08 A0) and channel (08 xxxx). Entering
+        memory mode comes first: selecting a group or channel alone does not switch."""
+        from .ic705_memory import CALL_GROUP
+
+        if group is not None and group != CALL_GROUP:
+            self.memo_group = group
+        if channel is not None:
+            self.memo_channel = channel
+        self._send(0x08, b"", label="memory")
+        self._send(0x08, b"\xa0" + bytes.fromhex(f"{self.memo_group:04d}"), label="memory")
+        self._send(0x08, bytes.fromhex(f"{self.memo_channel:04d}"), label="memory")
+        self.vfo_mode = "MEMO"
+        self._fetch_memo(self.memo_group, self.memo_channel)
+
+    def select_call(self, channel: int | None = None) -> None:
+        """Call channel mode: the call-channel group (0100) in memory mode."""
+        from .ic705_memory import CALL_GROUP
+
+        if channel is not None:
+            self.call_channel = channel
+        self._send(0x08, b"", label="memory")
+        self._send(0x08, b"\xa0\x01\x00", label="memory")
+        self._send(0x08, bytes.fromhex(f"{self.call_channel:04d}"), label="memory")
+        self.vfo_mode = "CALL"
+        self._fetch_memo(CALL_GROUP, self.call_channel)
+
+    def step_channel(self, step: int) -> None:
+        """Next or previous memory (or call) channel, as the dial does in memory mode."""
+        if self.vfo_mode == "CALL":
+            self.select_call((self.call_channel + step) % 4)
+        elif self.vfo_mode == "MEMO":
+            self.select_memory(channel=(self.memo_channel + step) % 100)
+
+    def memory_write(self) -> None:
+        """MW: the VFO into the selected memory channel (09)."""
+        self._send(0x09, b"", label="memory write")
+        self._fetch_memo(self.memo_group, self.memo_channel)
+
+    def memory_clear(self) -> None:
+        """M-CLR: clear the selected memory channel (0B)."""
+        self._send(0x0B, b"", label="memory clear")
+        self._fetch_memo(self.memo_group, self.memo_channel)
+
+    def memory_to_vfo(self) -> None:
+        """M->VFO: copy the memory channel to the VFO and go to VFO mode (0A)."""
+        self._send(0x0A, b"", label="memory to vfo")
+        self.vfo_mode = self.last_vfo
+
+    def set_select(self, number: int) -> None:
+        """SELECT: mark the memory channel as select channel 1-3, or 0 to clear (0E B1 / B0)."""
+        if number:
+            self._send(0x0E, b"\xb1" + bytes([number]), label="select")
+        else:
+            self._send(0x0E, b"\xb0", label="select")
+        if hasattr(self.memo_contents, "select"):
+            self.memo_contents.select = number
+
+    def _fetch_memo(self, group: int, channel: int) -> None:
+        """Read the selected channel's contents in the background, for its name."""
+        self.memo_contents = None
+
+        def fetch() -> None:
+            self._confirmed(1.0)
+            result = self.read_memory(group, channel)
+            if (group, channel) in ((self.memo_group, self.memo_channel),
+                                    (100, self.call_channel)):
+                self.memo_contents = result
+
+        if self._thread is None:
+            fetch()                     # no poller running: nothing else reads the port
+        else:
+            threading.Thread(target=fetch, name="memo-read", daemon=True).start()
 
     def set_rit(self, hz: int) -> None:
         """Set the RIT/dTX offset (CI-V 21 00: two BCD bytes, low first, then the sign;

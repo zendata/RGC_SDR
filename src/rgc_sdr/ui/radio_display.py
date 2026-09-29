@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from PyQt6 import QtCore, QtGui, QtWidgets
 
+from .vfo_memory_panel import _INDICATOR, VfoMemoryPanel, indicator_text
 from ..device.icom import comp_db, drain_amps, power_percent, s_meter_text, supply_volts, swr_value
 
 _LIT = "color: #10141a; background: #f0b429; border-radius: 3px; padding: 1px 5px;"
@@ -116,6 +117,8 @@ class RadioDisplay(QtWidgets.QFrame):
         mono = QtGui.QFont("Menlo")
         mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
 
+        self._src = None
+        self.vfo_panel: VfoMemoryPanel | None = None
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(10, 6, 10, 6)
         outer.setSpacing(4)
@@ -125,8 +128,6 @@ class RadioDisplay(QtWidgets.QFrame):
         self.txrx = QtWidgets.QLabel("RX")
         self.txrx.setStyleSheet(_RX)
         top.addWidget(self.txrx)
-        self.vfo_name = QtWidgets.QLabel("VFO")
-        top.addWidget(self.vfo_name)
         self.freq = QtWidgets.QLabel(format_freq(None))
         big = QtGui.QFont(mono)
         big.setPointSize(26)
@@ -134,6 +135,32 @@ class RadioDisplay(QtWidgets.QFrame):
         self.freq.setFont(big)
         self.freq.setStyleSheet("color: #f5f7fa;")
         top.addWidget(self.freq)
+        # Right of the frequency, as on the radio: VFO A/B or MEMO and the channel.
+        # Clicking it opens the VFO/MEMORY screen; the arrows step memory channels.
+        vfo_box = QtWidgets.QHBoxLayout()
+        vfo_box.setSpacing(2)
+        self.vfo_indicator = QtWidgets.QPushButton("VFO/MEMO ?")
+        self.vfo_indicator.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self.vfo_indicator.setStyleSheet(_INDICATOR)
+        self.vfo_indicator.setToolTip(
+            "VFO/MEMORY: click for the radio's VFO/MEMORY keys.\nThe radio does not report "
+            "this over CI-V, so it shows what was last chosen from the Mac.")
+        self.vfo_indicator.clicked.connect(self.open_vfo_panel)
+        vfo_box.addWidget(self.vfo_indicator)
+        arrows = QtWidgets.QVBoxLayout()
+        arrows.setSpacing(0)
+        self.channel_up = QtWidgets.QToolButton()
+        self.channel_up.setArrowType(QtCore.Qt.ArrowType.UpArrow)
+        self.channel_down = QtWidgets.QToolButton()
+        self.channel_down.setArrowType(QtCore.Qt.ArrowType.DownArrow)
+        for button, step in ((self.channel_up, 1), (self.channel_down, -1)):
+            button.setFixedSize(18, 14)
+            button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+            button.setToolTip("Next / previous memory channel")
+            button.clicked.connect(lambda _c=False, st=step: self._step(st))
+            arrows.addWidget(button)
+        vfo_box.addLayout(arrows)
+        top.addLayout(vfo_box)
         self.mode = QtWidgets.QLabel("")
         mode_font = QtGui.QFont(mono)
         mode_font.setPointSize(15)
@@ -186,7 +213,7 @@ class RadioDisplay(QtWidgets.QFrame):
         for name in METERS:
             button = QtWidgets.QPushButton(name)
             button.setCheckable(True)
-            button.setFixedWidth(52)
+            button.setMinimumWidth(64)
             button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
             group.addButton(button)
             meter_row.addWidget(button)
@@ -207,7 +234,29 @@ class RadioDisplay(QtWidgets.QFrame):
                 return name
         return "S"
 
+    def open_vfo_panel(self) -> None:
+        if self._src is None or not hasattr(self._src, "select_vfo"):
+            return
+        self.vfo_panel = VfoMemoryPanel(self._src, self)
+        self.vfo_panel.move(self.vfo_indicator.mapToGlobal(
+            QtCore.QPoint(0, self.vfo_indicator.height())))
+        self.vfo_panel.show()
+
+    def _step(self, step: int) -> None:
+        if self._src is not None and hasattr(self._src, "step_channel"):
+            self._src.step_channel(step)
+
     def update_from(self, src) -> None:
+        self._src = src
+        top, second = indicator_text(src)
+        text = f"{top}\n{second}" if second else top
+        if self.vfo_indicator.text() != text:
+            self.vfo_indicator.setText(text)
+        in_memory = getattr(src, "vfo_mode", None) in ("MEMO", "CALL")
+        self.channel_up.setEnabled(in_memory)
+        self.channel_down.setEnabled(in_memory)
+        if self.vfo_panel is not None and self.vfo_panel.isVisible():
+            self.vfo_panel.sync()
         state = getattr(src, "state", {}) or {}
         status = getattr(src, "status", {}) or {}
         transmitting = bool(getattr(src, "transmitting", False))

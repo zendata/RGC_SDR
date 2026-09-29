@@ -3692,3 +3692,82 @@ def test_the_memory_key_tunes_the_app(qapp):
     win.tune_radio_memory(145_650_000.0, "fm")
     assert win._mode_combo.currentData() == "fm"
     win.close()
+
+
+
+# -- the VFO/MEMORY indicator and screen ---------------------------------------------------
+
+from src.rgc_sdr.ui.vfo_memory_panel import VfoMemoryPanel, indicator_text  # noqa: E402
+
+
+class VfoRadio:
+    def __init__(self):
+        self.calls = []
+        self.vfo_mode, self.memo_group, self.memo_channel, self.call_channel = None, 0, 7, 0
+        self.memo_contents = MemoryChannel.simplex(0, 7, MemorySide(freq_hz=7_090_000,
+                                                                    mode="lsb"), "40m QRP")
+
+    def __getattr__(self, name):
+        if name in ("select_vfo", "select_memory", "select_call", "swap_vfo",
+                    "equalize_vfo", "memory_write", "memory_clear", "memory_to_vfo",
+                    "set_select", "step_channel"):
+            return lambda *a, **k: self.calls.append((name, a, k))
+        raise AttributeError(name)
+
+
+def test_indicator_reads_like_the_radio():
+    r = VfoRadio()
+    assert indicator_text(r) == ("VFO/MEMO ?", "")
+    r.vfo_mode = "B"
+    assert indicator_text(r) == ("VFO B", "")
+    r.vfo_mode = "MEMO"
+    assert indicator_text(r) == ("MEMO", "00-07 40m QRP")
+    r.vfo_mode, r.memo_contents = "CALL", "blank"
+    assert indicator_text(r) == ("CALL", "144 C1 (blank)")
+
+
+def test_vfo_memory_screen_has_the_radios_keys(qapp):
+    panel = VfoMemoryPanel(VfoRadio())
+    grid = panel.layout()
+    rows = [[grid.itemAtPosition(r, c).widget().text() for c in range(5)] for r in (1, 2)]
+    assert rows == [["VFO", "MEMO", "CALL", "GROUP", "A/B"],
+                    ["MW", "M-CLR", "SELECT", "M\u2192VFO", "\u21a9"]]
+    panel.close()
+
+
+def test_mw_needs_a_hold_like_the_radio(qapp):
+    radio = VfoRadio()
+    radio.vfo_mode = "MEMO"
+    panel = VfoMemoryPanel(radio)
+    panel.keys["MW"].click()
+    assert radio.calls == [] and "Hold" in panel.note.text()
+    panel.keys["MW"].long_pressed.emit()
+    assert radio.calls[-1][0] == "memory_write"
+    panel = VfoMemoryPanel(radio)
+    panel.keys["M-CLR"].long_pressed.emit()
+    assert radio.calls[-1][0] == "memory_clear"
+    panel.close()
+
+
+def test_vfo_memory_keys_act_and_light(qapp):
+    radio = VfoRadio()
+    radio.vfo_mode = "A"
+    panel = VfoMemoryPanel(radio)
+    assert "4fc3f7" in panel.keys["VFO"].styleSheet()
+    assert not panel.keys["M-CLR"].isEnabled() and panel.keys["A/B"].isEnabled()
+    panel.keys["MEMO"].click()
+    panel.keys["A/B"].long_pressed.emit()
+    panel.keys["SELECT"].setEnabled(True)
+    panel.keys["SELECT"].click()
+    assert [c[0] for c in radio.calls] == ["select_memory", "equalize_vfo", "set_select"]
+    assert radio.calls[-1][1] == (1,)                        # none -> \u26051
+    panel.keys["\u21a9"].click()
+    assert not panel.isVisible()
+
+
+def test_display_shows_the_indicator_and_opens_the_screen(qapp):
+    win, src = panel_window()
+    d = win.radio_display
+    assert d.vfo_indicator.text() == "VFO/MEMO ?"
+    assert not d.channel_up.isEnabled()
+    win.close()

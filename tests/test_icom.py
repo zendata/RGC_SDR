@@ -31,6 +31,8 @@ class StandInRadio:
         self.split = 0x01
         self.rit = {0x01: 0, 0x02: 0}
         self.rit_hz = -1200
+        #: Memory channels by address (group + channel BCD): the 111 bytes the radio sends.
+        self.memories: dict[bytes, bytes] = {}
         self.parser = civ.FrameParser()
         self.out = bytearray()
         self.written = []
@@ -106,6 +108,10 @@ class StandInRadio:
         elif cmd == 0x1B:
             self._reply(0x1B, bytes([p[0]]) + (bytes.fromhex("000023") if p[0] == 2
                                                else bytes.fromhex("000885")))
+        elif cmd in (0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0E):
+            self._reply(civ.OK)                       # VFO/memory keys: set-only
+        elif cmd == 0x1A and p[0] == 0x00 and len(p) == 5:
+            self._reply(0x1A, p + self.memories.get(bytes(p[1:5]), b"\xff"))
         elif cmd == 0x1A and p[0] == 0x05 and len(p) > 3 and (p[1], p[2]) != (0x01, 0x18):
             self.menu[(p[1], p[2])] = bytes(p[3:]); self._reply(civ.OK)
         elif cmd == 0x1A and p[0] == 0x05 and (p[1], p[2]) in self.menu:
@@ -511,3 +517,71 @@ def test_hand_back_is_confirmed_and_retried(tmp_path):
     src._hand_back()
     assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0128")
     assert radio.menu[(0x01, 0x11)] == b"\x00"
+
+
+
+# -- the VFO/MEMORY keys -----------------------------------------------------------------
+
+from tests.test_ic705_memory import CH_00_00  # noqa: E402
+
+
+def sent(radio, since=0):
+    """What was sent, leaving out the frequency read the source makes when it opens."""
+    return [(f.cmd, bytes(f.payload)) for f in radio.written[since:] if f.cmd != 0x03]
+
+
+def test_memo_enters_memory_mode_before_group_and_channel():
+    """Selecting a group or channel alone leaves the radio in VFO mode (found on the
+    radio 2026-09-29), so 08 comes first."""
+    radio, src = radio_and_source()
+    radio.memories[bytes.fromhex("00020005")] = CH_00_00
+    src.select_memory(group=2, channel=5)
+    settle(src)
+    assert sent(radio)[:3] == [(0x08, b""), (0x08, b"\xa0\x00\x02"), (0x08, b"\x00\x05")]
+    assert src.vfo_mode == "MEMO" and src.memo_contents.name == "RN"
+
+
+def test_call_uses_the_call_group():
+    radio, src = radio_and_source()
+    src.select_call(1)
+    settle(src)
+    assert sent(radio)[:3] == [(0x08, b""), (0x08, b"\xa0\x01\x00"), (0x08, b"\x00\x01")]
+    assert src.vfo_mode == "CALL" and src.memo_contents == "blank"
+
+
+def test_vfo_keys():
+    radio, src = radio_and_source()
+    src.select_vfo("B")
+    assert sent(radio) == [(0x07, b""), (0x07, b"\x01")] and src.vfo_mode == "B"
+    n = len(radio.written)
+    src.swap_vfo()
+    assert sent(radio, n)[-1] == (0x07, b"\x00") and src.vfo_mode == "A"
+    src.equalize_vfo()
+    assert sent(radio)[-1] == (0x07, b"\xa0")
+
+
+@pytest.mark.parametrize("action,expected", [
+    ("memory_write", (0x09, b"")), ("memory_clear", (0x0B, b"")),
+    ("memory_to_vfo", (0x0A, b""))])
+def test_memory_keys_send_their_commands(action, expected):
+    radio, src = radio_and_source()
+    getattr(src, action)()
+    assert expected in sent(radio)
+
+
+def test_select_marks_or_clears_the_channel():
+    radio, src = radio_and_source()
+    src.set_select(2)
+    assert sent(radio)[-1] == (0x0E, b"\xb1\x02")
+    src.set_select(0)
+    assert sent(radio)[-1] == (0x0E, b"\xb0")
+
+
+def test_channel_step_wraps():
+    radio, src = radio_and_source()
+    src.select_memory(group=0, channel=99)
+    src.step_channel(1)
+    assert src.memo_channel == 0
+    src.select_call(0)
+    src.step_channel(-1)
+    assert src.call_channel == 3
