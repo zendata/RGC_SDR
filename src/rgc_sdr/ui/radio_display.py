@@ -24,11 +24,11 @@ _WARN = "color: white; background: #d62828; border-radius: 3px; padding: 1px 5px
 #: The frequency readouts: 50 % up on the first version's 26 pt (VK3RQ, 2026-09-29).
 FREQ_POINTS = 39
 #: The split TX readout on the right: a little smaller than the main one.
-OTHER_FREQ_POINTS = 30
+OTHER_FREQ_POINTS = 28
 #: The mode beside the frequency.
-MODE_POINTS = 26
+MODE_POINTS = 24
 #: The VFO/MEMO indicator's fixed width; longer memory names are cut with an ellipsis.
-INDICATOR_WIDTH = 200
+INDICATOR_WIDTH = 165
 
 _MEM_STEP = ("QPushButton { color: #10141a; background: #4fc3f7; border: none;"
              " border-radius: 4px; padding: 3px 10px; font-weight: bold; }"
@@ -169,12 +169,12 @@ class RadioDisplay(QtWidgets.QFrame):
         self.mode.setFont(mode_font)
         self.mode.setStyleSheet("color: #66d9ef;")
         # Wide enough for the longest mode, so nothing after it moves.
-        self.mode.setFixedWidth(QtGui.QFontMetrics(mode_font).horizontalAdvance("RTTY-R") + 6)
+        self.mode.setFixedWidth(QtGui.QFontMetrics(mode_font).horizontalAdvance("RTTY-R") + 2)
         top.addWidget(self.mode)
-        top.addSpacing(10)
+        top.addSpacing(6)
         # As on the radio: VFO A/B or MEMO and the channel. Clicking it opens the
         # VFO/MEMORY screen; Mem Up / Mem Down step the memory channels.
-        self.vfo_indicator = QtWidgets.QPushButton("VFO/MEMO ?")
+        self.vfo_indicator = QtWidgets.QPushButton("VFO/MEMO")
         self.vfo_indicator.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self.vfo_indicator.setStyleSheet(_INDICATOR)
         self.vfo_indicator.setToolTip(
@@ -183,7 +183,7 @@ class RadioDisplay(QtWidgets.QFrame):
         self.vfo_indicator.clicked.connect(self.open_vfo_panel)
         self.vfo_indicator.setFixedWidth(INDICATOR_WIDTH)   # names are elided, not stretched
         top.addWidget(self.vfo_indicator)
-        top.addSpacing(14)
+        top.addSpacing(8)
         steps = QtWidgets.QVBoxLayout()
         steps.setSpacing(3)
         self.channel_up = QtWidgets.QPushButton("Mem Up")
@@ -195,11 +195,11 @@ class RadioDisplay(QtWidgets.QFrame):
             button.clicked.connect(lambda _c=False, st=step: self._step(st))
             steps.addWidget(button)
         top.addLayout(steps)
-        top.addSpacing(14)
+        top.addSpacing(8)
         self.filter = QtWidgets.QLabel("")
         self.filter.setStyleSheet(_DIM)
         top.addWidget(self.filter)
-        top.addSpacing(18)
+        top.addSpacing(8)
         self.duplex = QtWidgets.QLabel("")
         top.addWidget(self.duplex)
         self.tone = QtWidgets.QLabel("")

@@ -3717,7 +3717,7 @@ class VfoRadio:
 
 def test_indicator_reads_like_the_radio():
     r = VfoRadio()
-    assert indicator_text(r) == ("VFO/MEMO ?", "")
+    assert indicator_text(r) == ("VFO/MEMO", "")
     r.vfo_mode = "B"
     assert indicator_text(r) == ("VFO B", "")
     r.vfo_mode = "MEMO"
@@ -3768,7 +3768,7 @@ def test_vfo_memory_keys_act_and_light(qapp):
 def test_display_shows_the_indicator_and_opens_the_screen(qapp):
     win, src = panel_window()
     d = win.radio_display
-    assert d.vfo_indicator.text() == "VFO/MEMO ?"
+    assert d.vfo_indicator.text() == "VFO/MEMO"
     assert not d.channel_up.isEnabled()
     win.close()
 

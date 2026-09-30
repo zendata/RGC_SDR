@@ -10,7 +10,7 @@ Laid out and behaving the same way here. As on the radio, MW, M-CLR and M->VFO a
 one-second hold (a right-click does too), and A/B held copies A to B.
 
 The radio does not report its VFO/memory state over CI-V, so the indicator shows what
-was last chosen from the Mac, and "VFO/MEMO ?" until then.
+was last chosen from the Mac, and "VFO/MEMO" until then.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ def indicator_text(src) -> tuple[str, str]:
         label = MemoryChannel(getattr(src, "memo_group", 0),
                               getattr(src, "memo_channel", 0)).label
     else:
-        return "VFO/MEMO ?", ""
+        return "VFO/MEMO", ""
     name = memo.name if isinstance(memo, MemoryChannel) else \
         "(blank)" if memo == "blank" else ""
     return ("CALL" if mode == "CALL" else "MEMO"), f"{label} {name}".strip()

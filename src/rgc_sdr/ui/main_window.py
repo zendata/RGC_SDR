@@ -439,7 +439,12 @@ class MainWindow(QtWidgets.QMainWindow):
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
         # The radio has its own S meter on the display panel; the SDR one is not needed.
+        # Nor are the listening offset and recording: both work on the app's own IQ and
+        # demodulated audio, which a transceiver does not give it.
         self.smeter.setVisible(sdr)
+        for widget in (self._offset_label, self._offset_spin, self._rec_title,
+                       self._rec_audio_button, self._rec_iq_button, self._rec_label):
+            widget.setVisible(sdr)
         if hasattr(self, "_controls_layout"):
             self._compact_rows(not sdr)
         if hasattr(self, "_radio_panel"):
@@ -1206,7 +1211,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._tx_button.toggled.connect(self._on_tx_toggled)
         row.addWidget(self._tx_button)
 
-        row.addWidget(QtWidgets.QLabel("Offset"))
+        self._offset_label = QtWidgets.QLabel("Offset")
+        row.addWidget(self._offset_label)
         self._offset_spin = QtWidgets.QDoubleSpinBox()
         self._offset_spin.setDecimals(2)
         self._offset_spin.setSuffix(" kHz")
@@ -1368,7 +1374,8 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._delete_button)
 
         row.addSpacing(20)
-        row.addWidget(QtWidgets.QLabel("Record"))
+        self._rec_title = QtWidgets.QLabel("Record")
+        row.addWidget(self._rec_title)
         self._rec_audio_button = QtWidgets.QPushButton("Audio")
         self._rec_audio_button.setCheckable(True)
         self._rec_audio_button.setToolTip("Record demodulated audio to a WAV file")
