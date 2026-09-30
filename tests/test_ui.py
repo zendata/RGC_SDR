@@ -3381,7 +3381,7 @@ from src.rgc_sdr.ui.radio_display import format_freq  # noqa: E402
 
 def test_frequency_in_the_radios_style():
     assert format_freq(145_650_000) == "145.650.00"
-    assert format_freq(7_074_120) == "7.074.12"
+    assert format_freq(7_074_120) == "007.074.12"
     assert format_freq(None) == "---.---.--"
 
 
@@ -3781,13 +3781,13 @@ def test_other_vfo_shows_only_in_split_and_swaps_on_transmit(qapp):
     assert d.other.isHidden() and d.freq.text() == "146.900.00"       # memory/simplex
     src.state["split"] = 1
     win._on_frame()
-    assert not d.other.isHidden() and d.other.text() == "14.180.00"
-    assert d.other_label.text() == "TX" and d.other.font().pointSize() == d.freq.font().pointSize()
+    assert not d.other.isHidden() and d.other.text() == "014.180.00"
+    assert d.other_label.text() == "TX" and d.other.font().pointSize() < d.freq.font().pointSize()
     src.transmitting = True
     win._on_frame()
     src.status["vfo_other_mode"] = "usb"
     win._on_frame()
-    assert d.freq.text() == "14.180.00" and d.other.text() == "146.900.00"
+    assert d.freq.text() == "014.180.00" and d.other.text() == "146.900.00"
     assert d.mode.text() == "USB"                                      # the TX side's mode
     assert d.other_label.text() == "RX"
     win.close()
@@ -3800,4 +3800,32 @@ def test_mode_sits_straight_after_the_frequency(qapp):
     widgets = [row.itemAt(i).widget() for i in range(row.count())]
     assert widgets.index(d.mode) <= widgets.index(d.freq) + 2         # spacing between
     assert d.channel_up.text() == "Mem Up" and d.channel_down.text() == "Mem Down"
+    win.close()
+
+
+
+def test_compact_rows_for_the_705_and_back_for_an_sdr(qapp):
+    win, src = panel_window()
+    assert win._display_row.parentWidget() is win._radio_row          # line 3 -> line 2
+    assert win._memory_row.parentWidget() is win._audio_row           # into the S meter's room
+    assert win.smeter.isHidden() and win._info_label.isHidden()
+    win.close()
+    win, _ = tx_window(start="airspyhf")
+    assert win._display_row.parentWidget() is not win._radio_row
+    assert win._memory_row.parentWidget() is not win._audio_row
+    assert not win.smeter.isHidden()
+    win.close()
+
+
+def test_nothing_beside_the_frequency_moves(qapp):
+    win, src = panel_window(split=0, dup=0x10)
+    d = win.radio_display
+    widths = []
+    for hz, mode, name in ((7_090_000, "lsb", "40m"), (146_900_000, "rtty-r", "a very long memory name")):
+        src.status["vfo_sel_hz"], src.mode = hz, mode
+        win._on_frame()
+        win.show(); qapp.processEvents()
+        widths.append((d.freq.sizeHint().width(), d.mode.width(), d.vfo_indicator.width()))
+    assert widths[0] == widths[1]
+    assert d.duplex.styleSheet() == ""                                  # no empty yellow box
     win.close()

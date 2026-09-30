@@ -23,6 +23,12 @@ _WARN = "color: white; background: #d62828; border-radius: 3px; padding: 1px 5px
 
 #: The frequency readouts: 50 % up on the first version's 26 pt (VK3RQ, 2026-09-29).
 FREQ_POINTS = 39
+#: The split TX readout on the right: a little smaller than the main one.
+OTHER_FREQ_POINTS = 30
+#: The mode beside the frequency.
+MODE_POINTS = 26
+#: The VFO/MEMO indicator's fixed width; longer memory names are cut with an ellipsis.
+INDICATOR_WIDTH = 200
 
 _MEM_STEP = ("QPushButton { color: #10141a; background: #4fc3f7; border: none;"
              " border-radius: 4px; padding: 3px 10px; font-weight: bold; }"
@@ -39,7 +45,9 @@ def format_freq(hz: float | None) -> str:
     hz = int(round(hz))
     mhz, rest = divmod(hz, 1_000_000)
     khz, hertz = divmod(rest, 1_000)
-    return f"{mhz}.{khz:03d}.{hertz // 10:02d}"
+    # Always three MHz digits, so the readout keeps its width and what sits beside it
+    # does not jump as the frequency changes (VK3RQ, 2026-09-30).
+    return f"{mhz:03d}.{khz:03d}.{hertz // 10:02d}"
 
 
 def split_tx_hz(src) -> float | None:
@@ -137,8 +145,8 @@ class RadioDisplay(QtWidgets.QFrame):
         self._src = None
         self.vfo_panel: VfoMemoryPanel | None = None
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(10, 6, 10, 6)
-        outer.setSpacing(4)
+        outer.setContentsMargins(8, 3, 8, 3)
+        outer.setSpacing(2)
 
         # Line 1: TX/RX, the operating VFO large, mode/filter, then the other VFO.
         top = QtWidgets.QHBoxLayout()
@@ -156,10 +164,12 @@ class RadioDisplay(QtWidgets.QFrame):
         top.addSpacing(4)
         self.mode = QtWidgets.QLabel("")
         mode_font = QtGui.QFont(mono)
-        mode_font.setPointSize(19)
+        mode_font.setPointSize(MODE_POINTS)
         mode_font.setBold(True)
         self.mode.setFont(mode_font)
         self.mode.setStyleSheet("color: #66d9ef;")
+        # Wide enough for the longest mode, so nothing after it moves.
+        self.mode.setFixedWidth(QtGui.QFontMetrics(mode_font).horizontalAdvance("RTTY-R") + 6)
         top.addWidget(self.mode)
         top.addSpacing(10)
         # As on the radio: VFO A/B or MEMO and the channel. Clicking it opens the
@@ -171,6 +181,7 @@ class RadioDisplay(QtWidgets.QFrame):
             "VFO/MEMORY: click for the radio's VFO/MEMORY keys.\nThe radio does not report "
             "this over CI-V, so it shows what was last chosen from the Mac.")
         self.vfo_indicator.clicked.connect(self.open_vfo_panel)
+        self.vfo_indicator.setFixedWidth(INDICATOR_WIDTH)   # names are elided, not stretched
         top.addWidget(self.vfo_indicator)
         top.addSpacing(14)
         steps = QtWidgets.QVBoxLayout()
@@ -202,7 +213,9 @@ class RadioDisplay(QtWidgets.QFrame):
         self.other_label.setStyleSheet(_LIT)
         top.addWidget(self.other_label)
         self.other = QtWidgets.QLabel("")
-        self.other.setFont(big)
+        other_font = QtGui.QFont(big)
+        other_font.setPointSize(OTHER_FREQ_POINTS)
+        self.other.setFont(other_font)
         self.other.setStyleSheet("color: #f0b429;")
         top.addWidget(self.other)
         small = QtGui.QFont(mono)
@@ -271,6 +284,9 @@ class RadioDisplay(QtWidgets.QFrame):
     def update_from(self, src) -> None:
         self._src = src
         top, second = indicator_text(src)
+        metrics = self.vfo_indicator.fontMetrics()
+        second = metrics.elidedText(second, QtCore.Qt.TextElideMode.ElideRight,
+                                    INDICATOR_WIDTH - 16)
         text = f"{top}\n{second}" if second else top
         if self.vfo_indicator.text() != text:
             self.vfo_indicator.setText(text)
@@ -321,6 +337,7 @@ class RadioDisplay(QtWidgets.QFrame):
             self.duplex.setStyleSheet(_LIT)
         else:
             self.duplex.setText("")
+            self.duplex.setStyleSheet("")          # no empty lit box when nothing is on
 
         self.tone.setText(tone_text(state.get("tone"), status))
         self.tone.setStyleSheet(_LIT if self.tone.text() else "")

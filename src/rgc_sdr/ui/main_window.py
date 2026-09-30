@@ -260,8 +260,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # Hidden for the SDRs.
         self._radio_panel = QtWidgets.QWidget()
         panel = QtWidgets.QVBoxLayout(self._radio_panel)
-        panel.setContentsMargins(0, 2, 0, 2)
-        panel.setSpacing(4)
+        panel.setContentsMargins(0, 1, 0, 1)
+        panel.setSpacing(2)
         self.radio_display = RadioDisplay()
         self.function_panel = FunctionPanel()
         self.function_panel.memory_tune.connect(self.tune_radio_memory)
@@ -438,6 +438,10 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
+        # The radio has its own S meter on the display panel; the SDR one is not needed.
+        self.smeter.setVisible(sdr)
+        if hasattr(self, "_controls_layout"):
+            self._compact_rows(not sdr)
         if hasattr(self, "_radio_panel"):
             self._radio_panel.setVisible(not sdr)
             if not sdr:
@@ -871,13 +875,34 @@ class MainWindow(QtWidgets.QMainWindow):
         outer = QtWidgets.QVBoxLayout(bar)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(4)
+        self._controls_layout = outer
         outer.addWidget(self._build_tuning_row())
         outer.addWidget(self._build_radio_row())
-        outer.addWidget(self._build_display_row())
-        outer.addWidget(self._build_audio_row())
+        self._display_row = self._build_display_row()
+        outer.addWidget(self._display_row)
+        self._audio_row = self._build_audio_row()
+        outer.addWidget(self._audio_row)
         outer.addWidget(self._build_fm_row())
-        outer.addWidget(self._build_memory_row())
+        self._memory_row = self._build_memory_row()
+        outer.addWidget(self._memory_row)
         return bar
+
+    def _compact_rows(self, compact: bool) -> None:
+        """For a transceiver, fold five control lines into three: the display settings
+        onto the end of the Radio line, and Memory/Record into the room the SDR S meter
+        leaves on the Audio line (VK3RQ, 2026-09-30). Back to their own lines for an SDR."""
+        outer = self._controls_layout
+        radio = self._radio_row.layout()
+        audio = self._audio_row.layout()
+        if compact:
+            # Before each row's closing stretch.
+            radio.insertWidget(radio.count() - 1, self._display_row)
+            audio.insertWidget(audio.count() - 1, self._memory_row)
+            outer.setSpacing(2)
+        else:
+            outer.insertWidget(outer.indexOf(self._radio_row) + 1, self._display_row)
+            outer.addWidget(self._memory_row)
+            outer.setSpacing(4)
 
     def _build_radio_row(self) -> QtWidgets.QWidget:
         """The radio's own settings: IF bandwidth, gain stages, bias-tee.
@@ -1942,7 +1967,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_fm_row()
         self._zerobeat_button.setVisible(mode == "cw")
         self._stereo_check.setVisible(mode == "wbfm")
-        show = mode in ("cw", "wbfm")
+        # Decoding is the app's own, so none for a transceiver: the radio demodulates.
+        show = mode in ("cw", "wbfm") and not self.is_transceiver
         self._info_label.setVisible(show)
         if not show:
             self._info_label.setText("")
