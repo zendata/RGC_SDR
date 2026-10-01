@@ -92,6 +92,25 @@ with a limiter on the peaks; lower it if you are reported distorted or over-comp
 raise it if quiet. It works while transmitting and is remembered for the 705. Keep the scope showing on the radio: it sends no scope data
 while in a menu.
 
+**Over WiFi** -- no cable: choose **Icom IC-705 (WiFi)** in the SDR menu. The first time
+it asks for the radio's address and its network user and password (kept for next time;
+the password in the macOS Keychain). Everything works as on USB -- scope, controls,
+meters, audio and TX -- over Icom's own remote protocol (the one RS-BA1 uses). On the
+radio, once:
+
+1. **SET > WLAN Set > WLAN** ON, and **Connection Type** "Station" to join your home
+   network (then **Access Point** to pick it), or "Access Point" to have the Mac join
+   the radio's own network.
+2. **SET > WLAN Set > Remote Settings**: **Network Control** ON, and a **Network User1
+   ID** and **Password**. Leave the ports at 50001-50003.
+3. The address: **SET > WLAN Set > Connection Settings (Station) > IP Address** (fix
+   it there, or reserve it on your router, so it does not change).
+
+Over WiFi the app takes TX audio from WLAN instead of USB (DATA OFF MOD and DATA MOD =
+WLAN) and sets the WLAN audio output to AF with the squelch; all put back afterwards. If
+the link drops the status line says so; choose the radio again to reconnect. Only one
+program can be connected to the radio at a time.
+
 ### Choosing the radio
 
 The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy

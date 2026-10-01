@@ -86,6 +86,8 @@ class MenuWindow(QtWidgets.QDialog):
         self.setWindowTitle("IC-705 menus")
         self.resize(720, 640)
         self._source = source
+        #: Items the app depends on: which depends on USB or WiFi.
+        self._locked = getattr(source, "menu_locked", MENU_LOCKED)
         self._rows: dict[int, tuple] = {r[0]: r for r in MENU_ITEMS}
         self.editors: dict[int, QtWidgets.QWidget] = {}
         self._items: dict[int, QtWidgets.QTreeWidgetItem] = {}
@@ -138,8 +140,8 @@ class MenuWindow(QtWidgets.QDialog):
             item = QtWidgets.QTreeWidgetItem([title, ""])
             item.setData(0, 256, number)                 # Qt.UserRole
             tip = f"Menu item {number:04d}"
-            if number in MENU_LOCKED:
-                tip += f"\n{MENU_LOCKED[number]}"
+            if number in self._locked:
+                tip += f"\n{self._locked[number]}"
             item.setToolTip(0, tip)
             self._branch(path).addChild(item)
             self._items[number] = item
@@ -206,14 +208,14 @@ class MenuWindow(QtWidgets.QDialog):
                     editor.addItem(str(value), value)
                     index = editor.count() - 1
                 editor.setCurrentIndex(index)
-                editor.setEnabled(number not in MENU_LOCKED)
+                editor.setEnabled(number not in self._locked)
             elif isinstance(editor, ScaledSpin):
                 if not editor.minimum() <= int(value) <= editor.maximum():
                     # The radio knows better than the guide (REF Adjust reads 260 of 255).
                     editor.setRange(min(editor.minimum(), int(value)),
                                     max(editor.maximum(), int(value)))
                 editor.setValue(int(value))
-                editor.setEnabled(number not in MENU_LOCKED)
+                editor.setEnabled(number not in self._locked)
             else:
                 digits = row[3] or 2
                 item.setText(1, f"{value:0{digits}d}")

@@ -137,8 +137,9 @@ headless-testable and lets modules be swapped independently.
   sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
-  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), then WiFi (Icom's network
-  protocol). No D-STAR for now. Section 7o.
+  CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
+  protocol) built, **not yet verified on the radio** (section 7o). Bluetooth ruled out
+  (headsets and D-STAR phone apps only). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
   probe, the `IQSink` interface, and a TX button that runs a *dry run*. Remaining: a
@@ -854,6 +855,36 @@ while open -> 02 after, no refusal. Also: the waterfall kept an old zoom when th
 widened (preserve_span) -- a new span now resets the view and history; the display uses
 the scope's own centre, so fixed mode shows its edges; a Span control (+/-2.5-500 kHz,
 27 15) replaces Zoom for the 705 and follows the radio (verified: 250 -> 50 -> 25 kHz).
+
+**WiFi** (built 2026-10-02, `device/icom_net.py`; **not yet verified on the radio** --
+its WLAN remote server was off, nothing on the LAN answered UDP 50001). Icom's network
+remote protocol (RS-BA1's), unpublished; the layouts follow kappanhang (written for the
+705) and wfview, and the tests check them byte for byte against the packets kappanhang
+quotes from real radios. Three UDP sessions: control 50001 (handshake, login with the
+Network User ID/password obscured by Icom's substitution table, token renewal every
+minute, then a request for the other two at 48 kHz 16-bit mono PCM both ways), CI-V
+50002 (the same CI-V bytes as USB, one frame a packet) and audio 50003 (TX as 20 ms
+blocks in two packets of 1364 + 556 bytes). Pings both ways every 3 s, idle packets to
+keep the sequence moving, our sent packets kept for the radio's resend requests;
+packets lost from the radio are counted (status line), not re-requested. `IcomLink` is
+`IcomSource`'s transport (read/write/close, as the serial port), so control, scope and
+memories are unchanged; the audio goes through `NetworkRadioAudio` (80 ms cushion
+against WiFi bursts) and `NetworkAudioOutput`. Over WiFi the takeover sets DATA OFF MOD
+and DATA MOD to WLAN (03), WLAN output to AF (`1A 05 01 14` = 00) and WLAN AF SQL on
+(`01 15` = 01); a restore file left by a crash over the other connection is handed back
+too. A dead link closes at once and keeps the restore file. Choosing the WiFi entry asks
+for address/user/password (password in the Keychain).
+
+Bluetooth was considered and ruled out: the 705's Bluetooth takes headsets and the
+RS-MS1A/RS-MS1I D-STAR phone apps (Advanced Manual §10), so it carries neither the
+scope nor the radio's audio to a Mac.
+
+To verify on the radio: login and all three sessions; the scope's line rate over WiFi;
+receive audio level and latency, and underruns (`ur` in the status line) with the 80 ms
+cushion; TX audio level with WLAN MOD Level at its default; **what the radio does if the
+link drops while keyed** (the app's 3-minute timeout cannot unkey it then -- check the
+radio's own TOT); that the radio name in the connection request (taken from its
+capabilities packet, kappanhang sends "IC-705") is accepted.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

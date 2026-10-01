@@ -179,9 +179,9 @@ def main(argv: list[str] | None = None) -> int:
     chosen = profile_for(driver)
     try:
         if chosen is not None and chosen.kind == "transceiver":
-            from .device.icom import IcomSource
+            from .device.icom import open_ic705
 
-            source = IcomSource()     # opens where the radio's dial is
+            source = open_ic705(driver)     # opens where the radio's dial is
             freq = source.center_freq
         else:
             source = SoapyIQSource(

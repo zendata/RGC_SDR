@@ -207,6 +207,25 @@ PROFILES = PROFILES + (
         notes="Transceiver over CI-V: the radio's own scope as the waterfall. No IQ.",
         kind="transceiver",
     ),
+    # The same radio over WiFi (device/icom_net.py): Icom's network remote protocol.
+    SdrProfile(
+        key="icom705net",
+        label="Icom IC-705 (WiFi)",
+        driver="icom705net",
+        freq_ranges=(FreqRange(30e3, 199.999999e6), FreqRange(400e6, 470e6)),
+        sample_rates=(20e3,),
+        default_rate=20e3,
+        max_rate=20e3,
+        default_freq=145e6,
+        gain_elements=(),
+        has_agc=False,
+        bias_tee=False,
+        dc_offset=False,
+        module="network",
+        install="the radio on WiFi with Network Control on (SET > WLAN Set > Remote Settings)",
+        notes="The IC-705 over WiFi, as on its USB cable: scope, control, audio and TX.",
+        kind="transceiver",
+    ),
 )
 
 _BY_DRIVER = {p.driver: p for p in PROFILES}
@@ -274,6 +293,13 @@ def availability(
         pass
     if find_ic705_ports():
         found.setdefault("icom705", "")
+    # A network radio cannot be seen without logging in: it counts as there once its
+    # address is set up, and the login says whether it really is.
+    modules = set(modules) | {"network"}
+    from .icom_net import load_login
+
+    if load_login(keychain=False).complete:
+        found.setdefault("icom705net", "")
     out = []
     for profile in PROFILES:
         # Exact stem match: "airspySupport" must not match "airspyhfSupport".

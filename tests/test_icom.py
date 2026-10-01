@@ -1,6 +1,8 @@
 """IcomSource's control layer, against a stand-in radio that answers CI-V as the
 IC-705 did when probed (PLANNING.md 7o), including refusing AGC changes in FM."""
 
+import time
+
 import pytest
 
 from src.rgc_sdr.device import civ
@@ -347,6 +349,58 @@ def test_after_a_crash_the_real_originals_come_back(tmp_path):
     src._take_over(); settle(src)
     src._hand_back(); settle(src)
     assert radio.levels[0x01] == 72 and radio.data_off_mod == 0x02
+
+
+class WifiStandInRadio(StandInRadio):
+    """The same radio reached over WiFi: the transport says so."""
+
+    wlan = True
+    connected = True
+    host = "192.168.1.50"
+
+    def __init__(self):
+        super().__init__()
+        self.menu.update({(0x01, 0x14): b"\x01", (0x01, 0x15): b"\x00"})
+
+
+def test_over_wifi_tx_audio_is_taken_from_wlan_and_handed_back(tmp_path):
+    radio = WifiStandInRadio()
+    src = source_with_file(radio, tmp_path)
+    assert src.wlan and src.port == "192.168.1.50" and src.caps.driver == "icom705net"
+    src._take_over(); settle(src)
+    assert radio.data_off_mod == 0x03 and radio.menu[(0x01, 0x19)] == b"\x03"
+    assert radio.menu[(0x01, 0x14)] == b"\x00"           # WLAN output: AF, not IF
+    assert radio.menu[(0x01, 0x15)] == b"\x01"           # muted by the squelch
+    assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0128")   # USB level left alone
+    assert src.read_menu(118) == 2                          # the radio's own, shown
+    with pytest.raises(PermissionError):
+        src.write_menu(115, 0, 2)
+    src._hand_back(); settle(src)
+    assert radio.data_off_mod == 0x02 and radio.menu[(0x01, 0x15)] == b"\x00"
+    assert radio.menu[(0x01, 0x14)] == b"\x01"
+
+
+def test_a_dropped_wifi_link_closes_at_once_and_keeps_the_restore_file(tmp_path):
+    radio = WifiStandInRadio()
+    src = source_with_file(radio, tmp_path)
+    src.start(); settle(src)
+    radio.connected = False
+    start = time.monotonic()
+    src.close()
+    assert time.monotonic() - start < 1.5
+    assert (tmp_path / "restore.json").exists()
+
+
+def test_a_crash_over_usb_is_still_put_right_over_wifi(tmp_path):
+    (tmp_path / "restore.json").write_text(json.dumps({"af": "0072", "data_off_mod": "02",
+                                                        "usb_af_level": "0128"}))
+    radio = WifiStandInRadio()
+    radio.menu[(0x01, 0x10)] = bytes.fromhex("0255")       # left at the app's 100 %
+    src = source_with_file(radio, tmp_path)
+    src._take_over(); settle(src)
+    src._hand_back(); settle(src)
+    assert radio.menu[(0x01, 0x10)] == bytes.fromhex("0128")
+    assert radio.data_off_mod == 0x02
 
 
 def test_span_is_sent_as_a_bcd_half_span():

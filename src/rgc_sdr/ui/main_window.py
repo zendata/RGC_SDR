@@ -99,9 +99,9 @@ def _open_soapy(driver: str, centre_hz: float) -> IQSource:
 
     profile = profile_for(driver)
     if profile is not None and profile.kind == "transceiver":
-        from ..device.icom import IcomSource
+        from ..device.icom import open_ic705
 
-        return IcomSource()           # opens wherever the radio's own dial is
+        return open_ic705(driver)     # opens wherever the radio's own dial is
     from ..device.source import SoapyIQSource
 
     return SoapyIQSource(driver=driver, center_freq=centre_hz)
@@ -486,11 +486,29 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_device_chosen(self, index: int) -> None:
         key = self._device_combo.itemData(index)
-        if key and key != self.current_device_key():
+        if key == "icom705net" and not self._ask_network_login():
+            self._refresh_device_list()
+            return
+        if key == "icom705net" and key == self.current_device_key():
+            self.switch_device("icom705net")                     # log in again
+        elif key and key != self.current_device_key():
             self.switch_device(key)
 
+    def _ask_network_login(self) -> bool:
+        """Where the IC-705 is on the network and how to log in, saved for next time.
+        False if cancelled."""
+        from ..device.icom_net import load_login, save_login
+        from .network_login import NetworkLoginDialog
+
+        dialog = NetworkLoginDialog(load_login(), self)
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            return False
+        save_login(dialog.login())
+        return True
+
     def switch_device(self, key: str) -> bool:
-        """Change to another radio. Returns False, leaving the current one, on failure."""
+        """Change to another radio (or reopen this one). Returns False, leaving the
+        current one, on failure."""
         profile = profile_for(key)
         if profile is None:
             return False
@@ -1654,7 +1672,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.radio_audio is not None or not self._audio_ok:
             return
         factory = self._radio_audio_factory
-        if factory is None:
+        link = getattr(self.source, "link", None)
+        if factory is None and link is not None:
+            from ..audio import NetworkRadioAudio
+
+            def factory(volume: float):
+                return NetworkRadioAudio(link, volume=volume)
+        elif factory is None:
             from ..audio import RadioAudio
 
             factory = RadioAudio
@@ -2090,10 +2114,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         if self.is_transceiver:
             # The radio modulates: the app keys it and feeds it the microphone.
-            from ..audio import CodecOutput
+            from ..audio import CodecOutput, NetworkAudioOutput
 
+            link = getattr(self.source, "link", None)
+            audio_out = (NetworkAudioOutput(link, level=self._tx_audio_level) if link is not None
+                         else CodecOutput(level=self._tx_audio_level))
             return RadioTransmitter(self.source, _TO_RADIO_MODE.get(mode, mode),
-                                    audio_out=CodecOutput(level=self._tx_audio_level))
+                                    audio_out=audio_out)
         opener = getattr(self.source, "open_tx_sink", None)
         sink = opener(self.tx_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
         return Transmitter(mode, sink=sink, tone=self.tx_tone())
@@ -2906,6 +2933,13 @@ class MainWindow(QtWidgets.QMainWindow):
             note = getattr(self, "_radio_note", None)
             if note is not None and time.monotonic() < note[1]:
                 text += f"  |  {note[0]}"
+            link = getattr(self.source, "link", None)
+            if link is not None and link.error:
+                text += f"  |  WiFi: {link.error} -- choose the radio again to reconnect"
+            elif link is not None:
+                lost = link.stats
+                if lost["lost_civ"] or lost["lost_audio"]:
+                    text += f"  |  WiFi lost {lost['lost_civ']} CI-V, {lost['lost_audio']} audio"
             return text
         if self.audio is None:
             if self.mode == "off":

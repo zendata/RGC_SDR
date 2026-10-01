@@ -60,14 +60,22 @@ MENU_ITEMS = {
     "data_mod": (0x01, 0x19),        # 00 MIC, 01 USB, 02 MIC+USB, 03 WLAN
     "usb_af_level": (0x01, 0x10),    # 0000-0255 = 0-100 %
     "usb_af_sql": (0x01, 0x11),      # 00 off (always open), 01 follows the squelch
+    "wlan_af_select": (0x01, 0x14),  # 00 AF, 01 IF
+    "wlan_af_sql": (0x01, 0x15),     # 00 off (always open), 01 follows the squelch
 }
 TAKEOVER = {"af": b"\x00\x00", "data_off_mod": b"\x01", "data_mod": b"\x01",
             "usb_af_level": b"\x02\x55", "usb_af_sql": b"\x01"}
+#: The same over WiFi: TX audio from WLAN, and the WLAN audio output demodulated (AF,
+#: not the 12 kHz IF) and muted by the radio's squelch. It has no level setting.
+TAKEOVER_WLAN = {"af": b"\x00\x00", "data_off_mod": b"\x03", "data_mod": b"\x03",
+                 "wlan_af_select": b"\x00", "wlan_af_sql": b"\x01"}
 
 #: SET-menu items the app has taken over: item number -> TAKEOVER name. The menu window
 #: shows the radio's own value for these, not the app's.
 MENU_TAKEN = {110: "usb_af_level", 111: "usb_af_sql", 118: "data_off_mod",
               119: "data_mod"}
+MENU_TAKEN_WLAN = {114: "wlan_af_select", 115: "wlan_af_sql", 118: "data_off_mod",
+                   119: "data_mod"}
 #: SET-menu items the menu window will not change, and why.
 MENU_LOCKED = {
     110: "Set by the app while it has the radio (put back when it lets go)",
@@ -77,6 +85,8 @@ MENU_LOCKED = {
     131: "The app needs CI-V Transceive on to follow the radio's dial",
     132: "Echo Back on would confuse the app's reading of the radio's replies",
 }
+MENU_LOCKED_WLAN = {n: why for n, why in MENU_LOCKED.items() if n not in (110, 111)}
+MENU_LOCKED_WLAN.update({n: MENU_LOCKED[110] for n in (114, 115)})
 
 #: Where the radio's own settings are kept while the app has changed them, so that a
 #: crash cannot leave the radio with its speaker and microphone switched off.
@@ -309,8 +319,15 @@ class IcomSource(IQSource):
             self.port = ports[0]
             transport = serial.Serial(self.port, 115200, timeout=0.05)
         else:
-            self.port = port or "injected"
+            self.port = port or getattr(transport, "host", None) or "injected"
         self.address = address
+        #: Over WiFi (an `icom_net.IcomLink`): the audio comes over the same link, and
+        #: TX audio is taken from WLAN rather than USB.
+        self.wlan = bool(getattr(transport, "wlan", False))
+        self.link = transport if self.wlan else None
+        self.takeover = TAKEOVER_WLAN if self.wlan else TAKEOVER
+        self.menu_taken = MENU_TAKEN_WLAN if self.wlan else MENU_TAKEN
+        self.menu_locked = MENU_LOCKED_WLAN if self.wlan else MENU_LOCKED
         #: Anything with read(n), write(bytes) and close(): a serial port, or a test's
         #: stand-in. Written from both the GUI and reader threads, hence the lock.
         self._serial = transport
@@ -366,7 +383,8 @@ class IcomSource(IQSource):
 
         from .profiles import profile_for
 
-        self.profile = profile_for("icom705")
+        key = "icom705net" if self.wlan else "icom705"
+        self.profile = profile_for(key)
         # Opened where the radio's own dial is: a transceiver is not retuned just
         # because the app last looked somewhere else. `center_freq` is ignored.
         self._freq = float(self._query_freq() or 145e6)
@@ -374,7 +392,7 @@ class IcomSource(IQSource):
         # The radio modulates and keeps to its own licensed bands and power; the app
         # only keys it and supplies audio. Half duplex, as any transceiver.
         self._caps = DeviceCaps(
-            driver="icom705", label="Icom IC-705", serial="", sample_rates=(),
+            driver=key, label=self.profile.label, serial="", sample_rates=(),
             freq_ranges=IC705_RANGES, gain_elements=(), has_agc=False, formats=(),
             tx=TxCaps(freq_ranges=IC705_RANGES, gain_elements=(), sample_rates=(),
                       full_duplex=False),
@@ -612,8 +630,9 @@ class IcomSource(IQSource):
         if frame is None or len(frame.payload) <= 3:
             return None
         data = bytes(frame.payload[3:])
-        if number in MENU_TAKEN and MENU_TAKEN[number] in self._taken:
-            data = self._taken[MENU_TAKEN[number]]      # the radio's own, not the app's
+        taken = self.menu_taken.get(number)
+        if taken in self._taken:
+            data = self._taken[taken]                   # the radio's own, not the app's
         try:
             return int(data.hex())
         except ValueError:
@@ -621,8 +640,8 @@ class IcomSource(IQSource):
 
     def write_menu(self, number: int, value: int, digits: int) -> None:
         """Set a SET-menu item. Refused if it is one the app itself depends on."""
-        if number in MENU_LOCKED:
-            raise PermissionError(MENU_LOCKED[number])
+        if number in self.menu_locked:
+            raise PermissionError(self.menu_locked[number])
         data = bytes.fromhex(f"{int(value):0{digits + digits % 2}d}")
         self._send(0x1A, b"\x05" + self._menu_item(number) + data, label=f"menu {number:04d}")
 
@@ -882,19 +901,26 @@ class IcomSource(IQSource):
             saved = json.loads(self.restore_file.read_text())
         except (OSError, ValueError):
             saved = {}
-        for name in TAKEOVER:
+        for name in self.takeover:
             if name in saved:
                 self._taken[name] = bytes.fromhex(saved[name])
             else:
                 value = self._read_takeover(name)
                 if value is not None:
                     self._taken[name] = value
+        # Left by a crash over the other connection (USB vs WiFi): handed back too.
+        for name, value in saved.items():
+            if name not in self._taken and (name == "af" or name in MENU_ITEMS):
+                try:
+                    self._taken[name] = bytes.fromhex(value)
+                except (TypeError, ValueError):
+                    pass
         try:
             self.restore_file.parent.mkdir(parents=True, exist_ok=True)
             self.restore_file.write_text(json.dumps({k: v.hex() for k, v in self._taken.items()}))
         except OSError:
             pass
-        for name, value in TAKEOVER.items():
+        for name, value in self.takeover.items():
             if name in self._taken:
                 self._write_takeover(name, value)
 
@@ -952,6 +978,12 @@ class IcomSource(IQSource):
         self._running.clear()
         self._thread.join(timeout=1.0)
         self._thread = None
+        if self.link is not None and not self.link.connected:
+            # The WiFi link is gone: nothing can be written. The restore file stays, so
+            # the next connection (USB or WiFi) puts the radio's own settings back.
+            self._taken.clear()
+            self._restore.clear()
+            return
         # The scope stream off first, so the radio is not busy sending while the
         # settings go back; each one is confirmed before the next.
         with self._write_lock:
@@ -994,3 +1026,18 @@ class IcomSource(IQSource):
 
     def sequential_reader(self):
         raise NotImplementedError("the IC-705 sends no IQ; its audio comes over USB audio")
+
+
+def open_ic705(driver: str = "icom705") -> IcomSource:
+    """The IC-705 on its USB cable, or (driver "icom705net") over WiFi, logged in with the
+    address and user set up in the SDR menu. Opens wherever the radio's own dial is."""
+    if driver == "icom705net":
+        from .icom_net import open_link
+
+        link = open_link()
+        try:
+            return IcomSource(transport=link)
+        except Exception:
+            link.close()
+            raise
+    return IcomSource()

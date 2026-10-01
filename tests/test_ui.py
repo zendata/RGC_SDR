@@ -3314,6 +3314,55 @@ def test_mic_level_control_for_the_705_is_live_and_saved(qapp, tmp_path, monkeyp
 
 
 
+class FakeLink:
+    """Stands in for icom_net.IcomLink, the 705 over WiFi."""
+
+    wlan = True
+    connected = True
+
+    def __init__(self):
+        self.error = None
+        self.audio_sink = None
+        self.stats = {"lost_civ": 0, "lost_audio": 0}
+        self.sent = []
+
+    def send_audio(self, block):
+        self.sent.append(block)
+
+
+def test_the_705_over_wifi_uses_the_network_for_audio_and_tx(qapp, monkeypatch):
+    from src.rgc_sdr.audio import NetworkAudioOutput, NetworkRadioAudio
+
+    monkeypatch.setattr(NetworkRadioAudio, "start", lambda self: setattr(
+        self.link, "audio_sink", self._received))            # no Mac sound device
+    win = radio_window()
+    win._stop_radio_audio()
+    win.source.link = link = FakeLink()
+    win._radio_audio_factory = None
+    win._start_radio_audio()
+    assert isinstance(win.radio_audio, NetworkRadioAudio) and win.radio_audio.link is link
+    assert link.audio_sink is not None
+    transmitter = win._make_transmitter("usb")
+    assert isinstance(transmitter.audio_out, NetworkAudioOutput)
+    assert transmitter.audio_out.link is link
+    link.error = "lost the radio (no reply for 5 s)"
+    assert "WiFi: lost the radio" in win._audio_status()
+    win.close()
+
+
+def test_choosing_the_wifi_705_asks_where_it_is_and_cancel_keeps_the_radio(qapp,
+                                                                           monkeypatch):
+    win = radio_window()
+    asked = []
+    monkeypatch.setattr(win, "_ask_network_login", lambda: asked.append(1) or False)
+    switched = []
+    monkeypatch.setattr(win, "switch_device", lambda key: switched.append(key))
+    win._device_combo.addItem("Icom IC-705 (WiFi)", "icom705net")
+    win._on_device_chosen(win._device_combo.count() - 1)
+    assert asked and not switched
+    win.close()
+
+
 def test_the_705s_squelch_gates_its_audio_and_the_apps_squelch_is_hidden(qapp):
     win = radio_window()
     assert win._squelch_check.isHidden() and win._squelch_spin.isHidden()

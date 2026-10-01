@@ -14,6 +14,7 @@ them, and its depth is the latency.
 from __future__ import annotations
 
 import threading
+import time
 from collections import deque
 
 import numpy as np
@@ -728,4 +729,108 @@ class CodecOutput:
         if stream is not None:
             stream.stop()
             stream.close()
+        self._mic = None
+
+
+# -- a transceiver's audio over WiFi ------------------------------------------------------
+# Over the network (device/icom_net.py) the 705 sends its received audio, and takes its
+# transmit audio, as 16-bit PCM at 48 kHz in UDP packets instead of through a sound card.
+
+
+class NetworkRadioAudio(RadioAudio):
+    """Plays the received audio the radio sends over the network on the Mac.
+
+    The link's packets arrive in bursts as WiFi allows, so playback waits for a cushion of
+    PREFILL_S before starting, and again after running dry.
+    """
+
+    PREFILL_S = 0.08
+
+    def __init__(self, link, samplerate: float = 48_000.0, blocksize: int = 1024,
+                 volume: float = 0.5) -> None:
+        super().__init__(samplerate=samplerate, blocksize=blocksize, volume=volume)
+        self.link = link
+        self._waiting = True
+
+    def _received(self, block: np.ndarray) -> None:
+        self._fifo.push(block)
+
+    def _play(self, outdata, frames, time_info, status) -> None:  # noqa: ARG002
+        if self._waiting:
+            if len(self._fifo) < self.samplerate * self.PREFILL_S:
+                outdata.fill(0)
+                return
+            self._waiting = False
+        if len(self._fifo) < frames:
+            self._waiting = True              # ran dry: build the cushion again
+        super()._play(outdata, frames, time_info, status)
+
+    def start(self) -> None:
+        if self._streams:
+            return
+        sd = _import_sounddevice()
+        devices = sd.query_devices()
+        target = default_output_device(devices, sd.default.device[1])
+        if target is None:
+            raise RuntimeError("no Mac audio output to play the radio on")
+        stream = sd.OutputStream(device=target, channels=1, samplerate=self.samplerate,
+                                 blocksize=self.blocksize, dtype="float32", callback=self._play)
+        self._waiting = True
+        self.link.audio_sink = self._received
+        stream.start()
+        self._streams = [stream]
+
+    def stop(self) -> None:
+        if getattr(self.link, "audio_sink", None) == self._received:
+            self.link.audio_sink = None
+        super().stop()
+
+
+class NetworkAudioOutput(CodecOutput):
+    """Sends microphone audio to the radio over the network, for it to transmit.
+
+    The 705 takes it only with its voice modulation input on WLAN, which the app sets
+    while it has the radio over WiFi. Same level and limiter as `CodecOutput`; a thread
+    sends a 20 ms block whenever the microphone has one.
+    """
+
+    def __init__(self, link, samplerate: float = 48_000.0,
+                 level: float = DEFAULT_TX_AUDIO_LEVEL) -> None:
+        from .device.icom_net import TX_BLOCK_SAMPLES
+
+        super().__init__(samplerate=samplerate, blocksize=TX_BLOCK_SAMPLES, level=level)
+        self.link = link
+        self._sending = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def _send_loop(self) -> None:
+        n = self.blocksize
+        period = n / self.samplerate
+        while self._sending.is_set():
+            # Wait for a whole block, but never more than two blocks' time: a stalled
+            # microphone sends silence rather than holding the transmitter's audio up.
+            deadline = time.monotonic() + 2 * period
+            while (self._mic.available() < n and time.monotonic() < deadline
+                   and self._sending.is_set()):
+                time.sleep(0.002)
+            if not self._sending.is_set():
+                break
+            self.link.send_audio(self._shape(self._mic.read(n)))
+
+    def start(self, mic) -> None:
+        if self._thread is not None:
+            return
+        if not getattr(self.link, "connected", True):
+            raise RuntimeError("the radio's network connection is down")
+        self._mic = mic
+        self._sending.set()
+        self._thread = threading.Thread(target=self._send_loop, name="ic705-tx-audio",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._sending.clear()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=0.5)
         self._mic = None
