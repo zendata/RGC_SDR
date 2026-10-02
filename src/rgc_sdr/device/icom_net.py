@@ -312,11 +312,22 @@ class _Stream:
                 self.remote_id = parse_header(here)[3]
                 break
         else:
-            raise ConnectionError(f"no answer from the radio's {self.name} port")
+            raise ConnectionError(self._no_answer())
         ready = control(T_READY, self.local_id, self.remote_id, seq=1)
         self.send(ready)
         if self.wait_for(lambda p: len(p) == 16 and p[4] == T_READY) is None:
             raise ConnectionError(f"the radio's {self.name} port did not get ready")
+
+    def _no_answer(self) -> str:
+        """Why nothing answered, as far as can be told: usually the Mac is on another
+        network (in AP mode the radio is only on its own, "IC-705")."""
+        host, port = self.sock.getpeername()
+        mine = self.sock.getsockname()[0]
+        text = f"no answer from the radio's {self.name} port ({host}:{port})"
+        if mine.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
+            text += (f" -- this Mac is on {mine}, another network: join the radio's "
+                     "network (in AP mode, \"IC-705\") or check its address")
+        return text
 
     def handle_common(self, pkt: bytes) -> bool:
         """Answer pings and resend requests. True if the packet needs nothing more."""
