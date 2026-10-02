@@ -85,10 +85,19 @@ rm -rf "$WIFI"
 cp -R "$APP" "$WIFI"
 /usr/bin/sed -i '' -e 's|<string>VK3RQ Super SDR</string>|<string>VK3RQ Super SDR WiFi</string>|g' \
   -e 's|com.rgc-sdr.launcher|com.rgc-sdr.launcher.wifi|' "$WIFI/Contents/Info.plist"
+# Run from Terminal, not directly: launched from Finder the app is kept off the local
+# network (macOS Local Network privacy, and security software), while Terminal is
+# allowed onto it -- found 2026-10-02, the same command worked typed in Terminal.
+cat > "$WIFI/Contents/Resources/wifi.command" <<LAUNCH
+#!/bin/bash
+cd "$REPO" && exec ./run.sh --driver icom705net
+LAUNCH
+chmod +x "$WIFI/Contents/Resources/wifi.command"
 cat > "$WIFI/Contents/MacOS/RGCSDR" <<LAUNCH
 #!/bin/bash
-# Thin wrapper: the IC-705 over WiFi. Rebuild with tools/make_app.sh if the repo moves.
-exec "$REPO/run.sh" --driver icom705net
+# Thin wrapper: the IC-705 over WiFi, in a Terminal window. Rebuild with
+# tools/make_app.sh if the repo moves.
+exec /usr/bin/open -a Terminal "$WIFI/Contents/Resources/wifi.command"
 LAUNCH
 chmod +x "$WIFI/Contents/MacOS/RGCSDR"
 touch "$WIFI"
