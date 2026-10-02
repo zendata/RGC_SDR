@@ -75,3 +75,19 @@ fi
 # Nudge Finder to pick up the new icon rather than showing a stale cached one.
 touch "$APP"
 echo "built $APP -> $REPO/run.sh"
+
+# A second launcher that goes straight to the IC-705 over WiFi: the same bundle, its own
+# name and identifier, run.sh with --driver icom705net.
+WIFI="$DEST/VK3RQ Super SDR WiFi.app"
+rm -rf "$WIFI"
+cp -R "$APP" "$WIFI"
+/usr/bin/sed -i '' -e 's|<string>VK3RQ Super SDR</string>|<string>VK3RQ Super SDR WiFi</string>|g' \
+  -e 's|com.rgc-sdr.launcher|com.rgc-sdr.launcher.wifi|' "$WIFI/Contents/Info.plist"
+cat > "$WIFI/Contents/MacOS/RGCSDR" <<LAUNCH
+#!/bin/bash
+# Thin wrapper: the IC-705 over WiFi. Rebuild with tools/make_app.sh if the repo moves.
+exec "$REPO/run.sh" --driver icom705net
+LAUNCH
+chmod +x "$WIFI/Contents/MacOS/RGCSDR"
+touch "$WIFI"
+echo "built $WIFI -> $REPO/run.sh --driver icom705net"

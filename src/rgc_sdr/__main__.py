@@ -119,7 +119,7 @@ def _wifi_radio_instead(problem: str):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
     while True:
         box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning, "VK3RQ Super SDR",
-                                    f"{problem}\n\nNo radio is connected by USB.")
+                                    problem)
         wifi = box.addButton("Connect IC-705 over WiFi\u2026",
                              QtWidgets.QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Quit", QtWidgets.QMessageBox.ButtonRole.RejectRole)
@@ -223,7 +223,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         label = chosen.label if chosen is not None else driver
         print(f"Could not open driver={driver}: {exc}", file=sys.stderr)
-        source = None if args.driver else _wifi_radio_instead(f"Could not open {label}: {exc}")
+        # An explicit --driver is honoured as asked, except the WiFi 705 itself: its
+        # login may need setting up or correcting first.
+        offer = not args.driver or driver == "icom705net"
+        source = _wifi_radio_instead(f"Could not open {label}: {exc}") if offer else None
         if source is None:
             print("Run with --list to see attached devices.", file=sys.stderr)
             return 2

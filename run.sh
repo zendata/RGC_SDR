@@ -29,14 +29,7 @@ if [ ! -x "$PY" ]; then
   exit 1
 fi
 
-# Fail with a clear message rather than a stack trace when the radio is unplugged.
-if ! "$PY" -c 'import sys
-from src.rgc_sdr.device.profiles import availability
-sys.exit(0 if any(a.connected for a in availability()) else 1)' >/dev/null 2>&1; then
-  notify "No radio detected.
-
-Plug in a radio (Airspy HF+, Airspy R2, HackRF, RTL-SDR, Pluto or IC-705) and try again."
-  exit 1
-fi
+# No pre-check for a radio here: with none on USB the app itself offers the IC-705 over
+# WiFi, and explains what it could not open.
 
 exec "$PY" -m src.rgc_sdr "$@"

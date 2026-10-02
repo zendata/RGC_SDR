@@ -110,7 +110,9 @@ Over WiFi the app takes TX audio from WLAN instead of USB (DATA OFF MOD and DATA
 WLAN) and sets the WLAN audio output to AF with the squelch; all put back afterwards. If
 the link drops the status line says so; choose the radio again to reconnect. With no
 radio on USB at all, the app offers **Connect IC-705 over WiFi…** when it starts, and
-once connected it opens straight onto the WiFi radio next time. Only one
+once connected it opens straight onto the WiFi radio next time. The **VK3RQ Super SDR WiFi** icon on
+the Desktop (made by `./tools/make_app.sh` with the other) always opens the 705 over
+WiFi, asking for the address and login if it cannot connect. Only one
 program can be connected to the radio at a time.
 
 ### Choosing the radio

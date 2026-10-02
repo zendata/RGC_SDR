@@ -213,3 +213,29 @@ def test_declining_the_wifi_705_exits_cleanly(monkeypatch, tmp_path):
         RuntimeError("no device")))
     monkeypatch.setattr(entry, "_wifi_radio_instead", lambda problem: None)
     assert entry.main([]) == 2
+
+
+def test_the_wifi_launcher_asks_for_the_login_when_it_cannot_connect(monkeypatch, tmp_path):
+    """--driver icom705net (the WiFi Desktop app) with no login yet: ask, don't quit."""
+    from src.rgc_sdr.settings import Settings
+    import src.rgc_sdr.device.icom as icom
+    import src.rgc_sdr.ui.main_window as mw
+
+    class WifiRadio:
+        center_freq = 144.65e6
+
+        class caps:
+            @staticmethod
+            def covers(hz):
+                return True
+
+    monkeypatch.setattr(entry.Settings, "load",
+                        classmethod(lambda cls, path=None: Settings(tmp_path / "s.json")))
+    monkeypatch.setattr(icom, "open_ic705", lambda driver: (_ for _ in ()).throw(
+        ConnectionError("its WiFi address and user are not set up yet")))
+    offered = []
+    monkeypatch.setattr(entry, "_wifi_radio_instead",
+                        lambda problem: offered.append(problem) or WifiRadio())
+    monkeypatch.setattr(mw, "run", lambda source, **kw: 0)
+    assert entry.main(["--driver", "icom705net"]) == 0
+    assert "not set up" in offered[0]
