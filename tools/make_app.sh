@@ -56,6 +56,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<false/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>The microphone is the transmit audio when TX is pressed.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>To reach the Icom IC-705 over WiFi.</string>
 </dict>
 </plist>
 PLIST

@@ -24,6 +24,7 @@ anything with read/write/close, as the serial port is -- and the audio to
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import select
@@ -258,12 +259,15 @@ class _Stream:
         self.pinging = False
         self.lost = 0
         self._expect_seq: int | None = None
+        #: The last error sending, if any: macOS refuses with "No route to host" when the
+        #: app has not been allowed onto the local network.
+        self.send_error: OSError | None = None
 
     def send(self, data: bytes) -> None:
         try:
             self.sock.send(data)
-        except OSError:
-            pass
+        except OSError as exc:
+            self.send_error = exc
 
     def send_tracked(self, pkt: bytearray, idle: bool = False) -> None:
         """Number it, keep it for a resend, send it."""
@@ -324,7 +328,11 @@ class _Stream:
         host, port = self.sock.getpeername()
         mine = self.sock.getsockname()[0]
         text = f"no answer from the radio's {self.name} port ({host}:{port})"
-        if mine.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
+        if self.send_error is not None and self.send_error.errno == errno.EHOSTUNREACH:
+            text = ("macOS is not letting this app onto the local network: System Settings "
+                    "> Privacy & Security > Local Network, turn on VK3RQ Super SDR (and "
+                    "VK3RQ Super SDR WiFi), then try again")
+        elif mine.rsplit(".", 1)[0] != host.rsplit(".", 1)[0]:
             text += (f" -- this Mac is on {mine}, another network: join the radio's "
                      "network (in AP mode, \"IC-705\") or check its address")
         return text
