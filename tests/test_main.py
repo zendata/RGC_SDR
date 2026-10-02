@@ -174,3 +174,42 @@ def test_list_shows_every_supported_radio(capsys):
     out = capsys.readouterr().out
     for name in ("Airspy HF+", "HackRF", "RTL-SDR", "Pluto"):
         assert name in out
+
+
+def test_with_no_radio_attached_the_wifi_705_is_offered(monkeypatch, tmp_path):
+    """Nothing on USB must not stop the app: the IC-705 can be reached over WiFi."""
+    from src.rgc_sdr.settings import Settings
+    import src.rgc_sdr.ui.main_window as mw
+
+    class WifiRadio:
+        center_freq = 144.65e6
+
+        class caps:
+            @staticmethod
+            def covers(hz):
+                return True
+
+    monkeypatch.setattr(entry.Settings, "load",
+                        classmethod(lambda cls, path=None: Settings(tmp_path / "s.json")))
+    monkeypatch.setattr(entry, "choose_driver", lambda requested, remembered: "airspyhf")
+    monkeypatch.setattr(entry, "SoapyIQSource", lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("no device")))
+    offered = []
+    monkeypatch.setattr(entry, "_wifi_radio_instead",
+                        lambda problem: offered.append(problem) or WifiRadio())
+    ran = []
+    monkeypatch.setattr(mw, "run", lambda source, **kw: ran.append(source) or 0)
+    assert entry.main([]) == 0
+    assert "Could not open" in offered[0] and isinstance(ran[0], WifiRadio)
+
+
+def test_declining_the_wifi_705_exits_cleanly(monkeypatch, tmp_path):
+    from src.rgc_sdr.settings import Settings
+
+    monkeypatch.setattr(entry.Settings, "load",
+                        classmethod(lambda cls, path=None: Settings(tmp_path / "s.json")))
+    monkeypatch.setattr(entry, "choose_driver", lambda requested, remembered: "airspyhf")
+    monkeypatch.setattr(entry, "SoapyIQSource", lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("no device")))
+    monkeypatch.setattr(entry, "_wifi_radio_instead", lambda problem: None)
+    assert entry.main([]) == 2

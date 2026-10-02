@@ -108,7 +108,9 @@ radio, once:
 
 Over WiFi the app takes TX audio from WLAN instead of USB (DATA OFF MOD and DATA MOD =
 WLAN) and sets the WLAN audio output to AF with the squelch; all put back afterwards. If
-the link drops the status line says so; choose the radio again to reconnect. Only one
+the link drops the status line says so; choose the radio again to reconnect. With no
+radio on USB at all, the app offers **Connect IC-705 over WiFi…** when it starts, and
+once connected it opens straight onto the WiFi radio next time. Only one
 program can be connected to the radio at a time.
 
 ### Choosing the radio

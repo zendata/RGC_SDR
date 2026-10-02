@@ -107,6 +107,35 @@ def choose_driver(requested: str | None, remembered: str | None) -> str:
     return remembered_profile.driver if remembered_profile else "airspyhf"
 
 
+def _wifi_radio_instead(problem: str):
+    """No radio to open: offer the IC-705 over WiFi rather than not starting at all.
+    Asks for its address and login, retries on failure. None if declined."""
+    from PyQt6 import QtWidgets
+
+    from .device.icom import open_ic705
+    from .device.icom_net import load_login, save_login
+    from .ui.network_login import NetworkLoginDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
+    while True:
+        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning, "VK3RQ Super SDR",
+                                    f"{problem}\n\nNo radio is connected by USB.")
+        wifi = box.addButton("Connect IC-705 over WiFi\u2026",
+                             QtWidgets.QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Quit", QtWidgets.QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not wifi:
+            return None
+        dialog = NetworkLoginDialog(load_login())
+        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+            continue
+        save_login(dialog.login())
+        try:
+            return open_ic705("icom705net")
+        except Exception as exc:
+            problem = f"Could not connect to the IC-705 over WiFi: {exc}"
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -192,9 +221,13 @@ def main(argv: list[str] | None = None) -> int:
         print(exc, file=sys.stderr)
         return 2
     except Exception as exc:
+        label = chosen.label if chosen is not None else driver
         print(f"Could not open driver={driver}: {exc}", file=sys.stderr)
-        print("Run with --list to see attached devices.", file=sys.stderr)
-        return 2
+        source = None if args.driver else _wifi_radio_instead(f"Could not open {label}: {exc}")
+        if source is None:
+            print("Run with --list to see attached devices.", file=sys.stderr)
+            return 2
+        freq = source.center_freq
 
     caps = source.caps
     if not caps.covers(freq):

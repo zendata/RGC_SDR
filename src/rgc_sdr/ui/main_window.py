@@ -2742,6 +2742,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._persist:
             return
         self.settings.last = self.current_snapshot()
+        self.settings.device = self.current_device_key()     # the radio to reopen
         self.settings.radios[self.current_device_key()] = self.current_radio_settings()
         try:
             self.settings.save()
