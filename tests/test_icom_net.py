@@ -352,3 +352,21 @@ def test_login_details_are_saved_without_the_password(tmp_path):
     assert (login.host, login.user, login.password) == ("192.168.1.50", "vk3rq", "")
     assert login.complete
     assert not net.load_login(tmp_path / "missing.json", keychain=False).complete
+
+
+def test_the_radios_idle_packets_are_not_counted_as_lost(radio):
+    link = link_to(radio)
+    try:
+        for seq in range(1, 7):
+            if seq % 2:
+                radio.send(1, net.control(net.T_DATA, radio.RADIO_ID, radio.client_id[1], seq))
+            else:
+                answer = civ.encode(0x15, b"\x02\x00\x00", to=0xE0, frm=0xA4)
+                p = radio._packet(1, 0x15 + len(answer))
+                p[16:21] = bytes([0xC1, len(answer), 0, 0, seq])
+                struct.pack_into("<H", p, 6, seq)
+                radio.send(1, p + answer)
+        assert wait_until(lambda: link.serial._expect_seq == 7)
+        assert link.stats["lost_civ"] == 0
+    finally:
+        link.close()

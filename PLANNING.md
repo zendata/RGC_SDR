@@ -138,7 +138,8 @@ headless-testable and lets modules be swapped independently.
   ← **current**
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
-  protocol) built, **not yet verified on the radio** (section 7o). Bluetooth ruled out
+  protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX over WiFi
+  not yet) (section 7o). Bluetooth ruled out
   (headsets and D-STAR phone apps only). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
@@ -874,6 +875,16 @@ and DATA MOD to WLAN (03), WLAN output to AF (`1A 05 01 14` = 00) and WLAN AF SQ
 (`01 15` = 01); a restore file left by a crash over the other connection is handed back
 too. A dead link closes at once and keeps the restore file. Choosing the WiFi entry asks
 for address/user/password (password in the Keychain).
+
+**On the radio, 2026-10-02.** Through the home router (Station mode, 192.168.1.77) the
+705's WiFi lost 87-98 % of pings at 0.2-1.4 s while the router answered in 4 ms: the
+handshake sometimes got through, the login reply never did. VK3RQ reports long-standing
+trouble with the radio's WiFi in Station mode. In **AP mode** (Mac joined "IC-705", radio
+192.168.59.1) the same radio was clean: 0 % loss, 6 ms; login first time in 0.05 s;
+**scope 10 lines/s** (USB: 4.3), none dropped; received audio a steady 48.4 k samples/s;
+settings handed back on close. So the radio is not faulty; its link to the router is.
+The CI-V loss counter first read 486: the radio's idle packets take sequence numbers on
+the CI-V session too and were not counted -- fixed.
 
 Bluetooth was considered and ruled out: the 705's Bluetooth takes headsets and the
 RS-MS1A/RS-MS1I D-STAR phone apps (Advanced Manual §10), so it carries neither the

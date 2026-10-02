@@ -536,8 +536,9 @@ class IcomLink:
             self._check_status(pkt)
         elif stream is self.serial:
             data = civ_payload(pkt)
+            if data is not None or (len(pkt) == 16 and pkt[4] == T_DATA):
+                stream.note_seq(pkt)          # idle packets take sequence numbers too
             if data is not None:
-                stream.note_seq(pkt)
                 with self._civ_ready:
                     self._civ_in += data
                     del self._civ_in[:-65536]
