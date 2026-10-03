@@ -741,10 +741,12 @@ class NetworkRadioAudio(RadioAudio):
     """Plays the received audio the radio sends over the network on the Mac.
 
     The link's packets arrive in bursts as WiFi allows, so playback waits for a cushion of
-    PREFILL_S before starting, and again after running dry.
+    PREFILL_S before starting, and again after running dry. WiFi holds packets up by
+    60-80 ms now and then, and the link waits up to RX_HOLD_S for a resent one, so the
+    cushion has to cover both or every hold-up is heard as a gap.
     """
 
-    PREFILL_S = 0.08
+    PREFILL_S = 0.15
 
     def __init__(self, link, samplerate: float = 48_000.0, blocksize: int = 1024,
                  volume: float = 0.5) -> None:

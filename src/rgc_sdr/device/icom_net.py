@@ -51,6 +51,10 @@ TX_BLOCK_SAMPLES = 960
 _TX_PARTS = (1364, 556)
 #: The jitter buffer the radio is asked to keep for our transmit audio, ms.
 TX_BUFFER_MS = 300
+#: How long received audio waits for a missing packet the radio is asked to resend,
+#: and when to ask again, before the gap is filled with silence.
+RX_HOLD_S = 0.06
+RX_REASK_S = 0.025
 
 #: Packet types (the 16-bit field after the length).
 T_DATA, T_RETRANSMIT, T_ARE_YOU_THERE, T_I_AM_HERE, T_DISCONNECT, T_READY, T_PING = \
@@ -224,6 +228,80 @@ def pcm_to_float(pcm: bytes) -> np.ndarray:
 
 def float_to_pcm(block: np.ndarray) -> bytes:
     return (np.clip(block, -1.0, 32767 / 32768) * 32768.0).astype("<i2").tobytes()
+
+
+class _ReceivedAudio:
+    """Puts the radio's audio packets back in order, asks for missing ones again, and
+    fills with silence any that do not come back within RX_HOLD_S.
+
+    WiFi drops the odd UDP packet; the radio (or wfserver) keeps what it sent and
+    resends on request, so a gap of one 10-20 ms packet is usually recoverable in time.
+    """
+
+    #: A jump this big is a new numbering (the radio restarted its stream), not a gap.
+    RESYNC = 1000
+
+    def __init__(self, ask) -> None:
+        self._ask = ask                       # ask(seq): request one packet again
+        self._next: int | None = None
+        self._pending: dict[int, bytes] = {}
+        self._missing: dict[int, float] = {}  # seq -> when last asked for
+        self._missing_since: dict[int, float] = {}
+        self._size = 960                      # bytes in a packet, for the silence
+        #: Packets that never arrived (silence went in their place) / came back on request.
+        self.lost = 0
+        self.recovered = 0
+
+    def add(self, seq: int, pcm: bytes, now: float) -> None:
+        """One packet; pcm is b"" for an idle packet, which takes a number but no time."""
+        if self._next is None:
+            self._next = seq
+        ahead = (seq - self._next) & 0xFFFF
+        if ahead >= 0x8000:                   # already played, or a duplicate
+            return
+        if ahead > self.RESYNC:
+            self._pending.clear()
+            self._missing.clear()
+            self._missing_since.clear()
+            self._next = seq
+            ahead = 0
+        if seq in self._missing:
+            self.recovered += 1
+            del self._missing[seq]
+            self._missing_since.pop(seq, None)
+        if pcm:
+            self._size = len(pcm)
+        self._pending[seq] = pcm
+        for i in range(ahead):
+            gap = (self._next + i) & 0xFFFF
+            if gap not in self._pending and gap not in self._missing:
+                self._missing[gap] = now
+                self._missing_since[gap] = now
+                self._ask(gap)
+
+    def release(self, now: float) -> list[bytes]:
+        """The audio now ready to play, in order. A missing packet holds up those after
+        it until RX_HOLD_S has passed, then becomes silence."""
+        out = []
+        while self._pending:
+            seq = self._next
+            if seq in self._pending:
+                pcm = self._pending.pop(seq)
+                if pcm:
+                    out.append(pcm)
+            elif now - self._missing_since.get(seq, now) >= RX_HOLD_S:
+                self.lost += 1
+                self._missing.pop(seq, None)
+                self._missing_since.pop(seq, None)
+                out.append(bytes(self._size))
+            else:
+                break
+            self._next = (seq + 1) & 0xFFFF
+        for seq, asked in list(self._missing.items()):
+            if now - asked >= RX_REASK_S:
+                self._missing[seq] = now
+                self._ask(seq)
+        return out
 
 
 # -- one UDP session ---------------------------------------------------------------------
@@ -425,6 +503,7 @@ class IcomLink:
         self._civ_seq = 0
         self._audio_seq = 1
         self._audio_lock = threading.Lock()
+        self._rx_audio = _ReceivedAudio(self._ask_audio_again)
         self._inner = 0
         self._token = b""
         self._running = threading.Event()
@@ -533,6 +612,7 @@ class IcomLink:
                     if pkt is not None and not stream.handle_common(pkt):
                         self._dispatch(stream, pkt)
                 now = time.monotonic()
+                self._play_received(now)
                 self.control.tick(now, idle=True)
                 self.serial.tick(now, idle=True)
                 self.audio.tick(now, idle=False)
@@ -550,6 +630,16 @@ class IcomLink:
             with self._civ_ready:
                 self._civ_ready.notify_all()
 
+    def _ask_audio_again(self, seq: int) -> None:
+        a = self.audio
+        a.send(control(T_RETRANSMIT, a.local_id, a.remote_id, seq=seq))
+
+    def _play_received(self, now: float) -> None:
+        sink = self.audio_sink
+        for pcm in self._rx_audio.release(now):
+            if sink is not None:
+                sink(pcm_to_float(pcm))
+
     def _dispatch(self, stream: _Stream, pkt: bytes) -> None:
         if stream is self.control:
             self._check_status(pkt)
@@ -564,11 +654,10 @@ class IcomLink:
                     self._civ_ready.notify_all()
         elif stream is self.audio:
             pcm = audio_payload(pkt)
-            sink = self.audio_sink
-            if pcm is not None:
-                stream.note_seq(pkt)
-                if sink is not None:
-                    sink(pcm_to_float(pcm))
+            idle = len(pkt) == 16 and pkt[4] == T_DATA
+            if pcm is not None or idle:
+                self._rx_audio.add(struct.unpack_from("<H", pkt, 6)[0], pcm or b"",
+                                   time.monotonic())
 
     @property
     def connected(self) -> bool:
@@ -577,7 +666,8 @@ class IcomLink:
     @property
     def stats(self) -> dict:
         return {"lost_civ": self.serial.lost if self.serial else 0,
-                "lost_audio": self.audio.lost if self.audio else 0}
+                "lost_audio": self._rx_audio.lost,
+                "recovered_audio": self._rx_audio.recovered}
 
     # -- the transport face (IcomSource) -----------------------------------------------
 

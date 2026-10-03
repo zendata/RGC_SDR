@@ -143,6 +143,7 @@ class StandInRadio:
         self.client_id = [0, 0, 0]
         self.civ_received = []
         self.audio_received = bytearray()
+        self.resend_requests = []
         self.conninfo = None
         self.pings_answered = 0
         self.goodbyes = 0
@@ -164,8 +165,9 @@ class StandInRadio:
     def _packet(self, i, size, kind=0):
         return net.header(size, kind, 0, self.RADIO_ID, self.client_id[i])
 
-    def send_audio(self, pcm: bytes):
+    def send_audio(self, pcm: bytes, seq: int = 0):
         p = self._packet(2, 24 + len(pcm))
+        struct.pack_into("<H", p, 6, seq)
         p[16:24] = bytes([0x97, 0x81, 0, 1, 0, 0]) + struct.pack(">H", len(pcm))
         self.send(2, p + pcm)
 
@@ -204,6 +206,8 @@ class StandInRadio:
                                         to=0xE0, frm=0xA4)
                     self.send(1, self._packet(1, 0x15 + len(answer))
                               + bytes([0xC1, len(answer), 0, 0, 1]) + answer)
+        elif i == 2 and len(p) == 16 and kind == net.T_RETRANSMIT:
+            self.resend_requests.append(struct.unpack_from("<H", p, 6)[0])
         elif i == 2:
             pcm = net.audio_payload(p)
             if pcm:
@@ -368,5 +372,64 @@ def test_the_radios_idle_packets_are_not_counted_as_lost(radio):
                 radio.send(1, p + answer)
         assert wait_until(lambda: link.serial._expect_seq == 7)
         assert link.stats["lost_civ"] == 0
+    finally:
+        link.close()
+
+
+# -- received audio: order, resends, silence -----------------------------------------------
+
+
+def _packets(*seqs):
+    return {seq: bytes([seq]) * 4 for seq in seqs}
+
+
+def test_received_audio_plays_in_order_and_asks_once_for_a_gap():
+    asked = []
+    rx = net._ReceivedAudio(asked.append)
+    p = _packets(10, 11, 13, 14)
+    for seq in (10, 11, 13, 14):
+        rx.add(seq, p[seq], now=0.0)
+    assert asked == [12]
+    assert rx.release(0.0) == [p[10], p[11]]        # 13 and 14 wait for 12
+    rx.add(12, b"\x0c" * 4, now=0.01)
+    assert rx.release(0.01) == [b"\x0c" * 4, p[13], p[14]]
+    assert (rx.lost, rx.recovered) == (0, 1)
+
+
+def test_a_packet_that_never_comes_back_becomes_silence_of_the_same_length():
+    asked = []
+    rx = net._ReceivedAudio(asked.append)
+    for seq in (1, 3):
+        rx.add(seq, b"\x01\x02" * 480, now=0.0)
+    assert rx.release(0.0) == [b"\x01\x02" * 480]
+    assert rx.release(net.RX_REASK_S) == [] and asked == [2, 2]   # asked again
+    out = rx.release(net.RX_HOLD_S)
+    assert out == [bytes(960), b"\x01\x02" * 480]
+    assert (rx.lost, rx.recovered) == (1, 0)
+
+
+def test_duplicates_and_late_packets_are_dropped_and_idles_take_a_number():
+    rx = net._ReceivedAudio(lambda seq: None)
+    rx.add(0xFFFF, b"a", now=0.0)
+    rx.add(0, b"", now=0.0)                          # idle: a number, no audio
+    rx.add(1, b"b", now=0.0)
+    rx.add(0xFFFF, b"a", now=0.0)                    # a resend that came too late
+    assert rx.release(0.0) == [b"a", b"b"]
+    assert rx.lost == 0
+
+
+def test_the_link_asks_the_radio_to_resend_lost_audio(radio):
+    link = link_to(radio)
+    got = []
+    link.audio_sink = got.append
+    try:
+        block = lambda v: net.float_to_pcm(np.full(480, v, dtype=np.float32))
+        radio.send_audio(block(0.1), seq=1)
+        radio.send_audio(block(0.3), seq=3)
+        assert wait_until(lambda: 2 in radio.resend_requests)
+        radio.send_audio(block(0.2), seq=2)
+        assert wait_until(lambda: len(got) == 3)
+        assert [round(float(b[0]), 2) for b in got] == [0.1, 0.2, 0.3]
+        assert link.stats["lost_audio"] == 0 and link.stats["recovered_audio"] == 1
     finally:
         link.close()
