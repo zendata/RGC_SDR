@@ -604,12 +604,16 @@ connected, or driver not installed, re-checked every time the list opens.
 **Profiles, not per-radio code.** `device/profiles.py` holds what probing cannot tell us:
 the name, how to install the driver, a sensible starting rate and frequency, and whether
 the radio has a DC spike. Probing stays the authority once a radio is open. The profile
-only fills gaps — Pluto reports its rates as a continuous range, so `listSampleRates` is
-empty — and applies this application's ceiling.
+only fills gaps — a driver that reports its rates only as a continuous range leaves
+`listSampleRates` empty — and applies a ceiling. (SoapyPlutoSDR as installed does list
+65 kS/s and 1-10 MS/s, checked 2026-10-03; an earlier note here said it was empty.)
 
 **The ceiling is measured.** The NumPy audio chain takes 22% of a core at 6 MS/s, 37% at 10
 and 74% at 20, so nothing above 10 MS/s is offered even where the hardware can do it
-(HackRF reaches 20). Defaults sit at or below 4 MS/s.
+(HackRF reaches 20). Defaults sit at or below 4 MS/s. A radio's own link can set a lower
+ceiling: the Pluto over USB, measured 2026-10-03, delivered every sample at 2-6 MS/s but
+95% at 8 and 78% at 10 (topping out near 7.7 MS/s) with **no overflow reported** — heard
+only as scratchy FM audio — so it is capped at 6 MS/s.
 
 **The window follows the radio.** Frequency range, rate list, hardware IF bandwidth, gain
 stages, AGC and boolean driver settings (bias-tee and similar, taken from whatever the

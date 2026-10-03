@@ -101,6 +101,16 @@ def test_refine_caps_supplies_rates_when_the_driver_reports_only_a_range():
     assert profile_for("plutosdr").default_rate in refined.sample_rates
 
 
+def test_pluto_is_capped_below_where_its_usb_link_drops_samples():
+    """The driver lists 1-10 MS/s; above 6 MS/s samples go missing with no overflow."""
+    listed = (65105.0,) + tuple(r * 1e6 for r in range(1, 11))
+    probed = DeviceCaps("plutosdr", "Pluto", "", listed, (FreqRange(70e6, 6e9),),
+                        (), True, ("CF32",))
+    refined = refine_caps(probed, profile_for("plutosdr"))
+    assert max(refined.sample_rates) == 6e6
+    assert 2e6 in refined.sample_rates
+
+
 def test_probing_wins_over_the_profile():
     probed = DeviceCaps("rtlsdr", "RTL", "", (2.048e6,), (FreqRange(24e6, 1.7e9),),
                         (), True, ("CF32",))

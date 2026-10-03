@@ -22,6 +22,8 @@ from .source import DeviceCaps, FreqRange, GainElement, TxCaps
 
 #: Above this the audio chain cannot keep up in pure NumPy (see module docstring).
 APP_MAX_RATE = 10e6
+#: The Pluto's USB link, measured: above this it silently drops samples.
+PLUTO_MAX_RATE = 6e6
 
 
 @dataclass(frozen=True)
@@ -161,7 +163,10 @@ PROFILES: tuple[SdrProfile, ...] = (
         freq_ranges=(FreqRange(325e6, 3800e6),),
         sample_rates=(6e6, 4e6, 2.5e6, 2e6, 1e6),
         default_rate=2e6,
-        max_rate=APP_MAX_RATE,
+        # Measured 2026-10-03 over USB: every sample arrives up to 6 MS/s, then the
+        # link tops out near 7.7 MS/s (95% delivered at 8, 78% at 10) with no overflow
+        # reported -- the gaps were only heard, as scratchy FM audio.
+        max_rate=PLUTO_MAX_RATE,
         default_freq=433.92e6,
         gain_elements=(GainElement("PGA", 0.0, 73.0, 1.0),),
         has_agc=True,
