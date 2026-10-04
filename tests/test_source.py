@@ -247,6 +247,18 @@ def test_retune_and_rate_change_on_live_stream(sdr_devices):
 
 
 @pytest.mark.hardware
+def test_a_rate_from_another_radio_opens_at_a_supported_one(sdr_devices):
+    """The Pluto's remembered 6 MS/s once reached the HF+ at startup unchecked."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    src = SoapyIQSource(driver="airspyhf", sample_rate=5_999_999.0, center_freq=7.1e6)
+    try:
+        assert src.sample_rate in src.caps.sample_rates
+    finally:
+        src.close()
+
+
+@pytest.mark.hardware
 def test_clamped_retune_never_leaves_an_untunable_frequency(sdr_devices):
     if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
         pytest.skip("no airspyhf")

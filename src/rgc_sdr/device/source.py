@@ -464,7 +464,11 @@ class SoapyIQSource(IQSource):
         self.profile = profile_for(driver)
         self._caps = refine_caps(self._probe_caps(driver), self.profile)
         prefer = self.profile.default_rate if self.profile else 768e3
-        self._rate = float(sample_rate or self._caps.default_sample_rate(prefer))
+        # A remembered rate may belong to another radio (the Pluto's 6 MS/s reached the
+        # HF+ this way), and some drivers echo back whatever they are given, so only an
+        # offered rate is ever asked for.
+        self._rate = (self._caps.nearest_sample_rate(float(sample_rate)) if sample_rate
+                      else float(self._caps.default_sample_rate(prefer)))
         self._dev.setSampleRate(SOAPY_RX, 0, self._rate)
         # Read back: the driver may quantise to a supported rate.
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
