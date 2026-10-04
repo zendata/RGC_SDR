@@ -61,6 +61,10 @@ Three consequences that shape the design:
    there the toggle appears.
 3. **Signal levels are very low** (floor ≈ −111 dBFS), so sensible default colour limits and an
    auto-fit control matter more than they would on a strong-signal receiver.
+4. **Its sample rate readback cannot be trusted either.** Asked for 5 999 999 S/s (a rate
+   it does not offer), `getSampleRate` returns 5 999 999 while the hardware streams at
+   ~715 kS/s, measured 2026-10-04. So the source only ever requests a rate from the offered
+   list; an unchecked rate remembered from another radio once scaled every axis ~7.8x wrong.
 
 **Correction (2026-09-25): the app probed the transmit direction.** `SOAPY_RX` was declared
 as 0, which in SoapySDR is `SOAPY_SDR_TX` (RX is 1). The Airspy HF+ driver ignores the
