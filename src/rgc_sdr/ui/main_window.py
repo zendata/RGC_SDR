@@ -33,6 +33,7 @@ from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
 from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
+from .freq_display import FrequencyDisplay
 from .function_panel import FunctionPanel
 from .radio_display import RadioDisplay
 from ..dsp.modulate import TX_MODES
@@ -1295,12 +1296,16 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._device_combo)
 
         row.addWidget(QtWidgets.QLabel("Freq"))
-        self._freq_spin = QtWidgets.QDoubleSpinBox()
+        self._freq_spin = FrequencyDisplay()
         self._freq_spin.setDecimals(6)
         self._freq_spin.setSuffix(" MHz")
         self._freq_spin.setKeyboardTracking(False)
         self._freq_spin.valueChanged.connect(
             lambda mhz: self._retune(mhz * 1e6, from_spin=True)
+        )
+        # A dragged digit is an exact frequency: the step grid must not round it away.
+        self._freq_spin.digitDragged.connect(
+            lambda mhz: self._retune(mhz * 1e6, from_spin=True, allow_snap=False)
         )
         row.addWidget(self._freq_spin)
 

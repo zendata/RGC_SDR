@@ -3878,3 +3878,12 @@ def test_nothing_beside_the_frequency_moves(qapp):
     assert widths[0] == widths[1]
     assert d.duplex.styleSheet() == ""                                  # no empty yellow box
     win.close()
+
+
+def test_dragging_a_frequency_digit_is_not_snapped(qapp):
+    """With a 25 kHz step and snap on, the kHz digit must still move 1 kHz at a time."""
+    src = StubSource(_caps(), center=7.1e6)
+    win = window_for(src, step_hz=25e3, snap=True)
+    win._freq_spin._set_dragged(7.101)              # what one step of a drag does
+    assert src.center_freq == pytest.approx(7.101e6)
+    assert win._freq_spin.value() == pytest.approx(7.101, abs=1e-6)
