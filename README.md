@@ -334,7 +334,10 @@ while a recording plays, so the next launch still opens the radio.
 
 ### Decoders
 
-The **Decode** button, beside Scan, opens the **Decode** panel. Choose a decoder and it
+The **Decode** button, beside Scan, opens the **Decode** panel across the top of the
+window, a fifth of the screen high, so long messages are readable in a window that is
+not maximised. The bold **Map** button at the far left of the top line shows the map at
+any time. Choose a decoder and it
 runs on the listening frequency (the tuned frequency plus Offset) on its own thread,
 whatever the audio is doing, including with audio off.
 

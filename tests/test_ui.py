@@ -4152,3 +4152,25 @@ def test_without_its_radio_the_memory_says_so(qapp, tmp_path):
     message = win._status.currentMessage()
     assert "outside this radio's range" in message and "ADALM-Pluto" in message
     win._stop_decoder()
+
+
+def test_decode_panel_runs_across_the_top(qapp):
+    win = window_for(StubSource(_caps()))
+    win.resize(1000, 700)
+    win.show()
+    win._decode_button.setChecked(True)
+    qapp.processEvents()
+    assert win.dockWidgetArea(win._decoder_dock) == QtCore.Qt.DockWidgetArea.TopDockWidgetArea
+    screen = win.screen().availableGeometry().height()
+    assert win._decoder_dock.height() >= min(140, screen // 5) - 10
+    status = win.decoder_panel.status
+    assert status.parentWidget() is win.decoder_panel             # on the controls line
+
+
+def test_map_button_is_first_on_the_top_line(qapp):
+    win = window_for(StubSource(_caps()))
+    row = win._map_button.parentWidget().layout()
+    assert row.itemAt(0).widget() is win._map_button
+    win._map_button.click()
+    assert win.map_window is not None and win.map_window.isVisible()
+    win.map_window.close()

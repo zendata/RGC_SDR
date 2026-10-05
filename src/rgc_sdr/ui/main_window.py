@@ -1008,10 +1008,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._decoder_dock = QtWidgets.QDockWidget("Decode", self)
         self._decoder_dock.setObjectName("decoderDock")
         self._decoder_dock.setWidget(self.decoder_panel)
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._decoder_dock)
+        # Across the top, full width: ACARS and ADS-B lines are long, and in a window
+        # that is not maximised a side dock left them unreadable (VK3RQ, 2026-10-05).
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, self._decoder_dock)
         self._decoder_dock.hide()
-        self._decode_button.toggled.connect(self._decoder_dock.setVisible)
+        self._decode_button.toggled.connect(self._show_decoder_dock)
         self._decoder_dock.visibilityChanged.connect(self._on_decoder_visibility)
+
+    def _show_decoder_dock(self, show: bool) -> None:
+        """Show or hide the Decode panel; on showing, give it a fifth of the screen."""
+        was_hidden = self._decoder_dock.isHidden()
+        self._decoder_dock.setVisible(show)
+        if show and was_hidden and not self._decoder_dock.isFloating():
+            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+            height = max(140, screen.availableGeometry().height() // 5)
+            self.resizeDocks([self._decoder_dock], [height], QtCore.Qt.Orientation.Vertical)
 
     def _on_decoder_visibility(self, visible: bool) -> None:
         shown = not self._decoder_dock.isHidden()
@@ -1479,6 +1490,14 @@ class MainWindow(QtWidgets.QMainWindow):
         box = QtWidgets.QWidget()
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
+
+        # First on the top line, so it is never off the edge of a narrow window.
+        self._map_button = QtWidgets.QPushButton("Map")
+        self._map_button.setToolTip("Show the map of ships and aircraft (AIS, ACARS, ADS-B)")
+        self._map_button.setStyleSheet("QPushButton { font-weight: bold; padding: 2px 12px; }")
+        self._map_button.clicked.connect(self.show_map)
+        row.addWidget(self._map_button)
+        row.addSpacing(8)
 
         row.addWidget(QtWidgets.QLabel("SDR"))
         self._device_combo = DeviceCombo()

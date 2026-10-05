@@ -23,6 +23,8 @@ class DecoderPanel(QtWidgets.QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(4, 2, 4, 2)
+        outer.setSpacing(2)
         top = QtWidgets.QHBoxLayout()
         top.addWidget(QtWidgets.QLabel("Decode"))
         self.combo = QtWidgets.QComboBox()
@@ -37,7 +39,6 @@ class DecoderPanel(QtWidgets.QWidget):
             "Hidden unless ticked; this is not remembered, and nothing is saved.")
         self.show_text.toggled.connect(self._redraw)
         top.addWidget(self.show_text)
-        top.addStretch(1)
         self.map_button = QtWidgets.QPushButton("Map")
         self.map_button.setToolTip("Show what has been located on a map")
         self.map_button.clicked.connect(self.mapRequested)
@@ -47,8 +48,10 @@ class DecoderPanel(QtWidgets.QWidget):
         top.addWidget(self.clear_button)
         outer.addLayout(top)
 
+        # On the controls line, not a line of its own: across the top of the window the
+        # panel is short, and every line goes to the messages.
         self.status = QtWidgets.QLabel("")
-        outer.addWidget(self.status)
+        top.insertWidget(top.indexOf(self.show_text) + 1, self.status, 1)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(KEEP_MESSAGES)
