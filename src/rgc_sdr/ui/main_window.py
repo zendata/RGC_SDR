@@ -23,6 +23,7 @@ from ..device.profiles import (
     profile_for,
     starting_frequency,
 )
+from ..device.playback import PLAYBACK_DRIVER
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
 from ..dsp.demod import BANDWIDTH_PRESETS, CW_PITCHES, MODE_SPECS, MODES
@@ -222,6 +223,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recordings_dir = Path(recordings_dir) if recordings_dir else DEFAULT_DIR
         self.audio_recorder: AudioRecorder | None = None
         self.iq_recorder: IQRecorder | None = None
+        #: The radio (key, frequency) to go back to when a recording stops playing.
+        self._radio_before_playback: tuple[str, float] | None = None
         self.scanner: Scanner | None = None
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
@@ -277,6 +280,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._status = self.statusBar()
         self._build_scanner_dock()
         self._apply_device_profile()
+        self._sync_playback_ui()
         saved = self.settings.radios.get(self.current_device_key())
         if saved is not None:
             # Rate, zoom and levels came in with the last snapshot; the gains did not.
@@ -324,6 +328,9 @@ class MainWindow(QtWidgets.QMainWindow):
         combo = self._device_combo
         combo.blockSignals(True)
         combo.clear()
+        if self.playing_back:
+            # Choosing any radio from the list ends playback.
+            combo.addItem(f"\u25b6 {self.source.path.name}", PLAYBACK_DRIVER)
         for entry in entries:
             profile = entry.profile
             label = profile.label
@@ -523,20 +530,14 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_device_list()      # put the selector back on the live radio
             return False
 
-        previous_mode = self.mode
-        self._tx_button.setChecked(False)
-        self._stop_radio_audio()
-        if self.scanner is not None:
-            self.stop_scan()
-        self._stop_zerobeat()
-        self.stop_audio_recording("changing radio")
-        self.stop_iq_recording("changing radio")
-        self.set_mode("off")
-        self._timer.stop()
-
+        previous_mode = self._release_source()
         old = self.source
-        self.settings.radios[self.current_device_key()] = self.current_radio_settings()
         old_driver, old_freq = old.caps.driver, old.center_freq
+        if self.playing_back:
+            # Back from a recording: reopen the radio where it was left, not at the
+            # recording's frequency.
+            old_driver = profile.driver
+            old_freq = self._radio_before_playback[1] if self._radio_before_playback else old_freq
         centre = starting_frequency(profile, old_freq)
         try:
             old.close()
@@ -557,6 +558,36 @@ class MainWindow(QtWidgets.QMainWindow):
             except Exception:
                 new = old
 
+        self._radio_before_playback = None
+        self._adopt_source(new, previous_mode, restore_settings=switched)
+        if switched:
+            self.settings.device = profile.key
+            self._save_state()
+            self._status.showMessage(
+                f"now using {profile.label} at {self.source.center_freq / 1e6:.4f} MHz", 5000
+            )
+        return switched
+
+    def _release_source(self) -> str:
+        """Stop everything that uses the current source, ready to replace it. Returns
+        the demodulator mode, to restore on the new one."""
+        previous_mode = self.mode
+        self._tx_button.setChecked(False)
+        self._stop_radio_audio()
+        if self.scanner is not None:
+            self.stop_scan()
+        self._stop_zerobeat()
+        self.stop_audio_recording("changing radio")
+        self.stop_iq_recording("changing radio")
+        self.set_mode("off")
+        self._timer.stop()
+        if not self.playing_back:
+            self.settings.radios[self.current_device_key()] = self.current_radio_settings()
+        return previous_mode
+
+    def _adopt_source(self, new: IQSource, previous_mode: str,
+                      restore_settings: bool = True) -> None:
+        """Make `new` the source and the window match it."""
         self.source = new
         self.spectrum.reset()
         self.waterfall.clear_history()
@@ -566,22 +597,87 @@ class MainWindow(QtWidgets.QMainWindow):
         self._levels_explicit = False
         self._auto_pending = True
         self._apply_device_profile()
-        saved = self.settings.radios.get(self.current_device_key()) if switched else None
+        saved = (self.settings.radios.get(self.current_device_key())
+                 if restore_settings and not self.playing_back else None)
         if saved is not None:
             self.apply_radio_settings(saved)
         self._apply_geometry()
         self.spectrum.set_center_marker(self.source.center_freq)
+        self._freq_spin.blockSignals(True)
+        self._freq_spin.setValue(self.source.center_freq / 1e6)
+        self._freq_spin.blockSignals(False)
         self._update_offset_range()
+        self._sync_playback_ui()
         self._timer.start(int(1000 / self.fps))
         if previous_mode != "off":
             self.set_mode(previous_mode)
-        if switched:
-            self.settings.device = profile.key
-            self._save_state()
-            self._status.showMessage(
-                f"now using {profile.label} at {self.source.center_freq / 1e6:.4f} MHz", 5000
-            )
-        return switched
+
+    # -- IQ playback ---------------------------------------------------------
+
+    @property
+    def playing_back(self) -> bool:
+        return getattr(self.source.caps, "driver", "") == PLAYBACK_DRIVER
+
+    def open_recording(self, path) -> bool:
+        """Play an IQ recording in place of the radio. False, leaving the radio, if the
+        file cannot be played."""
+        from ..device.playback import FileIQSource
+
+        try:
+            new = FileIQSource(path)
+        except (OSError, ValueError) as exc:
+            self._status.showMessage(f"cannot play {Path(path).name}: {exc}", 10000)
+            return False
+        if not self.playing_back:
+            self._radio_before_playback = (self.current_device_key(), self.source.center_freq)
+            self._save_state()                     # the radio's state, before it goes
+        previous_mode = self._release_source()
+        try:
+            self.source.close()
+        except Exception:
+            pass
+        new.start()
+        self._adopt_source(new, previous_mode)
+        self._status.showMessage(
+            f"playing {new.path.name}: {new.duration_s:.1f} s at "
+            f"{new.sample_rate / 1e3:g} kS/s, {new.recorded_center / 1e6:.4f} MHz", 8000)
+        return True
+
+    def stop_playback(self) -> bool:
+        """Back to the radio that was in use before the recording was opened."""
+        if not self.playing_back:
+            return False
+        key = self._radio_before_playback[0] if self._radio_before_playback else None
+        key = key or self.settings.device or "airspyhf"
+        return self.switch_device(key)
+
+    def _on_play_clicked(self) -> None:
+        start = self.recordings_dir if self.recordings_dir.exists() else Path.home()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Play an IQ recording", str(start), "IQ recordings (*.cf32)")
+        if path:
+            self.open_recording(path)
+
+    def _on_pause_toggled(self, paused: bool) -> None:
+        if self.playing_back:
+            self.source.set_paused(paused)
+
+    def _sync_playback_ui(self) -> None:
+        playing = self.playing_back
+        for widget in (self._pause_button, self._stop_play_button, self._play_label):
+            widget.setVisible(playing)
+        self._pause_button.setChecked(False)
+        # Recording a recording only copies it.
+        self._rec_iq_button.setEnabled(not playing and not self.is_transceiver)
+        self._update_play_label()
+
+    def _update_play_label(self) -> None:
+        if not self.playing_back:
+            self._play_label.setText("")
+            return
+        src = self.source
+        self._play_label.setText(f"{src.path.name}  {src.position_s:5.1f} / "
+                                 f"{src.duration_s:.1f} s")
 
     # -- per-radio settings ------------------------------------------------
 
@@ -1414,6 +1510,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rec_label = QtWidgets.QLabel("")
         self._rec_label.setMinimumWidth(260)
         row.addWidget(self._rec_label)
+
+        row.addSpacing(20)
+        self._play_button = QtWidgets.QPushButton("Play\u2026")
+        self._play_button.setToolTip("Play an IQ recording in place of the radio")
+        self._play_button.clicked.connect(self._on_play_clicked)
+        row.addWidget(self._play_button)
+        self._pause_button = QtWidgets.QPushButton("Pause")
+        self._pause_button.setCheckable(True)
+        self._pause_button.toggled.connect(self._on_pause_toggled)
+        row.addWidget(self._pause_button)
+        self._stop_play_button = QtWidgets.QPushButton("Stop")
+        self._stop_play_button.setToolTip("Stop playing and go back to the radio")
+        self._stop_play_button.clicked.connect(self.stop_playback)
+        row.addWidget(self._stop_play_button)
+        self._play_label = QtWidgets.QLabel("")
+        row.addWidget(self._play_label)
+        for widget in (self._pause_button, self._stop_play_button, self._play_label):
+            widget.hide()
 
         row.addStretch(1)
         self._refresh_memories()
@@ -2744,7 +2858,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._save_timer.start()
 
     def _save_state(self) -> None:
-        if not self._persist:
+        # A recording is not a radio: saving would make the next launch open the file's
+        # frequency on the real radio, or try to open "file" as a driver.
+        if not self._persist or self.playing_back:
             return
         self.settings.last = self.current_snapshot()
         self.settings.device = self.current_device_key()     # the radio to reopen
@@ -2853,6 +2969,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._frames = 0
             self._fps_mark = now
             self._update_status(dbfs)
+            self._update_play_label()
             if self._recording_active():
                 self._update_recording_label()
 

@@ -62,6 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-audio", action="store_true", help="do not open an audio device")
     p.add_argument("--recordings", default=None, metavar="DIR",
                    help="where to write recordings (default: ~/Documents/RGC_SDR)")
+    p.add_argument("--play", default=None, metavar="FILE",
+                   help="play an IQ recording (.cf32 with its .json sidecar) instead of a radio")
     p.add_argument("--debug-gestures", action="store_true",
                    help="log trackpad wheel and gesture events, to diagnose swipe tuning")
     p.add_argument("--no-restore", action="store_true", help="ignore saved settings this run")
@@ -207,7 +209,16 @@ def main(argv: list[str] | None = None) -> int:
 
     chosen = profile_for(driver)
     try:
-        if chosen is not None and chosen.kind == "transceiver":
+        if args.play:
+            from .device.playback import FileIQSource
+
+            try:
+                source = FileIQSource(args.play)
+            except (OSError, ValueError) as exc:
+                print(f"Cannot play {args.play}: {exc}", file=sys.stderr)
+                return 2
+            freq = source.center_freq
+        elif chosen is not None and chosen.kind == "transceiver":
             from .device.icom import open_ic705
 
             source = open_ic705(driver)     # opens where the radio's dial is

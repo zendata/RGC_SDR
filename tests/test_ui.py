@@ -3887,3 +3887,63 @@ def test_dragging_a_frequency_digit_is_not_snapped(qapp):
     win._freq_spin._set_dragged(7.101)              # what one step of a drag does
     assert src.center_freq == pytest.approx(7.101e6)
     assert win._freq_spin.value() == pytest.approx(7.101, abs=1e-6)
+
+
+# -- P8a: IQ playback ----------------------------------------------------------
+
+def _recording(tmp_path, centre=145.0e6, rate=192e3, seconds=0.5, tone_hz=20e3):
+    import json
+    n = int(rate * seconds)
+    data = np.exp(2j * np.pi * tone_hz * np.arange(n) / rate).astype(np.complex64)
+    path = tmp_path / "rec.cf32"
+    data.tofile(path)
+    (tmp_path / "rec.cf32.json").write_text(json.dumps(
+        {"format": "complex64", "sample_rate_hz": rate, "center_freq_hz": centre}))
+    return path
+
+
+def test_opening_a_recording_replaces_the_radio(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win, first, _ = switching_window(settings=settings)
+    radio_freq = first.center_freq
+    assert win.open_recording(_recording(tmp_path)) is True
+    assert first.closed and win.playing_back
+    assert win.source.center_freq == pytest.approx(145.0e6)
+    assert win._freq_spin.value() == pytest.approx(145.0, abs=1e-6)
+    assert win._device_combo.currentData() == "file"
+    assert win._pause_button.isVisibleTo(win) and "rec.cf32" in win._play_label.text()
+    assert not win._rec_iq_button.isEnabled()
+    # Nothing is saved while playing: the next launch must still open the radio.
+    win._save_state()
+    assert settings.device != "file"
+    # Click-to-tune moves within the recording.
+    win.waterfall.frequencySelected.emit(145.02e6)
+    assert win.source.center_freq == pytest.approx(145.02e6)
+    # Stop goes back to the radio, at its own frequency.
+    assert win.stop_playback() is True
+    assert not win.playing_back and win.current_device_key() == "airspyhf"
+    assert win.source.center_freq == pytest.approx(radio_freq)
+    assert not win._pause_button.isVisibleTo(win)
+    win.source.close()
+
+
+def test_an_unplayable_file_leaves_the_radio_alone(qapp, tmp_path):
+    win, first, _ = switching_window()
+    bad = tmp_path / "bad.cf32"
+    bad.write_bytes(b"\0" * 64)
+    assert win.open_recording(bad) is False
+    assert win.source is first and not first.closed
+    assert "no sidecar" in win._status.currentMessage()
+
+
+def test_pause_reaches_the_recording(qapp, tmp_path):
+    win, _, _ = switching_window()
+    win.open_recording(_recording(tmp_path))
+    win._pause_button.setChecked(True)
+    assert win.source.paused
+    win.source.close()
+
+
+def test_play_option_parses():
+    from src.rgc_sdr import __main__ as entry
+    assert entry.build_parser().parse_args(["--play", "x.cf32"]).play == "x.cf32"
