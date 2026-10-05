@@ -12,6 +12,11 @@ behaviour (read granularity, overflows, capability gaps) that this project exist
 Unit tests still build synthetic IQ *arrays* to feed pure DSP functions — that is test data for a
 function, not a simulated device, and it keeps the DSP layer verifiable without the radio attached.
 
+**IQ playback is allowed (VK3RQ, 2026-10-05), and is not a simulated device.** It replays samples
+a real radio captured (`.cf32` + sidecar from the IQ recorder), so it carries the real radio's
+artefacts with it. The app still never *synthesises* a signal: no generated test tones, no fake
+radio in the device list. Playback is reached by opening a recording, never by default.
+
 ## 2. Language
 **Python for the application; native code stays behind library bindings for the hot path.**
 - Fast iteration while learning; strong DSP (NumPy), GUI (Qt) and plotting ecosystems.
@@ -137,9 +142,19 @@ headless-testable and lets modules be swapped independently.
   HackRF, grows the controls with no code change.)*
 - **P3 — Demod.** AM, NBFM, WBFM, USB and LSB with audio out. ✅ See section 7c.
 - **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
-- **P5 — Extras.** Scanner ✅ (section 7e). Remaining: IQ *playback* (the recorder's
-  sidecar format is designed for it), multi-device, network (SpyServer-style), plugins.
-  ← **current**
+- **P5 — Extras.** Scanner ✅ (section 7e). IQ playback moved to P8a. Remaining:
+  multi-device, network (SpyServer-style), plugins.
+- **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ← **current**
+  - **P8a** IQ playback of the recorder's files, and the decode framework (a Decode
+    selector and a text panel fed from the FM discriminator).
+  - **P8b** POCSAG pagers (512/1200/2400 baud). Then a survey of local paging channels;
+    FLEX only if that is what is used here.
+  - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK).
+  - **P8d**, after P8c is done: AIS, ACARS and ADS-B, one at a time.
+  - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
+    codec library (mbelib), if at all.
+  - DRM and DAB+ deferred: each is a large OFDM receiver ending in an audio codec that
+    would have to come from outside, with few test signals for DRM in Melbourne.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX over WiFi
@@ -904,6 +919,51 @@ cushion; TX audio level with WLAN MOD Level at its default; **what the radio doe
 link drops while keyed** (the app's 3-minute timeout cannot unkey it then -- check the
 radio's own TOT); that the radio name in the connection request (taken from its
 capabilities packet, kappanhang sends "IC-705") is accepted.
+
+## 7p. Decoders and IQ playback (P8)
+
+**Playback.** `device/playback.py` has `FileIQSource`, an `IQSource` over a `.cf32` file and
+its sidecar. A reader thread writes blocks into the same `_Ring` a radio uses, paced to the
+recorded sample rate, so the display, audio, decoders and recorder see it exactly as they
+would see the radio. It loops at the end and can be paused. Tuning moves a virtual centre
+anywhere within the recorded span with the `_Nco`, so click-to-tune works on a recording;
+outside the recorded band there is nothing, and the span's edges wrap. Caps: the one
+recorded rate, the recorded span as the frequency range, no gains, no TX. While a recording
+plays the app saves no state, so the next launch still opens the radio.
+
+**Decoders.** Decoders consume the **raw FM discriminator** (`DemodChain.last_discriminator`,
+real, at the chain's IF rate, at least 48 kHz) -- before the audio low-pass, AGC and squelch,
+which would distort or zero exactly what a data slicer needs. Choosing a decoder puts the
+radio in NBFM. They run in the audio worker thread, as the CW decoder does, and hand
+finished messages to the UI through a queue. Text goes to a Decode dock beside the
+Scanner's.
+
+**Bit timing without a per-sample loop.** The discriminator is low-passed and sliced; the
+sign changes are located to a fraction of a sample by interpolation. Each transition gets
+a bit index, `round((t - phase) / samples_per_bit)`, where `phase` is a running circular
+mean of the transition times modulo one bit period. The bits between consecutive
+transitions all share one value, so the bit stream is `np.repeat(levels, diff(index))`. A
+glitch shorter than half a bit gets the same index at both ends and vanishes. Clock drift
+is followed by the running mean.
+
+**POCSAG.** Sliced at 512, 1200 and 2400 baud in parallel, both polarities. Batches start
+with the sync codeword 0x7CD215D8; codewords are BCH(31,21) plus even parity, corrected up
+to two bit errors from a syndrome table. Address = 18 address bits << 3 | frame number;
+function bits 0-3. Message codewords carry 20 bits: numeric (4-bit BCD) for function 0,
+7-bit alphanumeric otherwise. Checked against published constants (the sync and idle
+codewords must be valid BCH codewords), not only against an encoder written alongside.
+
+**Pager privacy.** Message text can carry names, addresses and medical details. The panel
+shows address, function, type and length; the text itself only while "Show text" is ticked
+(off by default and not remembered). Decoded text is never written to disk or logged, and
+never goes into commits, issues or chat.
+
+**APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
+discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the
+sign is mark or space whatever the transmitter's pre-emphasis did to the tone levels. Then
+NRZI, HDLC flags (0x7E) and bit unstuffing, LSB-first bytes and the CRC-16/X.25 frame check
+(checked against the standard value 0x906E for "123456789"). AX.25 addresses give
+`SRC>DEST,PATH:info`; APRS positions in the plain uncompressed format are parsed.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
