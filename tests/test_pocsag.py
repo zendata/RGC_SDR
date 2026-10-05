@@ -10,7 +10,7 @@ import pytest
 
 from src.rgc_sdr.dsp.demod import DemodChain
 from src.rgc_sdr.dsp.pocsag import (
-    IDLE, NUMERIC, SYNC, PocsagDecoder, alpha_text, correct, numeric_text, syndromes,
+    IDLE, NUMERIC, SYNC, PocsagDecoder, alpha_text, classify, correct, numeric_text, syndromes,
 )
 
 # -- an encoder, for tests only -----------------------------------------------------
@@ -163,3 +163,39 @@ def test_summary_hides_the_text_unless_asked():
     assert "PRIVATE" not in m.summary() and "15 characters hidden" in m.summary()
     assert "PRIVATE DETAILS" in m.summary(show_text=True)
     assert "PRIVATE" not in repr(m)
+
+
+# -- numeric or text: by content, not by function code ------------------------------
+
+
+def test_text_sent_with_function_0_is_read_as_text():
+    """A Melbourne network sends its text pages with function 0 (measured 2026-10-05);
+    read as numeric they came out as digits strewn with U * ( ) -."""
+    bits = encode(555, 0, _alpha_chunks("ALERT STRUCTURE FIRE"))
+    (m,) = decode(discriminator(fsk_iq(bits, 512)))
+    assert (m.function, m.kind, m.text) == (0, "alpha", "ALERT STRUCTURE FIRE")
+
+
+def test_digits_sent_with_function_3_are_read_as_numeric():
+    bits = encode(556, 3, _numeric_chunks("0412 555 123"))
+    (m,) = decode(discriminator(fsk_iq(bits, 512)))
+    assert (m.function, m.kind, m.text) == (3, "numeric", "0412 555 123")
+
+
+def test_classification_over_many_random_messages():
+    """Very short pages can read cleanly both ways, so this asks for 99 %, not 100 %."""
+    rng = np.random.default_rng(42)
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,:/-"
+    right_text = right_digits = 0
+    trials = 2000
+    for _ in range(trials):
+        text = "".join(rng.choice(list(letters), rng.integers(3, 80)))
+        right_text += classify(_alpha_chunks(text)) == ("alpha", text.rstrip())
+        digits = "".join(rng.choice(list("0123456789 -"), rng.integers(3, 40))).strip() or "7"
+        right_digits += classify(_numeric_chunks(digits)) == ("numeric", digits)
+    assert right_text / trials >= 0.99 and right_digits / trials >= 0.99
+
+
+def test_text_stops_at_the_end_of_text_code():
+    chunks = _alpha_chunks("SHORT")             # EOT, then padding
+    assert alpha_text(chunks) == "SHORT"

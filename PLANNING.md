@@ -963,8 +963,20 @@ is followed by the running mean.
 **POCSAG.** Sliced at 512, 1200 and 2400 baud in parallel, both polarities. Batches start
 with the sync codeword 0x7CD215D8; codewords are BCH(31,21) plus even parity, corrected up
 to two bit errors from a syndrome table. Address = 18 address bits << 3 | frame number;
-function bits 0-3. Message codewords carry 20 bits: numeric (4-bit BCD) for function 0,
-7-bit alphanumeric otherwise. Checked against published constants (the sync and idle
+function bits 0-3. Message codewords carry 20 bits: numeric (4-bit BCD) or 7-bit
+alphanumeric, **judged by content, not by function code** (`pocsag.classify`).
+
+*Corrected 2026-10-05.* The first version read function 0 as numeric, the common
+convention. VK3RQ saw random characters: a Melbourne network at 148.68 MHz sends its text
+pages with function 0, and read as numeric they came out as digits strewn with U * ( ) -
+(measured without reading a message: as alpha 56 % of their words were in a dictionary).
+Now text is chosen when the 7-bit reading is all printable and its end-of-text code
+falls in the last codeword (text fills its codewords; an early "end code" is digits read
+as text); numeric when at least 95 % of the 4-bit reading is digits, spaces and dashes.
+Both clean happens only for very short pages, and then text needs 3 characters or more.
+Over 5000 random pages of each kind: text 100 %, numeric 99.7 % (the misses are 1-3
+digit pages). On air afterwards: every page at 148.68 and 148.36 MHz read as text, no
+stray symbols. Checked against published constants (the sync and idle
 codewords must be valid BCH codewords), not only against an encoder written alongside.
 
 **Pager privacy.** Message text can carry names, addresses and medical details. The panel

@@ -96,17 +96,63 @@ def numeric_text(chunks: list[int]) -> str:
     return "".join(out).rstrip()
 
 
-def alpha_text(chunks: list[int]) -> str:
-    """Alphanumeric messages: 7-bit characters, least significant bit first, packed
-    across the 20-bit chunks without regard to codeword boundaries."""
+#: Control codes that end an alphanumeric message (ETX, EOT).
+_ALPHA_END = (3, 4)
+
+
+def _alpha_codes(chunks: list[int]) -> tuple[list[int], bool]:
+    """7-bit characters, least significant bit first, packed across the 20-bit chunks
+    without regard to codeword boundaries, up to the end-of-text code; and whether
+    that code was found."""
     stream = "".join(f"{c:020b}" for c in chunks)
-    chars = []
+    codes = []
     for i in range(0, len(stream) - 6, 7):
         code = int(stream[i:i + 7][::-1], 2)
-        chars.append(code)
-    text = "".join(chr(c) if 32 <= c < 127 else ("\n" if c == 10 else "") for c in chars
-                   if c not in (0, 3, 4))
+        if code in _ALPHA_END:
+            return codes, True
+        codes.append(code)
+    return codes, False
+
+
+def alpha_text(chunks: list[int]) -> str:
+    """Alphanumeric messages, printable characters and line breaks only."""
+    text = "".join(chr(c) if 32 <= c < 127 else ("\n" if c == 10 else "")
+                   for c in _alpha_codes(chunks)[0])
     return text.rstrip()
+
+
+#: How much of a numeric reading must be digits, spaces and dashes to believe it.
+NUMERIC_CONFIDENCE = 0.95
+
+
+def classify(chunks: list[int]) -> tuple[str, str]:
+    """("numeric" or "alpha", text), judged by the content, not the function code.
+
+    Function 0 is only *conventionally* numeric. Measured 2026-10-05 on a Melbourne
+    network at 148.68 MHz: its function-0 pages were text (56 % dictionary words read
+    as alpha), and reading them as numeric gave digits strewn with U * ( ) -. A real
+    numeric page is all digits, spaces and dashes; text read as numeric is not, and
+    digits read as text are full of control codes.
+    """
+    codes, ended = _alpha_codes(chunks)
+    printable = sum(32 <= c < 127 or c in (10, 13) for c in codes) / max(1, len(codes))
+    # A text page fills its codewords up to the last, so its end code lies in the final
+    # one; an "end code" with whole codewords still to come is digits read as text.
+    ends_in_last = ended and len(codes) * 7 + 7 > (len(chunks) - 1) * 20
+    clean_text = bool(codes) and ends_in_last and printable == 1.0
+    numeric = numeric_text(chunks)
+    digits = sum(c in "0123456789 -" for c in numeric) / max(1, len(numeric))
+    clean_digits = bool(numeric) and digits >= NUMERIC_CONFIDENCE and digits >= printable
+    if clean_text and clean_digits:
+        # Both readings look right, which only happens for very short pages: a couple
+        # of letters is the likelier accident, so a few characters are asked of text.
+        return ("alpha", alpha_text(chunks)) if len(codes) >= 3 else ("numeric", numeric)
+    if clean_text:
+        # Properly closed text: its padding alone could read as a run of zeros.
+        return "alpha", alpha_text(chunks)
+    if clean_digits:
+        return "numeric", numeric
+    return "alpha", alpha_text(chunks)
 
 
 @dataclass
@@ -208,10 +254,8 @@ class _Framer:
         chunks = pending["chunks"]
         if not chunks:
             kind, text = "tone", ""
-        elif pending["function"] == 0:
-            kind, text = "numeric", numeric_text(chunks)
         else:
-            kind, text = "alpha", alpha_text(chunks)
+            kind, text = classify(chunks)
         return [PagerMessage(self.baud, pending["address"], pending["function"], kind, text,
                              pending["fixed"])]
 
