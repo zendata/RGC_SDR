@@ -353,6 +353,13 @@ whatever the audio is doing, including with audio off.
   course and heading; ship names, call signs and destinations; base stations and
   navigation marks. Each report also shows its standard `!AIVDM` sentence.
 
+Choosing AIS opens a **map** in its own window (or press **Map** in the Decode panel):
+ships as arrows pointing where they are heading, with short trails; navigation marks as
+yellow diamonds and shore stations as blue squares; a sortable list beside it. Drag to
+pan, scroll to zoom, hover for details, click a row to centre on it. The view keeps
+everything in sight until you move it; **Fit all** returns to that. Map tiles come from
+OpenStreetMap and are cached for a week.
+
 Messages wrap to the panel's width. A memory remembers the decoder that was running when
 it was saved, so recalling it starts that decoder again; memories for the national APRS
 channels (145.175 MHz, WICEN 145.200 MHz, and 439.100 MHz on 70 cm, out of the HF+'s
@@ -415,6 +422,8 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/pocsag.py](src/rgc_sdr/dsp/pocsag.py) | POCSAG framing, BCH correction, messages |
 | [src/rgc_sdr/dsp/aprs.py](src/rgc_sdr/dsp/aprs.py) | AFSK, HDLC, AX.25, APRS positions |
 | [src/rgc_sdr/dsp/ais.py](src/rgc_sdr/dsp/ais.py) | AIS messages and `!AIVDM` sentences |
+| [src/rgc_sdr/targets.py](src/rgc_sdr/targets.py) | Ships (and later aircraft) folded from messages |
+| [src/rgc_sdr/ui/map_window.py](src/rgc_sdr/ui/map_window.py) | Map window on OpenStreetMap tiles |
 | [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |
 | [src/rgc_sdr/ui/smeter.py](src/rgc_sdr/ui/smeter.py) | Signal meter (dBFS + SNR, no invented S-units) |
 | [src/rgc_sdr/dsp/detect.py](src/rgc_sdr/dsp/detect.py) | Sweep planning and carrier detection |

@@ -17,6 +17,8 @@ KEEP_MESSAGES = 500
 class DecoderPanel(QtWidgets.QWidget):
     #: The chosen decoder's key, or "" for off.
     decoderChanged = QtCore.pyqtSignal(str)
+    #: The Map button: show the map window.
+    mapRequested = QtCore.pyqtSignal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -36,6 +38,10 @@ class DecoderPanel(QtWidgets.QWidget):
         self.show_text.toggled.connect(self._redraw)
         top.addWidget(self.show_text)
         top.addStretch(1)
+        self.map_button = QtWidgets.QPushButton("Map")
+        self.map_button.setToolTip("Show what has been located on a map")
+        self.map_button.clicked.connect(self.mapRequested)
+        top.addWidget(self.map_button)
         self.clear_button = QtWidgets.QPushButton("Clear")
         self.clear_button.clicked.connect(self.clear)
         top.addWidget(self.clear_button)

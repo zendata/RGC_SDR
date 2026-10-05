@@ -1012,6 +1012,17 @@ into the tests as fixed data (pyais is not a dependency). A widely reprinted exa
 sentence, `!AIVDM,1,1,,A,13u?etPv2;0n:dDPwUM1U1Cb069D,0*23`, has a wrong checksum: it
 XORs to 0x24.
 
+**Map window** (requested 2026-10-05). `targets.TargetStore` (no Qt) folds decoded
+messages into one target per identity -- position, course, heading, name, details, a
+200-point trail -- and expires them (ships 30 min, marks and shore stations 60, aircraft
+3). `ui/map_window.py` draws them on OpenStreetMap tiles with its own small slippy map,
+not an embedded browser, so no web engine is needed. OSM's tile policy is kept:
+identifying User-Agent, a 7-day disk cache in ~/Library/Caches/RGC_SDR/tiles, two
+downloads at most, attribution on the map. RGC_SDR_NO_TILES keeps it off the network
+(set in the tests). The view keeps everything in sight until the user pans or zooms;
+labels that would overlap are skipped. Opened by choosing AIS, or the Map button.
+Built to take aircraft from ADS-B too.
+
 *Measured on air, 2026-10-05 (HF+ at 162.000 MHz, Melbourne):* 231 messages in 3
 minutes from 78 vessels, base stations and aids to navigation in Port Phillip, 114 on
 channel A and 117 on B, no errors.

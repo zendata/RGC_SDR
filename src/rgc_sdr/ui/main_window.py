@@ -36,6 +36,8 @@ from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
 from ..decoding import DecodeWorker
 from .decoder_panel import DecoderPanel
+from .map_window import MapWindow
+from ..targets import TargetStore
 from .freq_display import FrequencyDisplay
 from .function_panel import FunctionPanel
 from .radio_display import RadioDisplay
@@ -229,6 +231,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._radio_before_playback: tuple[str, float] | None = None
         self.scanner: Scanner | None = None
         self.decode_worker: DecodeWorker | None = None
+        #: Everything the decoders have located, for the map window.
+        self.targets = TargetStore()
+        self.map_window: MapWindow | None = None
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
         self.audio: AudioSink | None = None
@@ -999,6 +1004,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_decoder_dock(self) -> None:
         self.decoder_panel = DecoderPanel()
         self.decoder_panel.decoderChanged.connect(self._on_decoder_changed)
+        self.decoder_panel.mapRequested.connect(self.show_map)
         self._decoder_dock = QtWidgets.QDockWidget("Decode", self)
         self._decoder_dock.setObjectName("decoderDock")
         self._decoder_dock.setWidget(self.decoder_panel)
@@ -1028,6 +1034,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_decoder_changed(self, key: str) -> None:
         self._start_decoder(key)
+        if key == "ais":
+            self.show_map()                 # ships are best seen on a map
+
+    def show_map(self) -> None:
+        if self.map_window is None:
+            self.map_window = MapWindow(self.targets, parent=self)
+        self.map_window.show()
+        self.map_window.raise_()
+        self.map_window.refresh()
 
     def _start_decoder(self, key: str) -> None:
         """Run decoder `key` on the current source, or none for "". Replaces any other."""
@@ -1068,7 +1083,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _collect_decoded(self) -> None:
         worker = self.decode_worker
         if worker is not None:
-            self.decoder_panel.add(worker.take())
+            messages = worker.take()
+            self.decoder_panel.add(messages)
+            self.targets.update(messages)
+        if self.map_window is not None and self.map_window.isVisible():
+            self.map_window.refresh()
 
     def _build_controls(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -3195,6 +3214,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_audio_recording()
         self.stop_iq_recording()
         self._stop_decoder()
+        if self.map_window is not None:
+            self.map_window.close()
         if self.audio is not None:
             self.audio.stop()
             self.audio = None

@@ -4047,3 +4047,61 @@ def test_a_memory_brings_its_decoder(qapp, tmp_path):
 
 def test_snapshots_without_a_decoder_still_load():
     assert Snapshot.from_dict({"freq_hz": 7.1e6}).decoder == ""
+
+
+# -- the map window ----------------------------------------------------------------
+
+def test_web_mercator_matches_the_tile_scheme():
+    from src.rgc_sdr.ui.map_window import lat_lon, world_xy
+
+    # Melbourne at zoom 10 lies in OSM tile 924/628 (the standard tile formula).
+    x, y = world_xy(-37.8136, 144.9631, 10)
+    assert (int(x // 256), int(y // 256)) == (924, 628)
+    lat, lon = lat_lon(x, y, 10)
+    assert (lat, lon) == pytest.approx((-37.8136, 144.9631), abs=1e-9)
+    assert world_xy(0.0, 0.0, 0) == pytest.approx((128.0, 128.0))
+
+
+def test_choosing_ais_opens_the_map_and_ships_appear(qapp):
+    from src.rgc_sdr.dsp.ais import AisMessage
+
+    caps = _caps(freq_ranges=(FreqRange(60e6, 260e6),))
+    win = window_for(StubSource(caps, center=162e6))
+    _choose_decoder(win, "ais")
+    assert win.map_window is not None and win.map_window.isVisible()
+    assert win.map_window.map.tiles.offline               # never the network in tests
+    msgs = [AisMessage(1, 503000000 + i, {"position": (-37.8 - i / 100, 144.9), "sog": 1.0,
+                                          "cog": 90.0, "heading": 90}, [], "A")
+            for i in range(4)]
+    win.decode_worker._messages.extend(msgs)
+    win._collect_decoded()
+    mw = win.map_window
+    assert mw.table.rowCount() == 4 and "4 on the map" in mw.count.text()
+    assert mw._fitted                                     # first sight fits the view
+    mw.map.grab()                                         # paints without error
+    mw._on_row(0, 0)
+    key = mw.table.item(0, 0).data(QtCore.Qt.ItemDataRole.UserRole)
+    t = win.targets.targets[key]
+    assert mw.map.selected == key and mw.map.centre == pytest.approx((t.lat, t.lon))
+    p = mw.map.to_screen(t.lat, t.lon)
+    assert mw.map.target_at(p).key == key
+    win._stop_decoder()
+
+
+def test_map_zoom_keeps_the_point_under_the_pointer(qapp):
+    from src.rgc_sdr.targets import TargetStore
+    from src.rgc_sdr.ui.map_window import MapView
+
+    view = MapView(TargetStore())
+    view.resize(800, 600)
+    about = QtCore.QPointF(200, 150)
+    before = view.to_lat_lon(about)
+    view.set_zoom(view.zoom + 2, about)
+    assert view.to_lat_lon(about) == pytest.approx(before, abs=1e-6)
+
+
+def test_map_button_reopens_the_map(qapp):
+    win = window_for(StubSource(_caps()))
+    win.decoder_panel.map_button.click()
+    assert win.map_window.isVisible()
+    win.map_window.close()

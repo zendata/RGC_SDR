@@ -4,6 +4,8 @@ import pytest
 
 # Qt must run windowless under pytest; set before any Qt import.
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# The map window must never fetch tiles from the network during tests.
+os.environ.setdefault("RGC_SDR_NO_TILES", "1")
 
 
 def pytest_configure(config):
