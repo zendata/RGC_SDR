@@ -17,6 +17,7 @@ import numpy as np
 
 from .device.source import IQSource
 from .dsp.demod import DemodChain
+from .dsp.aprs import AprsDecoder
 from .dsp.pocsag import PocsagDecoder
 
 
@@ -33,6 +34,8 @@ class DecoderSpec:
 DECODERS: dict[str, DecoderSpec] = {
     # +/-4.5 kHz deviation plus up to 2400 baud: wider than a 12.5 kHz voice channel.
     "pocsag": DecoderSpec("POCSAG", PocsagDecoder, 16e3, private=True),
+    # Amateur traffic, so nothing to hide. 145.175 MHz in VK.
+    "aprs": DecoderSpec("APRS", AprsDecoder, 12.5e3),
 }
 
 #: Seconds of IQ handed to the chain at a time.

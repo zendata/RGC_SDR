@@ -3,7 +3,8 @@
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
 named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter,
-recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers). Next: AIS, ACARS and ADS-B, then P25 and DMR metadata.
+recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers,
+APRS). Next: AIS, ACARS and ADS-B, then P25 and DMR metadata.
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -341,6 +342,9 @@ whatever the audio is doing, including with audio off.
   two bit errors per codeword. Each page shows its address (capcode), function and type.
   Pager messages can carry names, addresses and medical details, so the text is hidden
   unless **Show text** is ticked; that is not remembered, and nothing is saved to disk.
+- **APRS** (AX.25 over 1200 baud AFSK; 145.175 MHz in Australia): `SOURCE>DEST,PATH:info`,
+  plus the position in decimal degrees when the packet has one, in any of the plain,
+  compressed or Mic-E formats.
 
 ### Memories
 
@@ -397,6 +401,7 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/decoding.py](src/rgc_sdr/decoding.py) | Decoder registry and worker thread |
 | [src/rgc_sdr/dsp/bitsync.py](src/rgc_sdr/dsp/bitsync.py) | Bit recovery from transition timing |
 | [src/rgc_sdr/dsp/pocsag.py](src/rgc_sdr/dsp/pocsag.py) | POCSAG framing, BCH correction, messages |
+| [src/rgc_sdr/dsp/aprs.py](src/rgc_sdr/dsp/aprs.py) | AFSK, HDLC, AX.25, APRS positions |
 | [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |
 | [src/rgc_sdr/ui/smeter.py](src/rgc_sdr/ui/smeter.py) | Signal meter (dBFS + SNR, no invented S-units) |
 | [src/rgc_sdr/dsp/detect.py](src/rgc_sdr/dsp/detect.py) | Sweep planning and carrier detection |

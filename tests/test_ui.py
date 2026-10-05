@@ -4015,3 +4015,10 @@ def test_messages_reach_the_panel_each_frame(qapp):
     assert "addr      99" in win.decoder_panel.log.toPlainText()
     win._stop_decoder()
 
+
+def test_aprs_has_nothing_to_hide(qapp):
+    win = window_for(StubSource(_caps()))
+    _choose_decoder(win, "aprs")
+    assert win.decode_worker.name == "aprs"
+    assert not win.decoder_panel.show_text.isVisibleTo(win.decoder_panel)
+    win._stop_decoder()
