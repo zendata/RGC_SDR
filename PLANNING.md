@@ -146,10 +146,10 @@ headless-testable and lets modules be swapped independently.
   multi-device, network (SpyServer-style), plugins.
 - **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ← **current**
   - **P8a** IQ playback of the recorder's files, and the decode framework (a Decode
-    selector and a text panel fed from the FM discriminator).
+    selector and a text panel fed from the FM discriminator). ✅
   - **P8b** POCSAG pagers (512/1200/2400 baud). Then a survey of local paging channels;
-    FLEX only if that is what is used here.
-  - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK).
+    FLEX only if that is what is used here. ✅ Verified on air; no FLEX found, so none built.
+  - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK). ✅ Verified on air.
   - **P8d**, after P8c is done: AIS, ACARS and ADS-B, one at a time.
   - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
     codec library (mbelib), if at all.
@@ -963,6 +963,20 @@ codewords must be valid BCH codewords), not only against an encoder written alon
 shows address, function, type and length; the text itself only while "Show text" is ticked
 (off by default and not remembered). Decoded text is never written to disk or logged, and
 never goes into commits, issues or chat.
+
+**Measured on air, 2026-10-05 (HF+, Melbourne).**
+- *APRS*, 145.175 MHz: packets decoded with positions in both the plain (timestamped `@`)
+  and Mic-E formats, landing in eastern Melbourne. Traffic here is light: one transmission
+  in a 5-minute capture, and it decoded. The decoder's "bad frames" count (~700 per 5 min)
+  is noise slicing into chance flag patterns, not lost packets.
+- *Paging*, survey of 146-154 MHz: POCSAG at **512 baud** on several channels between
+  148.1 and 149.2 MHz, some carrying near-continuous traffic; nothing at 1200 or 2400. In
+  60 s on the busiest, 22 messages, all needing no bit correction, mostly alphanumeric on
+  functions 1-3; across 328 decoded characters 91 % were letters, digits or spaces (a
+  check that alphanumeric was the right reading, made without reading any message).
+  **No FLEX**: its 1600-baud sync marker 0xA6C6AAAA never appeared, in either polarity,
+  on any active channel, including the continuous ones. A continuous signal on 150.22 MHz
+  is neither POCSAG nor FLEX; unidentified.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the
