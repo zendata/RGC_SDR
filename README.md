@@ -3,7 +3,7 @@
 An incremental, learning-focused SDR receiver for macOS (Apple silicon), built on an
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
 named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter,
-recording, and a **band scanner**. Next: IQ playback, multi-device, networking.
+recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers). Next: AIS, ACARS and ADS-B, then P25 and DMR metadata.
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -322,6 +322,26 @@ meta = json.load(open("2026-09-23_143512_0.6840MHz.cf32.json"))
 print(meta["sample_rate_hz"], meta["center_freq_hz"], iq.size)
 ```
 
+### Playing a recording
+
+**Play…** on the Record row opens an IQ recording (`.cf32` with its `.json` sidecar) and
+plays it in place of the radio, in real time and looping; or start with `--play FILE`.
+Everything works on it as on the radio: click-to-tune moves around inside the recorded
+span, and demodulation, decoders and zoom all apply. **Pause** holds it; **Stop**, or
+choosing a radio in the SDR list, goes back to the radio where it was. Nothing is saved
+while a recording plays, so the next launch still opens the radio.
+
+### Decoders
+
+The **Decode** button, beside Scan, opens the **Decode** panel. Choose a decoder and it
+runs on the listening frequency (the tuned frequency plus Offset) on its own thread,
+whatever the audio is doing, including with audio off.
+
+- **POCSAG** pagers, 512, 1200 and 2400 baud at once, either polarity, correcting up to
+  two bit errors per codeword. Each page shows its address (capcode), function and type.
+  Pager messages can carry names, addresses and medical details, so the text is hidden
+  unless **Show text** is ticked; that is not remembered, and nothing is saved to disk.
+
 ### Memories
 
 **Save…** stores the current station -- frequency, mode, bandwidth, step, snap, squelch,
@@ -373,6 +393,11 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/demod.py](src/rgc_sdr/dsp/demod.py) | AM / FM / SSB detectors, channel filters, audio AGC |
 | [src/rgc_sdr/audio.py](src/rgc_sdr/audio.py) | Demod worker thread, FIFO, sound device |
 | [src/rgc_sdr/recorder.py](src/rgc_sdr/recorder.py) | WAV and raw-IQ recording, on their own threads |
+| [src/rgc_sdr/device/playback.py](src/rgc_sdr/device/playback.py) | Plays an IQ recording as a source |
+| [src/rgc_sdr/decoding.py](src/rgc_sdr/decoding.py) | Decoder registry and worker thread |
+| [src/rgc_sdr/dsp/bitsync.py](src/rgc_sdr/dsp/bitsync.py) | Bit recovery from transition timing |
+| [src/rgc_sdr/dsp/pocsag.py](src/rgc_sdr/dsp/pocsag.py) | POCSAG framing, BCH correction, messages |
+| [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |
 | [src/rgc_sdr/ui/smeter.py](src/rgc_sdr/ui/smeter.py) | Signal meter (dBFS + SNR, no invented S-units) |
 | [src/rgc_sdr/dsp/detect.py](src/rgc_sdr/dsp/detect.py) | Sweep planning and carrier detection |
 | [src/rgc_sdr/scanner.py](src/rgc_sdr/scanner.py) | Scanner state machine, lockout, confirmation |

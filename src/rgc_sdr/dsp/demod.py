@@ -428,6 +428,10 @@ class DemodChain:
         #: The most recent channel-filtered block, complex. CW decoding needs the
         #: envelope of this rather than the audio, which carries the beat note.
         self.last_channel = np.zeros(0, dtype=np.complex128)
+        #: The most recent NBFM discriminator output, real, at `if_rate`: before the
+        #: audio low-pass, AGC and squelch, which would distort or silence exactly what a
+        #: data decoder (POCSAG, APRS) needs to slice.
+        self.last_discriminator = np.zeros(0, dtype=np.float64)
 
     def _mix_offset(self) -> float:
         """Mixer shift, which for CW puts the carrier at the wanted audio pitch."""
@@ -538,6 +542,9 @@ class DemodChain:
                 part.reset()
 
     def process(self, iq: np.ndarray) -> np.ndarray:
+        # Cleared first: a block that yields no output must not hand a decoder the
+        # previous block's discriminator a second time.
+        self.last_discriminator = np.zeros(0, dtype=np.float64)
         if iq.size == 0:
             return np.zeros(0, dtype=np.float32)
 
@@ -574,6 +581,8 @@ class DemodChain:
 
         if self._detector is not None:
             audio = self._detector.process(channel)
+            if self.mode == "nbfm":
+                self.last_discriminator = audio
             if self._carrier_agc:
                 self._am_gain = min(AM_AUDIO_GAIN / max(self._detector.carrier, 1e-30),
                                     AM_MAX_GAIN)

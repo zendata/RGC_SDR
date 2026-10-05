@@ -3947,3 +3947,71 @@ def test_pause_reaches_the_recording(qapp, tmp_path):
 def test_play_option_parses():
     from src.rgc_sdr import __main__ as entry
     assert entry.build_parser().parse_args(["--play", "x.cf32"]).play == "x.cf32"
+
+
+# -- P8a/b: the Decode dock ------------------------------------------------------
+
+def _choose_decoder(win, key):
+    combo = win.decoder_panel.combo
+    combo.setCurrentIndex(combo.findData(key))
+
+
+def test_decode_button_shows_the_dock(qapp):
+    win = window_for(StubSource(_caps()))
+    win._decode_button.setChecked(True)
+    assert not win._decoder_dock.isHidden()
+    win._decode_button.setChecked(False)
+    assert win._decoder_dock.isHidden()
+
+
+def test_choosing_pocsag_starts_a_worker_at_the_listening_offset(qapp):
+    win = window_for(StubSource(_caps()))
+    win._offset_spin.setValue(12.5)
+    _choose_decoder(win, "pocsag")
+    worker = win.decode_worker
+    assert worker is not None and worker.running and worker.name == "pocsag"
+    assert worker._chain.offset_hz == pytest.approx(12.5e3)
+    assert "POCSAG" in win.decoder_panel.status.text()
+    win._offset_spin.setValue(-3.0)
+    assert worker._chain.offset_hz == pytest.approx(-3e3)
+    _choose_decoder(win, "")
+    assert win.decode_worker is None and not worker.running
+
+
+def test_decoder_survives_a_change_of_radio(qapp):
+    win, _, _ = switching_window()
+    _choose_decoder(win, "pocsag")
+    first = win.decode_worker
+    assert win.switch_device("hackrf")
+    assert not first.running
+    assert win.decode_worker is not None and win.decode_worker.source is win.source
+    win._stop_decoder()
+
+
+def test_pager_text_is_hidden_until_asked_for(qapp):
+    from src.rgc_sdr.dsp.pocsag import PagerMessage
+
+    win = window_for(StubSource(_caps()))
+    panel = win.decoder_panel
+    _choose_decoder(win, "pocsag")
+    assert panel.show_text.isVisibleTo(panel) and not panel.show_text.isChecked()
+    panel.add([PagerMessage(1200, 1234567, 3, "alpha", "SECRET STUFF")])
+    assert "SECRET" not in panel.log.toPlainText()
+    assert "1234567" in panel.log.toPlainText()
+    panel.show_text.setChecked(True)
+    assert "SECRET STUFF" in panel.log.toPlainText()
+    panel.show_text.setChecked(False)
+    assert "SECRET" not in panel.log.toPlainText()
+    win._stop_decoder()
+
+
+def test_messages_reach_the_panel_each_frame(qapp):
+    from src.rgc_sdr.dsp.pocsag import PagerMessage
+
+    win = window_for(StubSource(_caps()))
+    _choose_decoder(win, "pocsag")
+    win.decode_worker._messages.append(PagerMessage(512, 99, 0, "tone", ""))
+    win._collect_decoded()
+    assert "addr      99" in win.decoder_panel.log.toPlainText()
+    win._stop_decoder()
+

@@ -933,10 +933,16 @@ plays the app saves no state, so the next launch still opens the radio.
 
 **Decoders.** Decoders consume the **raw FM discriminator** (`DemodChain.last_discriminator`,
 real, at the chain's IF rate, at least 48 kHz) -- before the audio low-pass, AGC and squelch,
-which would distort or zero exactly what a data slicer needs. Choosing a decoder puts the
-radio in NBFM. They run in the audio worker thread, as the CW decoder does, and hand
-finished messages to the UI through a queue. Text goes to a Decode dock beside the
-Scanner's.
+which would distort or zero exactly what a data slicer needs. Each decoder runs in its own
+thread (`decoding.DecodeWorker`) with its own gapless reader and NBFM chain at the
+listening offset, like the IQ recorder. *Changed from the first plan*, which had them in
+the audio worker: that would have stopped decoding whenever audio was off or no output
+device existed, and tied the decoder to the audio mode. Now you can decode with audio off,
+or listen in any mode while decoding. Finished messages reach the UI through a queue,
+into a Decode dock beside the Scanner's.
+
+**Measured false-decode guard:** a dead carrier slices to all zeros, which is a valid
+POCSAG codeword (address 0, function 0) that no pager uses. It is treated as idle.
 
 **Bit timing without a per-sample loop.** The discriminator is low-passed and sliced; the
 sign changes are located to a fraction of a sample by interpolation. Each transition gets

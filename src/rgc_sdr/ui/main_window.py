@@ -34,6 +34,8 @@ from ..dsp.zerobeat import DEFAULT_FFT as ZEROBEAT_FFT
 from ..dsp.zerobeat import measure_carrier
 from ..settings import RadioSettings, Settings, Snapshot
 from .scanner_panel import ScannerPanel
+from ..decoding import DecodeWorker
+from .decoder_panel import DecoderPanel
 from .freq_display import FrequencyDisplay
 from .function_panel import FunctionPanel
 from .radio_display import RadioDisplay
@@ -226,6 +228,7 @@ class MainWindow(QtWidgets.QMainWindow):
         #: The radio (key, frequency) to go back to when a recording stops playing.
         self._radio_before_playback: tuple[str, float] | None = None
         self.scanner: Scanner | None = None
+        self.decode_worker: DecodeWorker | None = None
         # Audio is optional: without a usable device the rest of the app still works.
         self._audio_ok = bool(enable_audio) and audio_available()
         self.audio: AudioSink | None = None
@@ -279,6 +282,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._status = self.statusBar()
         self._build_scanner_dock()
+        self._build_decoder_dock()
         self._apply_device_profile()
         self._sync_playback_ui()
         saved = self.settings.radios.get(self.current_device_key())
@@ -442,7 +446,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Hide what only an IQ radio can do; the rest works on a transceiver as is."""
         sdr = not self.is_transceiver
         for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
-                       self._scan_button):
+                       self._scan_button, self._decode_button):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
@@ -580,6 +584,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.stop_audio_recording("changing radio")
         self.stop_iq_recording("changing radio")
         self.set_mode("off")
+        self._stop_decoder()
         self._timer.stop()
         if not self.playing_back:
             self.settings.radios[self.current_device_key()] = self.current_radio_settings()
@@ -611,6 +616,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.start(int(1000 / self.fps))
         if previous_mode != "off":
             self.set_mode(previous_mode)
+        self._start_decoder(self.decoder_panel.decoder)
 
     # -- IQ playback ---------------------------------------------------------
 
@@ -989,6 +995,51 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scanner_panel.set_status(f"{text}  —  {len(self.settings.found)} found")
 
     # -- controls ----------------------------------------------------------
+
+    def _build_decoder_dock(self) -> None:
+        self.decoder_panel = DecoderPanel()
+        self.decoder_panel.decoderChanged.connect(self._on_decoder_changed)
+        self._decoder_dock = QtWidgets.QDockWidget("Decode", self)
+        self._decoder_dock.setObjectName("decoderDock")
+        self._decoder_dock.setWidget(self.decoder_panel)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._decoder_dock)
+        self._decoder_dock.hide()
+        self._decode_button.toggled.connect(self._decoder_dock.setVisible)
+        self._decoder_dock.visibilityChanged.connect(self._on_decoder_visibility)
+
+    def _on_decoder_visibility(self, visible: bool) -> None:
+        shown = not self._decoder_dock.isHidden()
+        if self._decode_button.isChecked() != shown:
+            self._decode_button.blockSignals(True)
+            self._decode_button.setChecked(shown)
+            self._decode_button.blockSignals(False)
+
+    def _on_decoder_changed(self, key: str) -> None:
+        self._start_decoder(key)
+
+    def _start_decoder(self, key: str) -> None:
+        """Run decoder `key` on the current source, or none for "". Replaces any other."""
+        self._stop_decoder()
+        if not key or self.is_transceiver:
+            self.decoder_panel.set_status("")
+            return
+        worker = DecodeWorker(self.source, key, self._offset_spin.value() * 1e3)
+        worker.start()
+        self.decode_worker = worker
+        listening = self.source.center_freq + self._offset_spin.value() * 1e3
+        self.decoder_panel.set_status(
+            f"{worker.spec.label} on {listening / 1e6:.4f} MHz, "
+            f"{worker.spec.bandwidth_hz / 1e3:g} kHz channel")
+
+    def _stop_decoder(self) -> None:
+        if self.decode_worker is not None:
+            self.decode_worker.stop()
+            self.decode_worker = None
+
+    def _collect_decoded(self) -> None:
+        worker = self.decode_worker
+        if worker is not None:
+            self.decoder_panel.add(worker.take())
 
     def _build_controls(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -1455,6 +1506,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._scan_button.setCheckable(True)
         self._scan_button.setToolTip("Show or hide the scanner")
         row.addWidget(self._scan_button)
+        self._decode_button = QtWidgets.QPushButton("Decode")
+        self._decode_button.setCheckable(True)
+        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG)")
+        row.addWidget(self._decode_button)
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
         self._span_label = QtWidgets.QLabel("Span")
@@ -1944,6 +1999,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.waterfall.clear_history()
             if self.audio is not None:
                 self.audio.reset()
+            if self.decode_worker is not None:
+                self.decode_worker.reset()
 
         self.spectrum.set_center_marker(actual)
         self._apply_geometry(preserve_span=True)
@@ -1973,6 +2030,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.audio is not None:
             # The chain's decimation and audio rate both derive from the sample rate.
             self.audio.restart()
+        if self.decode_worker is not None:
+            self._start_decoder(self.decode_worker.name)
         self._update_passband()
         self._schedule_save()
 
@@ -2360,6 +2419,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.audio is not None:
             self.audio.set_offset(khz * 1e3)
             self.audio.reset()
+        if self.decode_worker is not None:
+            self.decode_worker.set_offset(khz * 1e3)
         self._update_passband()
         self._schedule_save()
 
@@ -2954,6 +3015,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_smeter(dbfs, freqs)
         self._update_info_line()
         self._update_tone_state()
+        self._collect_decoded()
         self._scan_frame(freqs, dbfs)
         self._rows_pushed += 1
 
@@ -3097,6 +3159,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         self.stop_audio_recording()
         self.stop_iq_recording()
+        self._stop_decoder()
         if self.audio is not None:
             self.audio.stop()
             self.audio = None
