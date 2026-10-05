@@ -4122,3 +4122,33 @@ def test_adsb_on_a_slow_radio_says_why(qapp):
     assert "samples per microsecond" in win.decoder_panel.status.text()
     assert win.map_window is not None
     win._stop_decoder()
+
+
+def test_a_memory_out_of_reach_brings_in_its_own_radio(qapp, tmp_path):
+    from src.rgc_sdr.settings import RadioSettings
+
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("ADS-B 1090", Snapshot(freq_hz=1090e6, sample_rate=2e6, decoder="adsb"),
+                        "plutosdr", RadioSettings(sample_rate=2e6, decimation=1))
+    settings.get_memory("ADS-B 1090").radios["hackrf"] = RadioSettings(sample_rate=2e6)
+    win, first, opened = switching_window(settings=settings)        # on the Airspy HF+
+    assert win.recall_memory("ADS-B 1090")
+    assert win.current_device_key() == "plutosdr"                   # the first listed
+    assert win.source.center_freq == pytest.approx(1090e6)
+    assert win.source.sample_rate == pytest.approx(2e6)
+    assert win.decode_worker is not None and win.decode_worker.name == "adsb"
+    win._stop_decoder()
+
+
+def test_without_its_radio_the_memory_says_so(qapp, tmp_path):
+    from src.rgc_sdr.settings import RadioSettings
+
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("ADS-B 1090", Snapshot(freq_hz=1090e6, decoder="adsb"),
+                        "plutosdr", RadioSettings(sample_rate=2e6))
+    win, _, _ = switching_window(connected=("airspyhf",), settings=settings)
+    assert win.recall_memory("ADS-B 1090")
+    assert win.current_device_key() == "airspyhf"
+    message = win._status.currentMessage()
+    assert "outside this radio's range" in message and "ADALM-Pluto" in message
+    win._stop_decoder()

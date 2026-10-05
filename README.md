@@ -368,7 +368,11 @@ pan, scroll to zoom, hover for details, click a row to centre on it. The view ke
 everything in sight until you move it; **Fit all** returns to that. Map tiles come from
 OpenStreetMap and are cached for a week.
 
-Messages wrap to the panel's width. A memory remembers the decoder that was running when
+Messages wrap to the panel's width.
+
+Recalling a memory whose frequency the current radio cannot tune switches to the first
+connected radio the memory was set up for -- "ADS-B 1090" brings in the Pluto (or the
+HackRF) at 2 MS/s -- and says which radio to connect if none is. A memory remembers the decoder that was running when
 it was saved, so recalling it starts that decoder again; memories for the national APRS
 channels (145.175 MHz, WICEN 145.200 MHz, and 439.100 MHz on 70 cm, out of the HF+'s
 range) are a good start.

@@ -2899,6 +2899,17 @@ class MainWindow(QtWidgets.QMainWindow):
         memory = self.settings.get_memory(name)
         if memory is None:
             return False
+        wanted = memory.snapshot.freq_hz
+        if not self.source.caps.covers(wanted) and not self.playing_back:
+            # Out of this radio's reach: change to the first connected radio the memory
+            # was set up for that can tune it -- "ADS-B 1090" brings the Pluto in.
+            connected = {a.profile.key for a in self._availability_fn() if a.connected}
+            for radio_key in memory.radios:
+                profile = profile_for(radio_key)
+                if (radio_key in connected and profile is not None
+                        and profile.covers(wanted) and radio_key != self.current_device_key()):
+                    if self.switch_device(radio_key):
+                        break
         key = self.current_device_key()
         radio = memory.radios.get(key)
         note = ""
@@ -2919,6 +2930,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self.source.caps.covers(memory.snapshot.freq_hz):
             note = (f" -- {memory.snapshot.freq_hz / 1e6:.4f} MHz is outside this "
                     f"radio's range ({self.source.caps.describe_ranges()})")
+            meant = [profile_for(k).label for k in memory.radios
+                     if profile_for(k) is not None and profile_for(k).covers(wanted)]
+            if meant:
+                note += f"; it is set up for the {' or '.join(meant)}: connect one"
         self._status.showMessage(f"recalled {memory.name}{note}", 6000)
         self._schedule_save()
         return True
