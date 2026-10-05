@@ -49,7 +49,9 @@ class DecoderPanel(QtWidgets.QWidget):
         mono = QtGui.QFont("Menlo")
         mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         self.log.setFont(mono)
-        self.log.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        # Wrapped to the panel, so a long message or APRS comment is read without
+        # scrolling sideways.
+        self.log.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
         outer.addWidget(self.log, 1)
         self._messages: list = []
         self._sync_show_text()

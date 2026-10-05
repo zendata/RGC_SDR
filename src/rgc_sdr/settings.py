@@ -89,6 +89,9 @@ class Snapshot:
     tone_mode: str = "off"
     ctcss_hz: float = 88.5
     dcs_code: str = "023"
+    #: Data decoder to run ("" for none, else a key of decoding.DECODERS), so a memory
+    #: such as "APRS 2m" brings its decoder with it.
+    decoder: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)

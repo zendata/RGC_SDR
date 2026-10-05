@@ -1014,6 +1014,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self._decode_button.setChecked(shown)
             self._decode_button.blockSignals(False)
 
+    def _apply_decoder(self, key: str) -> None:
+        """Choose decoder `key` ("" for none), as a recalled memory asks, showing the
+        Decode panel when there is one to watch."""
+        from ..decoding import DECODERS
+
+        key = key if key in DECODERS else ""
+        combo = self.decoder_panel.combo
+        if combo.currentData() != key:
+            combo.setCurrentIndex(max(0, combo.findData(key)))   # starts or stops it
+        if key and not self.is_transceiver:
+            self._decode_button.setChecked(True)
+
     def _on_decoder_changed(self, key: str) -> None:
         self._start_decoder(key)
 
@@ -2705,6 +2717,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tone_mode=self.tone_mode,
             ctcss_hz=self._ctcss_hz,
             dcs_code=self._dcs_code,
+            decoder=self.decoder_panel.decoder,
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -2859,6 +2872,7 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.apply_snapshot(snap)
         self.apply_radio_hardware(radio)
+        self._apply_decoder(memory.snapshot.decoder)
         if not self.source.caps.covers(memory.snapshot.freq_hz):
             note = (f" -- {memory.snapshot.freq_hz / 1e6:.4f} MHz is outside this "
                     f"radio's range ({self.source.caps.describe_ranges()})")

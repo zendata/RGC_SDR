@@ -340,11 +340,18 @@ whatever the audio is doing, including with audio off.
 
 - **POCSAG** pagers, 512, 1200 and 2400 baud at once, either polarity, correcting up to
   two bit errors per codeword. Each page shows its address (capcode), function and type.
-  Pager messages can carry names, addresses and medical details, so the text is hidden
-  unless **Show text** is ticked; that is not remembered, and nothing is saved to disk.
+  Whether a page is text or numeric is judged from its content, since networks differ in
+  how they use the function code. Pager messages can carry names, addresses and medical
+  details, so the text is hidden unless **Show text** is ticked; that is not remembered,
+  and nothing is saved to disk.
 - **APRS** (AX.25 over 1200 baud AFSK; 145.175 MHz in Australia): `SOURCE>DEST,PATH:info`,
   plus the position in decimal degrees when the packet has one, in any of the plain,
   compressed or Mic-E formats.
+
+Messages wrap to the panel's width. A memory remembers the decoder that was running when
+it was saved, so recalling it starts that decoder again; memories for the national APRS
+channels (145.175 MHz, WICEN 145.200 MHz, and 439.100 MHz on 70 cm, out of the HF+'s
+range) are a good start.
 
 ### Memories
 

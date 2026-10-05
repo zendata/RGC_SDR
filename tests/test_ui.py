@@ -4022,3 +4022,28 @@ def test_aprs_has_nothing_to_hide(qapp):
     assert win.decode_worker.name == "aprs"
     assert not win.decoder_panel.show_text.isVisibleTo(win.decoder_panel)
     win._stop_decoder()
+
+
+def test_decode_log_wraps_to_the_panel(qapp):
+    win = window_for(StubSource(_caps()))
+    mode = win.decoder_panel.log.lineWrapMode()
+    assert mode == QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
+
+
+def test_a_memory_brings_its_decoder(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.add_memory("APRS 2m", Snapshot(freq_hz=145.175e6, mode="nbfm", decoder="aprs"))
+    settings.add_memory("Plain", Snapshot(freq_hz=146.5e6, mode="nbfm"))
+    caps = _caps(freq_ranges=(FreqRange(60e6, 260e6),))
+    win = window_for(StubSource(caps, center=146e6), settings=settings)
+    assert win.recall_memory("APRS 2m")
+    assert win.source.center_freq == pytest.approx(145.175e6)
+    assert win.decode_worker is not None and win.decode_worker.name == "aprs"
+    assert not win._decoder_dock.isHidden()
+    assert win.current_snapshot().decoder == "aprs"
+    assert win.recall_memory("Plain")
+    assert win.decode_worker is None
+
+
+def test_snapshots_without_a_decoder_still_load():
+    assert Snapshot.from_dict({"freq_hz": 7.1e6}).decoder == ""
