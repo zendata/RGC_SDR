@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
-from .source import LO_OFFSET_HZ, SOAPY_TX, TxCaps, _Nco
+from .source import SOAPY_TX, TxCaps, _Nco
 
 #: Microseconds to wait for the radio to accept a block before counting a stall.
 WRITE_TIMEOUT_US = 200_000
@@ -69,10 +69,10 @@ class SoapyIQSink(IQSink):
         self._rate = float(sample_rate)
         self._freq = float(center_freq)
         self._gains = dict(gains or {})
-        # A spiky radio leaks its LO too: transmit from LO_OFFSET_HZ away and shift the
+        # A spiky radio leaks its LO too: transmit from its LO offset away and shift the
         # signal back down to the wanted frequency, as on receive.
         profile = getattr(source, "profile", None)
-        self._lo_offset = LO_OFFSET_HZ if (profile and profile.dc_offset) else 0.0
+        self._lo_offset = profile.lo_offset if profile else 0.0
         self._nco = _Nco(-self._lo_offset, self._rate)
         self._stream = None
         self._paused_receiver = False

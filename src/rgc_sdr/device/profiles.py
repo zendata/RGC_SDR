@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from .source import DeviceCaps, FreqRange, GainElement, TxCaps
+from .source import LO_OFFSET_HZ, DeviceCaps, FreqRange, GainElement, TxCaps
 
 #: Above this the audio chain cannot keep up in pure NumPy (see module docstring).
 APP_MAX_RATE = 10e6
@@ -56,6 +56,15 @@ class SdrProfile:
     #: "sdr" (IQ over SoapySDR) or "transceiver" (a radio controlled over its own
     #: protocol, such as the IC-705 over CI-V, which demodulates itself).
     kind: str = "sdr"
+    #: How far to tune the hardware from the wanted frequency, shifting the stream back
+    #: in software. None means LO_OFFSET_HZ for a radio with a DC spike, else none.
+    lo_offset_hz: float | None = None
+
+    @property
+    def lo_offset(self) -> float:
+        if self.lo_offset_hz is not None:
+            return float(self.lo_offset_hz)
+        return LO_OFFSET_HZ if self.dc_offset else 0.0
 
     def covers(self, hz: float) -> bool:
         return any(r.contains(hz) for r in self.freq_ranges)
@@ -80,6 +89,10 @@ PROFILES: tuple[SdrProfile, ...] = (
         has_agc=False,           # claimed by the driver, ignored by it (section 3)
         bias_tee=False,
         dc_offset=False,         # measured: centre bin within 1 dB of the floor
+        # No spike to dodge (re-measured 2026-10-05: centre 0-3.5 dB over the floor from
+        # 3.7 to 230 MHz, i.e. noise), but tuned 100 kHz away all the same at VK3RQ's
+        # request, as good practice, so nothing listened to sits on the LO.
+        lo_offset_hz=100e3,
         module="airspyhfSupport",
         install="brew install airspyhf, plus the SoapyAirspyHF module",
         notes="HF and VHF. No gain controls: the driver exposes none.",

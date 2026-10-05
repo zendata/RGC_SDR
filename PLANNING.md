@@ -66,7 +66,15 @@ Three consequences that shape the design:
    there the toggle appears.
 3. **Signal levels are very low** (floor ≈ −111 dBFS), so sensible default colour limits and an
    auto-fit control matter more than they would on a strong-signal receiver.
-4. **Its sample rate readback cannot be trusted either.** Asked for 5 999 999 S/s (a rate
+4. **No birdie at the tuned frequency, yet tuned 100 kHz away anyway.** Re-measured
+   2026-10-05: the centre (+/-23 Hz) sat 0-3.5 dB over the local floor at 3.7, 7.2, 18.3,
+   25.9, 70.3, 145.5 and 230.1 MHz, which is noise. At VK3RQ's request the profile still
+   sets `lo_offset_hz=100e3`, so the hardware always sits 100 kHz from the wanted frequency
+   (below it at the top of a range) and the NCO shifts it back, automatically -- nothing to
+   set by hand for audio or decoders. `dc_offset` stays False, so the scanner does not
+   step round a spike that is not there. Checked on air: the strongest medium-wave carrier
+   lands on the 9 kHz grid at both of two tunings 50 kHz apart.
+5. **Its sample rate readback cannot be trusted either.** Asked for 5 999 999 S/s (a rate
    it does not offer), `getSampleRate` returns 5 999 999 while the hardware streams at
    ~715 kS/s, measured 2026-10-04. So the source only ever requests a rate from the offered
    list; an unchecked rate remembered from another radio once scaled every axis ~7.8x wrong.

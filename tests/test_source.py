@@ -259,6 +259,49 @@ def test_a_rate_from_another_radio_opens_at_a_supported_one(sdr_devices):
 
 
 @pytest.mark.hardware
+def test_hf_plus_is_tuned_100_khz_away_and_shifted_back(sdr_devices):
+    """The synthesizer sits 100 kHz up (down at the top of a range), yet a station still
+    moves by exactly the retune -- the shift is invisible to everything downstream."""
+    if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
+        pytest.skip("no airspyhf")
+    import time
+
+    from src.rgc_sdr.device.source import SOAPY_RX
+
+    src = SoapyIQSource(driver="airspyhf", sample_rate=768e3, center_freq=0.8e6)
+    n = 65536
+    bin_hz = 768e3 / n
+
+    def strongest_carrier_hz():
+        """Absolute frequency of the strongest medium-wave carrier in view."""
+        time.sleep(0.5)
+        acc = np.zeros(n)
+        for _ in range(10):
+            x = src.read_latest(n)
+            acc += np.abs(np.fft.fftshift(np.fft.fft(x * np.hanning(n)))) ** 2
+            time.sleep(0.05)
+        return src.center_freq + (np.argmax(acc) - n / 2) * bin_hz
+
+    def on_the_am_grid(hz):
+        # Australian AM carriers sit on 531 + 9n kHz; an offset error would miss it.
+        return abs((hz - 531e3 + 4.5e3) % 9e3 - 4.5e3) < 3 * bin_hz
+
+    with src:
+        assert src.center_freq == pytest.approx(0.8e6, abs=1.0)
+        assert src._dev.getFrequency(SOAPY_RX, 0) == pytest.approx(0.9e6, abs=10.0)
+        first = strongest_carrier_hz()
+        assert on_the_am_grid(first)
+        src.set_center_freq(0.85e6)
+        assert strongest_carrier_hz() == pytest.approx(first, abs=3 * bin_hz)
+        src.set_center_freq(101.9e6)
+        assert src._dev.getFrequency(SOAPY_RX, 0) == pytest.approx(102.0e6, abs=10.0)
+        # At the top of the HF range the offset goes below instead.
+        src.set_center_freq(30.95e6)
+        assert src._dev.getFrequency(SOAPY_RX, 0) == pytest.approx(30.85e6, abs=10.0)
+        assert src.center_freq == pytest.approx(30.95e6, abs=1.0)
+
+
+@pytest.mark.hardware
 def test_clamped_retune_never_leaves_an_untunable_frequency(sdr_devices):
     if not any(d.get("driver") == "airspyhf" for d in sdr_devices):
         pytest.skip("no airspyhf")

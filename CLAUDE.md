@@ -35,7 +35,9 @@ an attached device and skips when none is present.
 - Implausibly low levels (a floor near -134 dBFS, FM stations barely above
   noise) almost always mean the antenna is unplugged. Ask before debugging DSP.
   The dBFS scale itself is pinned by a test.
-- The Airspy HF+ leaves a birdie at its tuned frequency; offset-tune.
+- The Airspy HF+ has no significant birdie at its tuned frequency (measured
+  2026-10-05), but at the operator's request it is always tuned 100 kHz away and
+  shifted back in software, automatically. Never ask the user to set an offset for it.
 - A max-hold spectrum sits about 15 dB above the average noise floor, so a
   detection threshold below about 20 dB reports transmitters in pure static.
 - Transmit (HackRF) has deliberately no band, mode or power interlocks, at the

@@ -473,8 +473,9 @@ class SoapyIQSource(IQSource):
         # Read back: the driver may quantise to a supported rate.
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
 
-        # Radios with a DC spike are tuned LO_OFFSET_HZ away and shifted back (_Nco).
-        self._lo_offset = LO_OFFSET_HZ if (self.profile and self.profile.dc_offset) else 0.0
+        # Radios are tuned their profile's LO offset away and shifted back (_Nco): 200 kHz
+        # for one with a DC spike, 100 kHz for the HF+.
+        self._lo_offset = self.profile.lo_offset if self.profile else 0.0
         self._nco = _Nco(0.0, self._rate)
         self._freq = float(center_freq)
         self._tune_hardware(self._caps.clamp_freq(self._freq))
@@ -647,7 +648,7 @@ class SoapyIQSource(IQSource):
 
         With an LO offset the hardware sits above the wanted frequency (below it at the
         top of the radio's range) and the NCO shifts the stream by the difference, so
-        the spike lands at +/-LO_OFFSET_HZ on the display.
+        the LO, and any spike, lands at +/- the offset on the display.
         """
         shift = self._lo_offset
         if shift and not self._caps.covers(wanted + shift):

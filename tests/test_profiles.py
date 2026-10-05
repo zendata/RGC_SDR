@@ -140,3 +140,11 @@ def test_starting_frequency_moves_somewhere_useful_when_it_cannot():
     rtl = profile_for("rtlsdr")
     assert starting_frequency(rtl, 7.1e6) == pytest.approx(rtl.default_freq)
     assert rtl.covers(rtl.default_freq)
+
+
+def test_lo_offsets():
+    """The HF+ has no spike but is tuned 100 kHz away by request; spiky radios 200 kHz."""
+    hf = profile_for("airspyhf")
+    assert hf.lo_offset == 100e3 and hf.dc_offset is False
+    assert profile_for("hackrf").lo_offset == 200e3
+    assert profile_for("plutosdr").lo_offset == 200e3
