@@ -1038,10 +1038,27 @@ class MainWindow(QtWidgets.QMainWindow):
         worker = DecodeWorker(self.source, key, self._offset_spin.value() * 1e3)
         worker.start()
         self.decode_worker = worker
-        listening = self.source.center_freq + self._offset_spin.value() * 1e3
-        self.decoder_panel.set_status(
-            f"{worker.spec.label} on {listening / 1e6:.4f} MHz, "
-            f"{worker.spec.bandwidth_hz / 1e3:g} kHz channel")
+        self._update_decoder_status()
+
+    def _update_decoder_status(self) -> None:
+        worker = self.decode_worker
+        if worker is None:
+            return
+        label = worker.spec.label
+        if worker.fixed_channels:
+            channels = worker.channels_in_view()
+            seen = [f"{n} {hz / 1e6:.3f}" for n, hz, ok in channels if ok]
+            missed = [f"{n} {hz / 1e6:.3f}" for n, hz, ok in channels if not ok]
+            text = f"{label} on {', '.join(seen) if seen else 'no channel'} MHz"
+            if missed:
+                mid = sum(hz for _, hz, _ in channels) / len(channels)
+                text += (f" -- {', '.join(missed)} MHz out of view: tune near "
+                         f"{mid / 1e6:.3f} MHz for all of them")
+        else:
+            listening = self.source.center_freq + self._offset_spin.value() * 1e3
+            text = (f"{label} on {listening / 1e6:.4f} MHz, "
+                    f"{worker.spec.bandwidth_hz / 1e3:g} kHz channel")
+        self.decoder_panel.set_status(text)
 
     def _stop_decoder(self) -> None:
         if self.decode_worker is not None:
@@ -1520,7 +1537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._scan_button)
         self._decode_button = QtWidgets.QPushButton("Decode")
         self._decode_button.setCheckable(True)
-        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS)")
+        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS)")
         row.addWidget(self._decode_button)
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
@@ -2013,6 +2030,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.audio.reset()
             if self.decode_worker is not None:
                 self.decode_worker.reset()
+        if self.decode_worker is not None:
+            self.decode_worker.follow_tuning()       # fixed channels stay put
+            self._update_decoder_status()
 
         self.spectrum.set_center_marker(actual)
         self._apply_geometry(preserve_span=True)
@@ -2433,6 +2453,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.audio.reset()
         if self.decode_worker is not None:
             self.decode_worker.set_offset(khz * 1e3)
+            self._update_decoder_status()
         self._update_passband()
         self._schedule_save()
 

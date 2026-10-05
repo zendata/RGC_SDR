@@ -68,10 +68,10 @@ def unstuff(bits: np.ndarray) -> np.ndarray | None:
     return bits[~stuffed]
 
 
-def frame_bytes(bits: np.ndarray) -> bytes | None:
+def frame_bytes(bits: np.ndarray, min_bytes: int = MIN_FRAME_BYTES) -> bytes | None:
     """Unstuffed bits between two flags -> bytes, if they make a checked frame."""
     bits = unstuff(bits)
-    if bits is None or bits.size % 8 or not (MIN_FRAME_BYTES * 8 <= bits.size
+    if bits is None or bits.size % 8 or not (min_bytes * 8 <= bits.size
                                               <= MAX_FRAME_BYTES * 8):
         return None
     data = np.packbits(bits.reshape(-1, 8), axis=1, bitorder="little").ravel().tobytes()
@@ -109,9 +109,11 @@ class AfskDemod:
 
 
 class HdlcFramer:
-    """NRZI levels in, checked AX.25 frames (without their FCS) out."""
+    """NRZI levels in, checked HDLC frames (without their FCS) out. AX.25 and AIS both
+    frame this way."""
 
-    def __init__(self) -> None:
+    def __init__(self, min_bytes: int = MIN_FRAME_BYTES) -> None:
+        self.min_bytes = int(min_bytes)
         self.reset()
 
     def reset(self) -> None:
@@ -135,8 +137,8 @@ class HdlcFramer:
         frames = []
         for start, end in zip(flags[:-1], flags[1:]):
             inner = buf[start + 8:end]
-            if inner.size >= MIN_FRAME_BYTES * 8:
-                frame = frame_bytes(inner)
+            if inner.size >= self.min_bytes * 8:
+                frame = frame_bytes(inner, self.min_bytes)
                 if frame is None:
                     self.bad_frames += 1
                 else:

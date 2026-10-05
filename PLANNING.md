@@ -158,7 +158,9 @@ headless-testable and lets modules be swapped independently.
   - **P8b** POCSAG pagers (512/1200/2400 baud). Then a survey of local paging channels;
     FLEX only if that is what is used here. ✅ Verified on air; no FLEX found, so none built.
   - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK). ✅ Verified on air.
-  - **P8d**, after P8c is done: AIS, ACARS and ADS-B, one at a time.
+  - **P8d**, after P8c is done: AIS ✅ (verified on air), a map window for ships and
+    aircraft (requested 2026-10-05), then ACARS and ADS-B, one at a time. ADS-B
+    (1090 MHz) needs the Pluto or HackRF; ACARS (131.55 MHz) works on the HF+.
   - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
     codec library (mbelib), if at all.
   - DRM and DAB+ deferred: each is a large OFDM receiver ending in an audio codec that
@@ -997,6 +999,22 @@ never goes into commits, issues or chat.
   **No FLEX**: its 1600-baud sync marker 0xA6C6AAAA never appeared, in either polarity,
   on any active channel, including the continuous ones. A continuous signal on 150.22 MHz
   is neither POCSAG nor FLEX; unidentified.
+
+**AIS.** GMSK at 9600 baud, +/-2.4 kHz deviation, read by the FM discriminator (the
+Gaussian filter only softens edges). Framing is HDLC exactly as AX.25 -- NRZI, flags,
+stuffing, CRC-16/X.25 -- so `aprs.HdlcFramer` is shared; AIS fields are MSB first, so
+each byte's bits are reversed back. A burst is 27 ms, so the DC (carrier offset) tracker
+runs at 16 bits, which bit stuffing (a level lasts at most 6 bits) makes safe. Decoders
+may now declare **fixed channels**: AIS decodes 161.975 and 162.025 MHz together, one
+chain each, wherever the radio is tuned, as long as both are in view (status says if
+not). Checked against pyais for types 1, 3, 4, 5, 18, 21 and 24, and its output pasted
+into the tests as fixed data (pyais is not a dependency). A widely reprinted example
+sentence, `!AIVDM,1,1,,A,13u?etPv2;0n:dDPwUM1U1Cb069D,0*23`, has a wrong checksum: it
+XORs to 0x24.
+
+*Measured on air, 2026-10-05 (HF+ at 162.000 MHz, Melbourne):* 231 messages in 3
+minutes from 78 vessels, base stations and aids to navigation in Port Phillip, 114 on
+channel A and 117 on B, no errors.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the

@@ -31,7 +31,7 @@ class BitSlicer:
     """Real samples in, hard bits (0/1) out: 1 where the signal is positive."""
 
     def __init__(self, sample_rate: float, baud: float, prefilter: bool = True,
-                 track_dc: bool = True) -> None:
+                 track_dc: bool = True, dc_bits: float = DC_BITS) -> None:
         self.sample_rate = float(sample_rate)
         self.baud = float(baud)
         self.sps = self.sample_rate / self.baud
@@ -43,7 +43,7 @@ class BitSlicer:
             # noise above it is gone.
             cutoff = min(0.8 * self.baud / self.sample_rate, 0.45)
             self._fir = Fir(lowpass_taps(cutoff, fir_length_for(cutoff, maximum=255)))
-        self._dc_alpha = 1.0 / (DC_BITS * self.sps) if track_dc else 0.0
+        self._dc_alpha = 1.0 / (dc_bits * self.sps) if track_dc else 0.0
         self.reset()
 
     def reset(self) -> None:
