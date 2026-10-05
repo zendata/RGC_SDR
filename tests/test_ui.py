@@ -4114,3 +4114,11 @@ def test_acars_listens_in_am_and_opens_the_map(qapp):
     assert win.decode_worker._chain.mode == "am"
     assert win.map_window is not None and win.map_window.isVisible()
     win._stop_decoder()
+
+
+def test_adsb_on_a_slow_radio_says_why(qapp):
+    win = window_for(StubSource(_caps(freq_ranges=(FreqRange(60e6, 260e6),)), center=146e6))
+    _choose_decoder(win, "adsb")
+    assert "samples per microsecond" in win.decoder_panel.status.text()
+    assert win.map_window is not None
+    win._stop_decoder()

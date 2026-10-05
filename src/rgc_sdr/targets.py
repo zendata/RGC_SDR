@@ -79,6 +79,8 @@ class TargetStore:
                 changed += self._from_ais(message)
             elif getattr(message, "registration", None) is not None:
                 changed += self._from_acars(message)
+            elif getattr(message, "icao", None) is not None:
+                changed += self._from_adsb(message)
         if changed:
             self.version += 1
         return changed
@@ -135,6 +137,30 @@ class TargetStore:
             t.lat, t.lon = m.position
             if not t.trail or t.trail[-1] != m.position:
                 t.trail.append(m.position)
+        return 1
+
+    def _from_adsb(self, m) -> int:
+        f = m.fields
+        t = self._get(f"adsb:{m.icao}", "aircraft", m.icao)
+        t.last_seen = m.received
+        t.messages += 1
+        if f.get("callsign"):
+            t.name = f["callsign"]
+        if f.get("altitude_ft") is not None:
+            t.altitude_ft = f["altitude_ft"]
+        if f.get("speed_kn") is not None:
+            t.speed_kn = f["speed_kn"]
+        if f.get("track") is not None:
+            t.course = f["track"]
+        if f.get("heading") is not None:
+            t.heading = f["heading"]
+        if f.get("vertical_fpm") is not None:
+            t.details["climb"] = f"{f['vertical_fpm']:+d} ft/min"
+        position = f.get("position")
+        if position is not None:
+            t.lat, t.lon = position
+            if not t.trail or t.trail[-1] != position:
+                t.trail.append(position)
         return 1
 
     def expire(self, now: float | None = None) -> int:

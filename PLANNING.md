@@ -159,7 +159,9 @@ headless-testable and lets modules be swapped independently.
     FLEX only if that is what is used here. ✅ Verified on air; no FLEX found, so none built.
   - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK). ✅ Verified on air.
   - **P8d**, after P8c is done: AIS ✅ (verified on air), a map window for ships and
-    aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), then ADS-B. ADS-B
+    aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), ADS-B ✅ built and
+    checked against published messages; **on-air check pending** (needs the Pluto or
+    HackRF at 1090 MHz, 2 MS/s). ADS-B
     (1090 MHz) needs the Pluto or HackRF; ACARS (131.55 MHz) works on the HF+.
   - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
     codec library (mbelib), if at all.
@@ -1047,6 +1049,20 @@ the map by registration, ground stations as shore-station squares.
 
 *Measured on air:* the capture decoded to 42 messages, no bad blocks; live for 3 minutes,
 63 messages from 7 aircraft, 5 with positions, 17 blocks rejected by the check.
+
+**ADS-B.** Pulse-position at 1 Mbit/s on 1090 MHz, read from the IQ magnitude itself,
+so decoders gained a third input, `mode="iq"`: the raw samples shifted to the channel by
+a `Mixer`, with no demodulator. It needs a whole number of samples per microsecond, 2 MS/s
+or more (the Pluto or HackRF; the HF+ stops at 260 MHz anyway), and says so in the
+Decode status otherwise. Preambles are found with vectorised comparisons of the pulse and
+quiet positions; candidates then pay a 24-bit parity check (generator 0xFFF409), so a
+noisy one is rejected, never guessed: 93 chance preambles in a second of pure noise, all
+rejected, in 7 ms. DF17/18 messages give call sign, altitude, position and velocity.
+Positions use CPR: global from an even/odd pair within 10 s, then local from the last
+fix -- so no receiver location is needed or stored. Checked against Junzi Sun's worked
+examples ("The 1090 Megahertz Riddle"): KLM1023; 52.2572 N 3.91937 E at 38000 ft; 159.20
+kt on 182.88 at -832 ft/min; heading 243.98 at 375 kt TAS. Aircraft go on the map by
+their 24-bit ICAO address.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the

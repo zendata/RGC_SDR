@@ -1034,7 +1034,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_decoder_changed(self, key: str) -> None:
         self._start_decoder(key)
-        if key in ("ais", "acars"):
+        if key in ("ais", "acars", "adsb"):
             self.show_map()                 # ships and aircraft are best seen on a map
 
     def show_map(self) -> None:
@@ -1060,10 +1060,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if worker is None:
             return
         label = worker.spec.label
+        if worker.problem:
+            self.decoder_panel.set_status(f"{label}: {worker.problem}")
+            return
         if worker.fixed_channels:
             channels = worker.channels_in_view()
-            seen = [f"{n} {hz / 1e6:.3f}" for n, hz, ok in channels if ok]
-            missed = [f"{n} {hz / 1e6:.3f}" for n, hz, ok in channels if not ok]
+            seen = [f"{n} {hz / 1e6:.3f}".strip() for n, hz, ok in channels if ok]
+            missed = [f"{n} {hz / 1e6:.3f}".strip() for n, hz, ok in channels if not ok]
             text = f"{label} on {', '.join(seen) if seen else 'no channel'} MHz"
             if missed:
                 mid = sum(hz for _, hz, _ in channels) / len(channels)
@@ -1556,7 +1559,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._scan_button)
         self._decode_button = QtWidgets.QPushButton("Decode")
         self._decode_button.setCheckable(True)
-        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS)")
+        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS, ADS-B)")
         row.addWidget(self._decode_button)
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.

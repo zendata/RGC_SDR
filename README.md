@@ -357,7 +357,11 @@ whatever the audio is doing, including with audio off.
   and text. Positions, when a message carries one (Jetstar's reports do, as do the
   ground station's own squitters), go on the map.
 
-Choosing AIS or ACARS opens a **map** in its own window (or press **Map** in the Decode panel):
+- **ADS-B** aircraft on 1090 MHz, which needs the Pluto or HackRF at 2 MS/s (or 4, 6...):
+  call sign, position, altitude, speed, track and climb rate. Tune to 1090 MHz; the
+  Decode status says if the sample rate will not do.
+
+Choosing AIS, ACARS or ADS-B opens a **map** in its own window (or press **Map** in the Decode panel):
 ships as arrows pointing where they are heading, with short trails; navigation marks as
 yellow diamonds and shore stations as blue squares; a sortable list beside it. Drag to
 pan, scroll to zoom, hover for details, click a row to centre on it. The view keeps
@@ -427,6 +431,7 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/aprs.py](src/rgc_sdr/dsp/aprs.py) | AFSK, HDLC, AX.25, APRS positions |
 | [src/rgc_sdr/dsp/ais.py](src/rgc_sdr/dsp/ais.py) | AIS messages and `!AIVDM` sentences |
 | [src/rgc_sdr/dsp/acars.py](src/rgc_sdr/dsp/acars.py) | ACARS: MSK, blocks, CRC-16/KERMIT, positions |
+| [src/rgc_sdr/dsp/adsb.py](src/rgc_sdr/dsp/adsb.py) | ADS-B: preambles, Mode S parity, CPR, velocity |
 | [src/rgc_sdr/targets.py](src/rgc_sdr/targets.py) | Ships (and later aircraft) folded from messages |
 | [src/rgc_sdr/ui/map_window.py](src/rgc_sdr/ui/map_window.py) | Map window on OpenStreetMap tiles |
 | [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |

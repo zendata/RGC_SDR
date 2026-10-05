@@ -74,3 +74,18 @@ def test_acars_places_aircraft_and_ground_stations():
     store.update([AcarsMessage("2", "VH-ABC", "NAK", "H1", "2", "later, no position",
                                "JQ0737")])
     assert plane.messages == 2                            # known, so still counted
+
+
+def test_adsb_aircraft_by_icao_address():
+    from src.rgc_sdr.dsp.adsb import AdsbMessage
+
+    store = TargetStore()
+    store.update([AdsbMessage("7C6B2D", 17, 4, {"callsign": "QFA401"}, "")])
+    assert store.placed() == [] and store.targets["adsb:7C6B2D"].name == "QFA401"
+    store.update([AdsbMessage("7C6B2D", 17, 11, {"altitude_ft": 12000,
+                                                 "position": (-37.7, 144.8)}, ""),
+                  AdsbMessage("7C6B2D", 17, 19, {"speed_kn": 250.0, "track": 160.0,
+                                                 "vertical_fpm": -1000}, "")])
+    t = store.targets["adsb:7C6B2D"]
+    assert (t.kind, t.altitude_ft, t.speed_kn, t.bearing) == ("aircraft", 12000, 250.0, 160.0)
+    assert (t.lat, t.lon) == (-37.7, 144.8) and t.details["climb"] == "-1000 ft/min"

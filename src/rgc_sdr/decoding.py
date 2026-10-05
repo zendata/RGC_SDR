@@ -16,10 +16,12 @@ from typing import Callable
 import numpy as np
 
 from .device.source import IQSource
-from .dsp.demod import DemodChain
+from .dsp.demod import DemodChain, Mixer
 from .dsp.acars import AcarsDecoder
 from .dsp.ais import CHANNELS as AIS_CHANNELS
 from .dsp.ais import AisDecoder
+from .dsp.adsb import FREQUENCY_HZ as ADSB_HZ
+from .dsp.adsb import AdsbDecoder
 from .dsp.aprs import AprsDecoder
 from .dsp.pocsag import PocsagDecoder
 
@@ -36,7 +38,8 @@ class DecoderSpec:
     #: Fixed channels (name -> Hz) decoded wherever the radio is tuned, provided they are
     #: in view, instead of the listening frequency. AIS has two, 50 kHz apart.
     channels: tuple[tuple[str, float], ...] = ()
-    #: The demodulator whose raw output the decoder reads: "nbfm" or "am".
+    #: What the decoder reads: the raw output of the "nbfm" or "am" demodulator, or
+    #: "iq", the samples themselves, shifted to the channel.
     mode: str = "nbfm"
 
 
@@ -49,6 +52,8 @@ DECODERS: dict[str, DecoderSpec] = {
     "ais": DecoderSpec("AIS", AisDecoder, 20e3, channels=tuple(AIS_CHANNELS.items())),
     # 2400 baud MSK on AM, 131.550 MHz here (the only active ACARS channel found).
     "acars": DecoderSpec("ACARS", AcarsDecoder, 10e3, mode="am"),
+    # 1 Mbit/s pulses on 1090 MHz, read from raw IQ: the Pluto or HackRF at 2 MS/s+.
+    "adsb": DecoderSpec("ADS-B", AdsbDecoder, 1e6, channels=(("", ADSB_HZ),), mode="iq"),
 }
 
 #: Seconds of IQ handed to the chain at a time.
@@ -60,12 +65,39 @@ EDGE_FRACTION = 0.45
 
 
 class _Lane:
-    """One channel: its NBFM chain and its decoder."""
+    """One channel: its demodulator chain (or, for raw IQ, just a frequency shift) and
+    its decoder."""
 
-    def __init__(self, chain: DemodChain, decoder, name: str = "",
-                 freq_hz: float | None = None) -> None:
+    def __init__(self, chain: DemodChain | None, decoder, name: str = "",
+                 freq_hz: float | None = None, mixer: Mixer | None = None,
+                 problem: str = "") -> None:
         self.chain, self.decoder, self.name, self.freq_hz = chain, decoder, name, freq_hz
-        self.in_view = True
+        self.mixer = mixer
+        #: Why this lane cannot decode (an unusable sample rate, say), or "".
+        self.problem = problem
+        self.in_view = not problem
+
+    def set_offset(self, offset_hz: float) -> None:
+        if self.chain is not None:
+            self.chain.set_offset(offset_hz)
+        if self.mixer is not None:
+            self.mixer.set_offset(offset_hz)
+
+    def reset(self) -> None:
+        if self.chain is not None:
+            self.chain.reset()
+        if self.mixer is not None:
+            self.mixer.reset()
+        if self.decoder is not None:
+            self.decoder.reset()
+
+    def process(self, iq: np.ndarray) -> list:
+        if self.decoder is None:
+            return []
+        if self.chain is None:                       # raw IQ, centred on the channel
+            return self.decoder.process(self.mixer.process(iq))
+        self.chain.process(iq)
+        return self.decoder.process(self.chain.last_detected)
 
 
 class DecodeWorker:
@@ -82,7 +114,15 @@ class DecodeWorker:
         self._lock = threading.Lock()
         self._lanes: list[_Lane] = []
         rate, bw = source.sample_rate, self.spec.bandwidth_hz
-        if self.spec.channels:
+        if self.spec.channels and self.spec.mode == "iq":
+            for label, freq in self.spec.channels:
+                try:
+                    decoder, problem = self.spec.factory(rate, label), ""
+                except ValueError as exc:
+                    decoder, problem = None, str(exc)
+                self._lanes.append(_Lane(None, decoder, label, freq, Mixer(rate), problem))
+            self.follow_tuning()
+        elif self.spec.channels:
             for label, freq in self.spec.channels:
                 chain = DemodChain(rate, self.spec.mode, offset_hz=0.0, bandwidth_hz=bw, agc=False)
                 self._lanes.append(_Lane(chain, self.spec.factory(chain.if_rate, label),
@@ -122,6 +162,11 @@ class DecodeWorker:
     def fixed_channels(self) -> bool:
         return bool(self.spec.channels)
 
+    @property
+    def problem(self) -> str:
+        """Why the decoder cannot run on this source, or ""."""
+        return next((lane.problem for lane in self._lanes if lane.problem), "")
+
     def channels_in_view(self) -> list[tuple[str, float, bool]]:
         """(name, Hz, in view) for each fixed channel."""
         return [(lane.name, lane.freq_hz, lane.in_view) for lane in self._lanes
@@ -135,8 +180,9 @@ class DecodeWorker:
         with self._lock:
             for lane in self._lanes:
                 offset = lane.freq_hz - centre
-                lane.in_view = abs(offset) + self.spec.bandwidth_hz / 2 <= half
-                lane.chain.set_offset(offset)
+                lane.in_view = (not lane.problem and
+                                abs(offset) + self.spec.bandwidth_hz / 2 <= half)
+                lane.set_offset(offset)
 
     def set_offset(self, offset_hz: float) -> None:
         """Follow the listening offset; fixed channels stay where they are."""
@@ -151,8 +197,7 @@ class DecodeWorker:
         """Drop everything in flight: called on retune, when it was another channel."""
         with self._lock:
             for lane in self._lanes:
-                lane.chain.reset()
-                lane.decoder.reset()
+                lane.reset()
             if self._reader is not None:
                 self._reader.skip_to_latest()
 
@@ -168,10 +213,8 @@ class DecodeWorker:
         found = []
         with self._lock:
             for lane in self._lanes:
-                if not lane.in_view:
-                    continue
-                lane.chain.process(iq)
-                found += lane.decoder.process(lane.chain.last_detected)
+                if lane.in_view:
+                    found += lane.process(iq)
         self.decoded += len(found)
         self._messages.extend(found)
         return found
