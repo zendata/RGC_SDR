@@ -353,7 +353,11 @@ whatever the audio is doing, including with audio off.
   course and heading; ship names, call signs and destinations; base stations and
   navigation marks. Each report also shows its standard `!AIVDM` sentence.
 
-Choosing AIS opens a **map** in its own window (or press **Map** in the Decode panel):
+- **ACARS** aircraft messages on 131.550 MHz (AM): registration, flight number, label
+  and text. Positions, when a message carries one (Jetstar's reports do, as do the
+  ground station's own squitters), go on the map.
+
+Choosing AIS or ACARS opens a **map** in its own window (or press **Map** in the Decode panel):
 ships as arrows pointing where they are heading, with short trails; navigation marks as
 yellow diamonds and shore stations as blue squares; a sortable list beside it. Drag to
 pan, scroll to zoom, hover for details, click a row to centre on it. The view keeps
@@ -422,6 +426,7 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/pocsag.py](src/rgc_sdr/dsp/pocsag.py) | POCSAG framing, BCH correction, messages |
 | [src/rgc_sdr/dsp/aprs.py](src/rgc_sdr/dsp/aprs.py) | AFSK, HDLC, AX.25, APRS positions |
 | [src/rgc_sdr/dsp/ais.py](src/rgc_sdr/dsp/ais.py) | AIS messages and `!AIVDM` sentences |
+| [src/rgc_sdr/dsp/acars.py](src/rgc_sdr/dsp/acars.py) | ACARS: MSK, blocks, CRC-16/KERMIT, positions |
 | [src/rgc_sdr/targets.py](src/rgc_sdr/targets.py) | Ships (and later aircraft) folded from messages |
 | [src/rgc_sdr/ui/map_window.py](src/rgc_sdr/ui/map_window.py) | Map window on OpenStreetMap tiles |
 | [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |

@@ -113,7 +113,7 @@ def decode_iq(iq, rate=48_000.0):
     out = []
     for block in np.array_split(iq, max(1, iq.size // 2048)):
         chain.process(block)
-        out += dec.process(chain.last_discriminator)
+        out += dec.process(chain.last_detected)
     return out
 
 

@@ -159,7 +159,7 @@ headless-testable and lets modules be swapped independently.
     FLEX only if that is what is used here. ✅ Verified on air; no FLEX found, so none built.
   - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK). ✅ Verified on air.
   - **P8d**, after P8c is done: AIS ✅ (verified on air), a map window for ships and
-    aircraft (requested 2026-10-05), then ACARS and ADS-B, one at a time. ADS-B
+    aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), then ADS-B. ADS-B
     (1090 MHz) needs the Pluto or HackRF; ACARS (131.55 MHz) works on the HF+.
   - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
     codec library (mbelib), if at all.
@@ -941,7 +941,7 @@ outside the recorded band there is nothing, and the span's edges wrap. Caps: the
 recorded rate, the recorded span as the frequency range, no gains, no TX. While a recording
 plays the app saves no state, so the next launch still opens the radio.
 
-**Decoders.** Decoders consume the **raw FM discriminator** (`DemodChain.last_discriminator`,
+**Decoders.** Decoders consume the **raw FM discriminator** (`DemodChain.last_detected`,
 real, at the chain's IF rate, at least 48 kHz) -- before the audio low-pass, AGC and squelch,
 which would distort or zero exactly what a data slicer needs. Each decoder runs in its own
 thread (`decoding.DecodeWorker`) with its own gapless reader and NBFM chain at the
@@ -1026,6 +1026,27 @@ Built to take aircraft from ADS-B too.
 *Measured on air, 2026-10-05 (HF+ at 162.000 MHz, Melbourne):* 231 messages in 3
 minutes from 78 vessels, base stations and aids to navigation in Port Phillip, 114 on
 channel A and 117 on B, no errors.
+
+**ACARS.** 2400 baud MSK (1200/2400 Hz) on AM, so decoders now name their demodulator
+(`DecoderSpec.mode`) and the chain exposes the raw AM envelope as well as the FM
+discriminator (`DemodChain.last_detected`). Three things were settled on air, from a
+4-minute capture of 131.550 MHz (the only active ACARS channel in a 129-137 MHz survey;
+136.975 is VDL Mode 2, a different system):
+- *The bit coding:* 2400 Hz means "same as the previous bit", 1200 Hz "the opposite",
+  so the data is the running XOR of the 1200 Hz decisions. That found SYN SYN SOH in all
+  30 bursts; reading the tone as the bit, or a tone change as the bit, found none. Its
+  polarity depends on where decoding starts, so both are searched.
+- *The block check:* CRC-16/KERMIT (check value 0x2189) validated all 26 complete frames;
+  X.25, XMODEM and CCITT-FALSE validated none.
+- *A high-pass first:* the AM detector removes the carrier slowly, and in a burst a
+  fraction of a second long the residual DC sat at -1800 Hz after mixing and swamped
+  the tones.
+Positions are read where messages carry them: decimal degrees ("S 37.894/E144.735",
+Jetstar's reports) and ground-station squitters ("03741S14451E" = YMML). Aircraft go on
+the map by registration, ground stations as shore-station squares.
+
+*Measured on air:* the capture decoded to 42 messages, no bad blocks; live for 3 minutes,
+63 messages from 7 aircraft, 5 with positions, 17 blocks rejected by the check.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the

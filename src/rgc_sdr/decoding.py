@@ -2,7 +2,7 @@
 
 Each decoder has its own gapless reader and its own NBFM chain, so it decodes whether or
 not audio is on, whatever the audio mode, and through mute and squelch. The chain's raw
-discriminator is what the decoder slices (`DemodChain.last_discriminator`).
+discriminator is what the decoder slices (`DemodChain.last_detected`).
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ import numpy as np
 
 from .device.source import IQSource
 from .dsp.demod import DemodChain
+from .dsp.acars import AcarsDecoder
 from .dsp.ais import CHANNELS as AIS_CHANNELS
 from .dsp.ais import AisDecoder
 from .dsp.aprs import AprsDecoder
@@ -35,6 +36,8 @@ class DecoderSpec:
     #: Fixed channels (name -> Hz) decoded wherever the radio is tuned, provided they are
     #: in view, instead of the listening frequency. AIS has two, 50 kHz apart.
     channels: tuple[tuple[str, float], ...] = ()
+    #: The demodulator whose raw output the decoder reads: "nbfm" or "am".
+    mode: str = "nbfm"
 
 
 DECODERS: dict[str, DecoderSpec] = {
@@ -44,6 +47,8 @@ DECODERS: dict[str, DecoderSpec] = {
     "aprs": DecoderSpec("APRS", AprsDecoder, 12.5e3),
     # GMSK 9600 with +/-2.4 kHz deviation in a 25 kHz channel; both channels at once.
     "ais": DecoderSpec("AIS", AisDecoder, 20e3, channels=tuple(AIS_CHANNELS.items())),
+    # 2400 baud MSK on AM, 131.550 MHz here (the only active ACARS channel found).
+    "acars": DecoderSpec("ACARS", AcarsDecoder, 10e3, mode="am"),
 }
 
 #: Seconds of IQ handed to the chain at a time.
@@ -79,7 +84,7 @@ class DecodeWorker:
         rate, bw = source.sample_rate, self.spec.bandwidth_hz
         if self.spec.channels:
             for label, freq in self.spec.channels:
-                chain = DemodChain(rate, "nbfm", offset_hz=0.0, bandwidth_hz=bw, agc=False)
+                chain = DemodChain(rate, self.spec.mode, offset_hz=0.0, bandwidth_hz=bw, agc=False)
                 self._lanes.append(_Lane(chain, self.spec.factory(chain.if_rate, label),
                                          label, freq))
             # One ship, one name, whichever channel it was heard on.
@@ -89,8 +94,8 @@ class DecodeWorker:
                     lane.decoder.names = shared
             self.follow_tuning()
         else:
-            chain = DemodChain(rate, "nbfm", offset_hz=self._offset, bandwidth_hz=bw,
-                               agc=False)
+            chain = DemodChain(rate, self.spec.mode, offset_hz=self._offset,
+                               bandwidth_hz=bw, agc=False)
             self._lanes.append(_Lane(chain, self.spec.factory(chain.if_rate)))
         self._messages: deque = deque(maxlen=QUEUE_LIMIT)
         self._reader = None
@@ -166,7 +171,7 @@ class DecodeWorker:
                 if not lane.in_view:
                     continue
                 lane.chain.process(iq)
-                found += lane.decoder.process(lane.chain.last_discriminator)
+                found += lane.decoder.process(lane.chain.last_detected)
         self.decoded += len(found)
         self._messages.extend(found)
         return found

@@ -185,4 +185,4 @@ def test_decoder_rejects_a_damaged_frame():
     from src.rgc_sdr.dsp.demod import DemodChain
     chain = DemodChain(RATE, "nbfm", bandwidth_hz=20e3, agc=False)
     chain.process(np.concatenate([burst, np.zeros(20000, np.complex64)]))
-    assert dec.process(chain.last_discriminator) == []
+    assert dec.process(chain.last_detected) == []

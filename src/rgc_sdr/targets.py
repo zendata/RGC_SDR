@@ -14,8 +14,9 @@ from dataclasses import dataclass, field
 #: Points kept per trail.
 TRAIL_POINTS = 200
 #: How long each kind stays on the map after it was last heard, in seconds. Ships
-#: report every few seconds to every few minutes; marks and shore stations are fixed.
-EXPIRY_S = {"ship": 30 * 60, "aid": 60 * 60, "base": 60 * 60, "aircraft": 3 * 60}
+#: report every few seconds to every few minutes; marks and shore stations are fixed;
+#: an aircraft's ACARS position reports can be ten minutes or more apart.
+EXPIRY_S = {"ship": 30 * 60, "aid": 60 * 60, "base": 60 * 60, "aircraft": 20 * 60}
 
 
 @dataclass
@@ -76,6 +77,8 @@ class TargetStore:
         for message in messages:
             if getattr(message, "mmsi", None) is not None:
                 changed += self._from_ais(message)
+            elif getattr(message, "registration", None) is not None:
+                changed += self._from_acars(message)
         if changed:
             self.version += 1
         return changed
@@ -109,6 +112,29 @@ class TargetStore:
             t.lat, t.lon = position
             if not t.trail or t.trail[-1] != position:
                 t.trail.append(position)
+        return 1
+
+    def _from_acars(self, m) -> int:
+        """Aircraft by registration, ground stations by ICAO code; only with a position
+        or an already-placed target, since most ACARS messages carry none."""
+        if m.registration:
+            key, kind, ident = f"acars:{m.registration}", "aircraft", m.registration
+        elif m.ground_station:
+            key, kind, ident = f"acars:{m.ground_station}", "base", m.ground_station
+        else:
+            return 0
+        if m.position is None and key not in self.targets:
+            return 0
+        t = self._get(key, kind, ident)
+        t.last_seen = m.received
+        t.messages += 1
+        if m.flight:
+            t.name = m.flight
+            t.details["registration"] = m.registration
+        if m.position is not None:
+            t.lat, t.lon = m.position
+            if not t.trail or t.trail[-1] != m.position:
+                t.trail.append(m.position)
         return 1
 
     def expire(self, now: float | None = None) -> int:

@@ -338,7 +338,7 @@ class MapWindow(QtWidgets.QWidget):
     def __init__(self, store: TargetStore, tiles: TileSource | None = None,
                  parent=None) -> None:
         super().__init__(parent, QtCore.Qt.WindowType.Window)
-        self.setWindowTitle("Map — ships")
+        self.setWindowTitle("Map — ships and aircraft")
         self.store = store
         self.map = MapView(store, tiles)
         self.table = QtWidgets.QTableWidget(0, len(self.COLUMNS))

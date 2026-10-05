@@ -56,3 +56,21 @@ def test_version_changes_only_with_news():
     assert store.version == v
     store.update([ais(1, 7, position=(1.0, 2.0))])
     assert store.version == v + 1
+
+
+def test_acars_places_aircraft_and_ground_stations():
+    from src.rgc_sdr.dsp.acars import AcarsMessage
+
+    store = TargetStore()
+    store.update([AcarsMessage("2", "VH-ABC", "NAK", "H1", "1", "no position here")])
+    assert store.targets == {}                            # nothing to place yet
+    store.update([AcarsMessage("2", "VH-ABC", "NAK", "3L", "7", "S 37.894/E144.735",
+                               "JQ0737", "M93A", position=(-37.894, 144.735)),
+                  AcarsMessage("2", "", "NAK", "SQ", "", "02XSMELYMML03741S14451E",
+                               position=(-37.68, 144.85))])
+    plane, station = store.targets["acars:VH-ABC"], store.targets["acars:YMML"]
+    assert (plane.kind, plane.name, plane.lat) == ("aircraft", "JQ0737", -37.894)
+    assert station.kind == "base"
+    store.update([AcarsMessage("2", "VH-ABC", "NAK", "H1", "2", "later, no position",
+                               "JQ0737")])
+    assert plane.messages == 2                            # known, so still counted

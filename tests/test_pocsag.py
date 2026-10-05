@@ -75,7 +75,7 @@ def discriminator(iq, rate=48_000.0):
     out = []
     for block in np.array_split(iq, max(1, iq.size // 4096)):
         chain.process(block)
-        out.append(chain.last_discriminator)
+        out.append(chain.last_detected)
     return np.concatenate(out)
 
 

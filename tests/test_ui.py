@@ -4105,3 +4105,12 @@ def test_map_button_reopens_the_map(qapp):
     win.decoder_panel.map_button.click()
     assert win.map_window.isVisible()
     win.map_window.close()
+
+
+def test_acars_listens_in_am_and_opens_the_map(qapp):
+    caps = _caps(freq_ranges=(FreqRange(60e6, 260e6),))
+    win = window_for(StubSource(caps, center=131.55e6))
+    _choose_decoder(win, "acars")
+    assert win.decode_worker._chain.mode == "am"
+    assert win.map_window is not None and win.map_window.isVisible()
+    win._stop_decoder()

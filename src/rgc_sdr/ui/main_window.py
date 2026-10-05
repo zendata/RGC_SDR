@@ -1034,8 +1034,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_decoder_changed(self, key: str) -> None:
         self._start_decoder(key)
-        if key == "ais":
-            self.show_map()                 # ships are best seen on a map
+        if key in ("ais", "acars"):
+            self.show_map()                 # ships and aircraft are best seen on a map
 
     def show_map(self) -> None:
         if self.map_window is None:
@@ -1556,7 +1556,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._scan_button)
         self._decode_button = QtWidgets.QPushButton("Decode")
         self._decode_button.setCheckable(True)
-        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS)")
+        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS)")
         row.addWidget(self._decode_button)
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
