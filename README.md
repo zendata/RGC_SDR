@@ -4,7 +4,7 @@ An incremental, learning-focused SDR receiver for macOS (Apple silicon), built o
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
 named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter,
 recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers,
-APRS). Next: AIS, ACARS and ADS-B, then P25 and DMR metadata.
+APRS, AIS, ACARS, ADS-B, and P25 and DMR metadata), with ships and aircraft on a map.
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 
@@ -362,7 +362,18 @@ whatever the audio is doing, including with audio off.
 
 - **ADS-B** aircraft on 1090 MHz, which needs the Pluto or HackRF at 2 MS/s (or 4, 6...):
   call sign, position, altitude, speed, track and climb rate. Tune to 1090 MHz; the
-  Decode status says if the sample rate will not do.
+  Decode status says if the sample rate will not do. Use 4 MS/s if you can: it decodes
+  nearly twice as many messages as 2 MS/s.
+
+- **P25** (Phase 1) and **DMR** trunked and conventional radio: **metadata only**, no
+  voice. Listen to the channel as for any other decoder (12.5 kHz). P25 shows each
+  frame's NAC and, on a control channel, the system's identity, its channel plan,
+  neighbouring sites, registrations and voice grants (talkgroup, radio and the granted
+  frequency). DMR shows the colour code and slot of each burst, call headers and
+  terminators (group or private call, talkgroup or destination, source, encrypted or
+  not) and control blocks; manufacturers' own blocks appear by opcode. A control channel
+  repeats itself many times a second, so a message identical to one in the last 30 s is
+  not shown again.
 
 Choosing AIS, ACARS or ADS-B opens a **map** in its own window (or press **Map** in the Decode panel):
 ships as arrows pointing where they are heading, with short trails; navigation marks as
@@ -439,6 +450,9 @@ pytest -m hardware        # streams from the attached device
 | [src/rgc_sdr/dsp/ais.py](src/rgc_sdr/dsp/ais.py) | AIS messages and `!AIVDM` sentences |
 | [src/rgc_sdr/dsp/acars.py](src/rgc_sdr/dsp/acars.py) | ACARS: MSK, blocks, CRC-16/KERMIT, positions |
 | [src/rgc_sdr/dsp/adsb.py](src/rgc_sdr/dsp/adsb.py) | ADS-B: preambles, Mode S parity, CPR, velocity |
+| [src/rgc_sdr/dsp/fsk4.py](src/rgc_sdr/dsp/fsk4.py) | Four-level FSK: sync search, symbols, CRC |
+| [src/rgc_sdr/dsp/p25.py](src/rgc_sdr/dsp/p25.py) | P25: NID BCH, trellis TSBKs, channel plans, grants |
+| [src/rgc_sdr/dsp/dmr.py](src/rgc_sdr/dsp/dmr.py) | DMR: slot type, CACH, BPTC, CSBKs, call headers |
 | [src/rgc_sdr/targets.py](src/rgc_sdr/targets.py) | Ships (and later aircraft) folded from messages |
 | [src/rgc_sdr/ui/map_window.py](src/rgc_sdr/ui/map_window.py) | Map window on OpenStreetMap tiles |
 | [src/rgc_sdr/ui/decoder_panel.py](src/rgc_sdr/ui/decoder_panel.py) | Decode dock |

@@ -152,7 +152,8 @@ headless-testable and lets modules be swapped independently.
 - **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
 - **P5 — Extras.** Scanner ✅ (section 7e). IQ playback moved to P8a. Remaining:
   multi-device, network (SpyServer-style), plugins.
-- **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ← **current: P8e**
+- **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ✅ P8a-P8e done;
+  the next phase is to be agreed.
   - **P8a** IQ playback of the recorder's files, and the decode framework (a Decode
     selector and a text panel fed from the FM discriminator). ✅
   - **P8b** POCSAG pagers (512/1200/2400 baud). Then a survey of local paging channels;
@@ -162,8 +163,10 @@ headless-testable and lets modules be swapped independently.
     aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), ADS-B ✅ (verified on
     air with the Pluto, 2026-10-06). ADS-B (1090 MHz) needs the Pluto or HackRF; ACARS
     (131.55 MHz) works on the HF+.
-  - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
-    codec library (mbelib), if at all.
+  - **P8e** P25 (Phase 1) and DMR framing and metadata. ✅ Verified on air 2026-10-06
+    (Pluto). No voice: it would need IMBE / AMBE+2 codecs from outside (mbelib), if at
+    all; and the local P25 network carries its voice on Phase 2 TDMA, which a Phase 1
+    receiver cannot follow anyway.
   - DRM and DAB+ deferred: each is a large OFDM receiver ending in an audio codec that
     would have to come from outside, with few test signals for DRM in Melbourne.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
@@ -1078,6 +1081,61 @@ confident bits rescued only 7, so error correction is not worth adding: they are
 overlapping messages. Altitude is missing for some light aircraft: they send the older
 Gillham coding, which is not decoded. 1 ms of this capture (one call sign message) is a
 test fixture, so the slicer is pinned on real pulses, not only synthesised ones.
+
+**P25 and DMR (P8e).** Both are four-level FSK at 4800 symbols/s in 12.5 kHz channels,
+with the same dibit-to-symbol mapping (01 +3, 00 +1, 10 -1, 11 -3), read from the NBFM
+discriminator like POCSAG. `dsp/fsk4.py` is built around the 48-bit sync words rather
+than a free-running symbol clock: a normalised correlation finds each sync to a fraction
+of a sample, the 24 known sync symbols fix that frame's scale and offset by a straight-
+line fit (so tuning error and deviation drop out), and the symbols after it are read by
+interpolation at the nominal period -- 13.02 samples per symbol at the chain's 62.5 kHz,
+not a whole number, which is fine. A P25 sync is all +/-3 symbols, so FM voice matches
+it now and then; each frame's own error check rejects those. An upside-down P25 sync is
+turned upright (an inverting receiver); in DMR a data sync's negative *is* the voice
+sync, so DMR reads it as it stands. *Found by a test:* the first version flipped DMR
+voice bursts too, which scrambled their CACH and put voice on air in the wrong slot.
+
+*Survey, 2026-10-06* (Pluto, 6 MS/s, 148-174 and 400-520 MHz, 1.5 s a window, both
+families' syncs sought on every signal 12 dB over the floor): **DMR is everywhere**
+from 455 to 508 MHz, mostly base stations sending continuously (a sync every 30 ms:
+trunked control or rest channels), with more in VHF. **P25** sits at 160-169 and
+413-426 MHz, with a few channels near 503 MHz. A cluster at 420-423 MHz looked like
+mixing products of one 58 dB signal (many channels with the same sync count), but
+their NACs differ and their broadcasts list them as neighbouring sites: real.
+
+*Settled on air* (each with no failures on clean signals; four P25 and four
+DMR captures of 30 s, then live through `DecodeWorker`):
+- P25 NID: BCH(63,16), the generator built here from its roots over GF(64)
+  (x^6+x+1) equals the published octal 6331141367235453; of 2524 NIDs, 2515 had no
+  bit errors and 9 were corrected (1-5 errors).
+- P25 TSBK: the deinterleave table runs from received to decoded position (the other
+  way, no block passed); a four-state rate 1/2 trellis, Viterbi-decoded; the CRC is
+  CRC-CCITT inverted. Self-check: each control channel's own site broadcast, turned
+  into a frequency through the channel plan it sends, gave its tuned frequency
+  (420.0125, 420.0625 and 166.4000 MHz).
+- DMR slot type: the extended Golay(24,12) (generator 0xC75) shortened to 8 data
+  bits, minimum distance 8 (I first assumed 7; the test of the distance found 8).
+- DMR CACH: the TACT is Hamming(7,4) in CACH bits 0, 4, 8, 12, 14, 18, 22; its slot
+  bit alternated on 997 bursts in a row.
+- DMR BPTC(196,96): position i comes from received (i x 181) mod 196; the Hamming(15,11)
+  row and (13,9) column parities were read off 1622 clean blocks, each held every time,
+  and the row equations match those in open-source DMR decoders. Correcting a single error in each row
+  and column took a weaker channel from 77 rejected bursts in 330 to 1.
+- DMR CSBK CRC: CRC-CCITT inverted, XOR 0xA5A5. Full LC: RS(12,9) over GF(256)
+  (0x11D), roots alpha^1..alpha^3, masked 0x969696 (voice header) and 0x999999
+  (terminator).
+
+What is shown: P25 NACs and frame kinds; system and site identity, channel plans,
+neighbouring sites, registrations, affiliations and grants with the granted frequency.
+DMR colour code and slot, call headers and terminators (group or private, talkgroup or
+destination, source, the encryption flag) and control blocks. Manufacturers' own
+blocks (Motorola's are most of what local DMR control channels send) are shown by
+opcode only: their layouts are not published, and guessing would be inventing.
+Identical messages within 30 s are not repeated. *Not verified on air:* the mapping of
+a Phase 2 (TDMA) grant's channel number to a frequency and slot, which follows the
+standard (channel number over slots per carrier). Live, 30 s each: a P25 control
+channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
+rejected; about 1 % of a core each.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the
