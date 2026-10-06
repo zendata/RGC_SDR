@@ -397,7 +397,10 @@ whatever the audio is doing, including with audio off.
   is decoded too: who it is to or from and what it is -- a text message (with its
   text), a registration, a location report, or encrypted -- with its content; a radio
   that reports its position goes on the **map** (green). P25 content, like pager text,
-  can be hidden with **Show text**. A control channel
+  can be hidden with **Show text**. P25 voice calls show who is talking (talkgroup and
+  radio ID, and whether encrypted), and the **P25** mode plays the voice: choose the
+  P25 decoder (it selects the mode) or P25 in the mode list, and tune to the channel.
+  Voice needs mbelib (`brew install mbelib`); encrypted calls stay silent. A control channel
   repeats itself many times a second, so a message identical to one in the last 30 s is
   not shown again.
 

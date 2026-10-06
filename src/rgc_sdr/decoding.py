@@ -43,6 +43,8 @@ class DecoderSpec:
     #: What the decoder reads: the raw output of the "nbfm" or "am" demodulator, or
     #: "iq", the samples themselves, shifted to the channel.
     mode: str = "nbfm"
+    #: The audio mode to listen in while it decodes, if not `mode`: P25's own voice.
+    listen_mode: str = ""
 
 
 DECODERS: dict[str, DecoderSpec] = {
@@ -58,7 +60,7 @@ DECODERS: dict[str, DecoderSpec] = {
     "adsb": DecoderSpec("ADS-B", AdsbDecoder, 1e6, channels=(("", ADSB_HZ),), mode="iq"),
     # 4800-symbol/s four-level FSK in a 12.5 kHz channel: metadata, not voice.
     # Packet data can carry text and radios' positions: hideable, like pager text.
-    "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True),
+    "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True, listen_mode="p25"),
     "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3),
 }
 

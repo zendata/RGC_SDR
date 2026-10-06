@@ -19,7 +19,7 @@ from .decimate import StreamDecimator, lowpass_taps
 from .filters import Fir, bandpass_taps, fir_length_for  # noqa: F401  (re-exported)
 
 #: Modes the UI offers, in the order the roadmap introduces them.
-MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw")
+MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw", "p25")
 
 
 #: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
@@ -32,6 +32,8 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     # CW filters are narrow: the signal is an on/off carrier, so bandwidth buys nothing
     # but noise. 250-500 Hz is typical, and 100 Hz is for digging one signal out of a pile.
     "cw": (100.0, 250.0, 500.0, 800.0, 1.5e3),
+    # A P25 channel is 12.5 kHz; the voice decoder needs all of it.
+    "p25": (12.5e3,),
 }
 
 #: Beat-note pitches offered for CW, in Hz. Operator preference varies a lot, and a
@@ -93,6 +95,9 @@ MODE_SPECS: dict[str, ModeSpec] = {
     # 500 Hz rather than the traditional 700: lower notes are markedly less tiring
     # over a long session, and it is selectable anyway.
     "cw": ModeSpec(bandwidth_hz=500.0, if_target_hz=48e3, pitch_hz=500.0),
+    # P25 Phase 1 digital voice (dsp/p25voice.py): the FM discriminator's four-level
+    # symbols, decoded to IMBE frames and through mbelib to 8 kHz audio.
+    "p25": ModeSpec(bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3),
 }
 
 
@@ -359,7 +364,7 @@ class DemodChain:
 
         if mode == "am":
             self._detector = AmDetector()
-        elif mode in ("nbfm", "wbfm"):
+        elif mode in ("nbfm", "wbfm", "p25"):
             self._detector = FmDetector(self.if_rate, self.spec.deviation_hz)
         else:
             # SSB and CW need no detector: the filter did the work and the real part of
@@ -400,6 +405,20 @@ class DemodChain:
             self.audio_decim = self._pick_factor(audio_source_rate, self.spec.audio_target_hz)
         self._audio_decimator = StreamDecimator(self.audio_decim)
         self.audio_rate = audio_source_rate / self.audio_decim
+        #: P25's voice decoder, which makes its own 8 kHz audio from the discriminator.
+        self._p25 = None
+        if mode == "p25":
+            from .modulate import Interpolator
+            from .p25voice import AUDIO_RATE, P25Voice
+
+            self._p25 = P25Voice(self.if_rate)
+            # mbelib speaks at 8 kHz; six times that is a rate every output device takes.
+            self._p25_up = Interpolator(6)
+            self.audio_rate = 6 * AUDIO_RATE
+            #: 8 kHz samples the stream is owed: voice arrives in 180 ms bursts, and
+            #: between calls there is none, so silence fills the gap and the audio runs
+            #: at its rate whatever is on the air.
+            self._p25_owed = 0.0
         if mode == "wbfm":
             self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
 
@@ -531,6 +550,10 @@ class DemodChain:
             self._audio_fir.reset()
         if self._agc is not None:
             self._agc.reset()
+        if self._p25 is not None:
+            self._p25.reset()
+            self._p25_up.reset()
+            self._p25_owed = 0.0
         if self._stereo is not None:
             mono = self._stereo.force_mono
             self._stereo.reset()
@@ -577,6 +600,22 @@ class DemodChain:
                 return np.zeros(audio.shape, dtype=np.float32)
             if self._agc is not None:
                 audio = self._agc.process(audio)     # one gain for both channels
+            return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
+
+        if self._p25 is not None:
+            self.last_detected = self._detector.process(channel)
+            voice = self._p25.process(self.last_detected)
+            self._p25_owed += channel.size / self.if_rate * 8000.0 - voice.size
+            if self._p25_owed > 0 and voice.size == 0:
+                fill = int(self._p25_owed)
+                voice = np.zeros(fill, dtype=np.float32)
+                self._p25_owed -= fill
+            self._p25_owed = max(self._p25_owed, -8000.0)      # a second's lead at most
+            if voice.size == 0:
+                return np.zeros(0, dtype=np.float32)
+            audio = self._p25_up.process(voice.astype(np.float64))
+            if self._agc is not None and not self._p25.encrypted:
+                audio = self._agc.process(audio)
             return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
 
         if self._detector is not None:
@@ -646,6 +685,11 @@ class DemodChain:
     def force_mono(self, value: bool) -> None:
         if self._stereo is not None:
             self._stereo.force_mono = bool(value)
+
+    @property
+    def p25_voice(self):
+        """The P25 voice decoder (who is talking, `take_calls`), in P25 mode."""
+        return self._p25
 
     @property
     def rds(self):

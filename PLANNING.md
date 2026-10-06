@@ -1205,6 +1205,22 @@ standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
 
+**P25 voice (VK3RQ, 2026-10-07: "I would like to hear voice when I tune to a P25 voice
+channel"; his group uses the VK3RMM repeater).** `dsp/p25voice.py`. LDU1/LDU2 frames
+(864 symbols) carry nine IMBE frames between Hamming(10,6) hex words; LDU1's twelve words
+are the link control (LCF, options, talkgroup or target, source) with Reed-Solomon
+(24,12,13) over GF(64) (x^6+x+1, roots alpha^1..12). The IMBE codec is **mbelib**
+(Homebrew, loaded with ctypes) -- the outside library the plan always named; it does
+the IMBE error correction and synthesis. The 144-bit interleave is TIA-102.BABA's table
+as transcribed in DSD (ISC licence, notice kept with it); a test checks it fills each of
+the frame's 144 cells once. A "p25" mode in `DemodChain` plays the voice: discriminator
+-> frames -> mbelib (8 kHz) -> x6 to 48 kHz, silence filling the gaps between 180 ms
+bursts and between calls, muted while the link control says encrypted. Choosing the P25
+decoder selects it (`DecoderSpec.listen_mode`), and the decoder shows "voice TG x from
+y". *Not yet confirmed on air:* the Reed-Solomon symbol order (only self-consistency
+with an encoder written here) and the voice -- 90 s on VK3RMM's listed frequencies
+(439.825, 439.875, 438.05 MHz) heard nothing; it is not busy.
+
 **Classify the whole screen (VK3RQ, 2026-10-06: a "Classify" button, unknowns skipped,
 trunked channels merged with colour coding).** `sweep.py`: one capture of the span (2 s
 at 6 MS/s); candidates from the 50 ms max-hold spectrum, 20 dB over the floor, inside

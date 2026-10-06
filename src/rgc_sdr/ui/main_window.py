@@ -1189,10 +1189,11 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..decoding import DECODERS
 
         spec = DECODERS.get(key)
-        if (spec is None or spec.mode not in MODES or self.is_transceiver
-                or getattr(self, "_decoder_from_memory", False) or self.mode == spec.mode):
+        wanted = (spec.listen_mode or spec.mode) if spec is not None else ""
+        if (spec is None or wanted not in MODES or self.is_transceiver
+                or getattr(self, "_decoder_from_memory", False) or self.mode == wanted):
             return
-        index = self._mode_combo.findData(spec.mode)
+        index = self._mode_combo.findData(wanted)
         if index >= 0:
             self._mode_combo.setCurrentIndex(index)
 

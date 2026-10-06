@@ -419,9 +419,11 @@ class P25Decoder:
                 messages = self._tsdu(nac, payload)
             elif duid == 0xC:
                 messages = self._pdu(nac, payload)
+            elif duid == 0x5:
+                messages = self._voice(nac, payload)
             else:
                 name = DUIDS.get(duid, f"DUID {duid:X}")
-                kind = "voice" if duid in (0x0, 0x5, 0xA) else name
+                kind = "voice" if duid in (0x0, 0xA) else name
                 messages = [P25Message(nac, kind, "voice" if kind == "voice" else name,
                                        {"duid": duid})]
             for m in messages:
@@ -447,6 +449,23 @@ class P25Decoder:
             if bits[0]:                                 # last block
                 break
         return out
+
+    def _voice(self, nac: int, payload: np.ndarray) -> list[P25Message]:
+        """LDU1: who is talking, from its link control (dsp/p25voice.py)."""
+        from .p25voice import LDU_DIBITS, link_control, split_ldu
+
+        lc = None
+        if payload.size >= LDU_DIBITS:
+            lc = link_control(split_ldu(payload[:LDU_DIBITS])[1])
+        if lc is None:
+            return [P25Message(nac, "voice", "voice", {"duid": 0x5})]
+        lcf, options, dest, source = lc
+        private = lcf & 0x3F == 0x03
+        secret = "  encrypted" if options & 0x40 else ""
+        text = (f"voice  {'to' if private else 'TG'} {dest}  from {source}{secret}")
+        return [P25Message(nac, "voice", text, {"duid": 0x5, "talkgroup": dest,
+                                                "source": source, "private": private,
+                                                "encrypted": bool(options & 0x40)})]
 
     def _pdu(self, nac: int, payload: np.ndarray) -> list[P25Message]:
         """A data packet: its header (coded as a TSBK is), then confirmed data blocks of
