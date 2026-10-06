@@ -108,7 +108,10 @@ radio, once:
    it there, or reserve it on your router, so it does not change).
 
 Over WiFi the app takes TX audio from WLAN instead of USB (DATA OFF MOD and DATA MOD =
-WLAN) and sets the WLAN audio output to AF with the squelch; all put back afterwards. If
+WLAN) and sets the WLAN audio output to AF with the squelch; all put back afterwards.
+If a computer on the radio's USB port stands in for its WiFi (wfview's server on a
+Raspberry Pi, say), tick **Through a USB bridge** in the login: the radio then hears the
+transmit audio on USB, so the app sets its inputs to USB as it would on a cable. If
 the link drops the status line says so; choose the radio again to reconnect. With no
 radio on USB at all, the app offers **Connect IC-705 over WiFi…** when it starts, and
 once connected it opens straight onto the WiFi radio next time. The **VK3RQ Super SDR WiFi** icon on

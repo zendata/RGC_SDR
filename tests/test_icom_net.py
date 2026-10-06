@@ -356,6 +356,14 @@ def test_login_details_are_saved_without_the_password(tmp_path):
     assert (login.host, login.user, login.password) == ("192.168.1.50", "vk3rq", "")
     assert login.complete
     assert not net.load_login(tmp_path / "missing.json", keychain=False).complete
+    assert login.bridge is False
+
+
+def test_a_usb_bridge_is_remembered(tmp_path):
+    path = tmp_path / "net.json"
+    net.save_login(net.NetworkLogin("bridge.local", "vk3rq", "x", bridge=True), path,
+                   keychain=False)
+    assert net.load_login(path, keychain=False).bridge is True
 
 
 def test_the_radios_idle_packets_are_not_counted_as_lost(radio):

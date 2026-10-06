@@ -321,13 +321,15 @@ class IcomSource(IQSource):
         else:
             self.port = port or getattr(transport, "host", None) or "injected"
         self.address = address
-        #: Over WiFi (an `icom_net.IcomLink`): the audio comes over the same link, and
-        #: TX audio is taken from WLAN rather than USB.
+        #: Over the network (an `icom_net.IcomLink`): the audio comes over the same link.
         self.wlan = bool(getattr(transport, "wlan", False))
         self.link = transport if self.wlan else None
-        self.takeover = TAKEOVER_WLAN if self.wlan else TAKEOVER
-        self.menu_taken = MENU_TAKEN_WLAN if self.wlan else MENU_TAKEN
-        self.menu_locked = MENU_LOCKED_WLAN if self.wlan else MENU_LOCKED
+        #: Where the radio itself exchanges audio: its USB port, directly or through a
+        #: bridge (wfview's server) -- or its own WiFi, whose TX audio comes from WLAN.
+        own_wifi = self.wlan and not getattr(transport, "radio_usb", False)
+        self.takeover = TAKEOVER_WLAN if own_wifi else TAKEOVER
+        self.menu_taken = MENU_TAKEN_WLAN if own_wifi else MENU_TAKEN
+        self.menu_locked = MENU_LOCKED_WLAN if own_wifi else MENU_LOCKED
         #: Anything with read(n), write(bytes) and close(): a serial port, or a test's
         #: stand-in. Written from both the GUI and reader threads, hence the lock.
         self._serial = transport

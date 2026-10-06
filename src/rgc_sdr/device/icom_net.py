@@ -485,13 +485,18 @@ class IcomLink:
     Received audio goes to `audio_sink` (a callable taking float32 blocks) when one is set.
     """
 
-    #: The radio is on WiFi: the app takes TX audio from WLAN, not USB.
+    #: The radio is reached over the network: CI-V and audio come over this link.
     wlan = True
 
     def __init__(self, host: str, user: str, password: str,
                  timeout: float = STEP_TIMEOUT_S,
-                 ports: tuple[int, int, int] = (CONTROL_PORT, SERIAL_PORT, AUDIO_PORT)) -> None:
+                 ports: tuple[int, int, int] = (CONTROL_PORT, SERIAL_PORT, AUDIO_PORT),
+                 bridge: bool = False) -> None:
         self.host = host
+        #: Reached through a USB bridge (wfview's server on a Pi), not the radio's own
+        #: WiFi: the radio then hears TX audio on USB, so its modulation input must be
+        #: USB, not WLAN (VK3RQ, 2026-10-06: keyed up with no audio until it was).
+        self.radio_usb = bool(bridge)
         self.ports = ports
         self.user = user
         self.radio_name = ""
@@ -747,6 +752,8 @@ class NetworkLogin:
     host: str = ""
     user: str = ""
     password: str = ""
+    #: A USB bridge (wfview server) stands in for the radio's own WiFi.
+    bridge: bool = False
 
     @property
     def complete(self) -> bool:
@@ -769,7 +776,8 @@ def load_login(path: Path | None = None, keychain: bool = True) -> NetworkLogin:
         return NetworkLogin()
     if not isinstance(data, dict):
         return NetworkLogin()
-    login = NetworkLogin(str(data.get("host", "")).strip(), str(data.get("user", "")).strip())
+    login = NetworkLogin(str(data.get("host", "")).strip(), str(data.get("user", "")).strip(),
+                         bridge=bool(data.get("bridge", False)))
     if keychain and login.complete:
         found = _keychain("find-generic-password", "-s", KEYCHAIN_SERVICE,
                           "-a", f"{login.user}@{login.host}", "-w")
@@ -781,7 +789,8 @@ def load_login(path: Path | None = None, keychain: bool = True) -> NetworkLogin:
 def save_login(login: NetworkLogin, path: Path | None = None, keychain: bool = True) -> None:
     path = Path(path) if path is not None else LOGIN_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"host": login.host, "user": login.user}))
+    path.write_text(json.dumps({"host": login.host, "user": login.user,
+                                "bridge": login.bridge}))
     if keychain and login.complete:
         _keychain("add-generic-password", "-U", "-s", KEYCHAIN_SERVICE,
                   "-a", f"{login.user}@{login.host}", "-w", login.password)
@@ -792,4 +801,4 @@ def open_link(login: NetworkLogin | None = None) -> IcomLink:
     login = login or load_login()
     if not login.complete:
         raise ConnectionError("its WiFi address and user are not set up yet")
-    return IcomLink(login.host, login.user, login.password)
+    return IcomLink(login.host, login.user, login.password, bridge=login.bridge)

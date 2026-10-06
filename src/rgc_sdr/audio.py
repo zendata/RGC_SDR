@@ -791,8 +791,9 @@ class NetworkRadioAudio(RadioAudio):
 class NetworkAudioOutput(CodecOutput):
     """Sends microphone audio to the radio over the network, for it to transmit.
 
-    The 705 takes it only with its voice modulation input on WLAN, which the app sets
-    while it has the radio over WiFi. Same level and limiter as `CodecOutput`; a thread
+    The 705 takes it only with its voice modulation input on WLAN -- or on USB when a
+    bridge (wfview's server) carries it to the radio's USB -- which the app sets while it
+    has the radio. Same level and limiter as `CodecOutput`; a thread
     sends a 20 ms block whenever the microphone has one.
     """
 

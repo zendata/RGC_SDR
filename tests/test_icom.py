@@ -363,6 +363,26 @@ class WifiStandInRadio(StandInRadio):
         self.menu.update({(0x01, 0x14): b"\x01", (0x01, 0x15): b"\x00"})
 
 
+class BridgedStandInRadio(WifiStandInRadio):
+    """Reached over the network, but through a USB bridge (wfview server on a Pi)."""
+
+    radio_usb = True
+
+
+def test_through_a_usb_bridge_tx_audio_is_taken_from_usb(tmp_path):
+    # VK3RQ, 2026-10-06: through the Pi bridge the 705 keyed up with no audio while its
+    # modulation input was WLAN; the audio reaches it on USB.
+    radio = BridgedStandInRadio()
+    src = source_with_file(radio, tmp_path)
+    assert src.wlan and src.caps.driver == "icom705net"
+    src._take_over(); settle(src)
+    assert radio.data_off_mod == 0x01 and radio.menu[(0x01, 0x19)] == b"\x01"
+    assert radio.menu[(0x01, 0x10)] == b"\x02\x55"        # USB output at 100 %
+    assert radio.menu[(0x01, 0x14)] == b"\x01"           # WLAN output left alone
+    src._hand_back(); settle(src)
+    assert radio.data_off_mod == 0x02
+
+
 def test_over_wifi_tx_audio_is_taken_from_wlan_and_handed_back(tmp_path):
     radio = WifiStandInRadio()
     src = source_with_file(radio, tmp_path)

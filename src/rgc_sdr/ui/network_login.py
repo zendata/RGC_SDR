@@ -32,6 +32,13 @@ class NetworkLoginDialog(QtWidgets.QDialog):
         form.addRow("Radio address", self.host)
         form.addRow("User", self.user)
         form.addRow("Password", self.password)
+        self.bridge = QtWidgets.QCheckBox("Through a USB bridge (wfview server)")
+        self.bridge.setChecked(login.bridge)
+        self.bridge.setToolTip(
+            "Tick when a computer on the radio's USB port (such as a Raspberry Pi running\n"
+            "wfview's server) stands in for the radio's own WiFi. The radio then takes\n"
+            "transmit audio from USB, and the app sets it so; otherwise from WLAN.")
+        form.addRow("", self.bridge)
         help_label = QtWidgets.QLabel(SETUP_HELP)
         help_label.setWordWrap(True)
         help_label.setMinimumWidth(420)
@@ -48,7 +55,7 @@ class NetworkLoginDialog(QtWidgets.QDialog):
 
     def login(self) -> NetworkLogin:
         return NetworkLogin(self.host.text().strip(), self.user.text().strip(),
-                            self.password.text())
+                            self.password.text(), bridge=self.bridge.isChecked())
 
     def _accept(self) -> None:
         if not self.login().complete:

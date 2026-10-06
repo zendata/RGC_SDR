@@ -173,8 +173,9 @@ headless-testable and lets modules be swapped independently.
     would have to come from outside, with few test signals for DRM in Melbourne.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
-  protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX over WiFi
-  not yet) (section 7o). Bluetooth ruled out
+  protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
+  Pi bridge keyed with no audio, 2026-10-06 -- the modulation input was WLAN; fixed with
+  a "USB bridge" login option, to be retried) (section 7o). Bluetooth ruled out
   (headsets and D-STAR phone apps only). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
@@ -932,6 +933,15 @@ and DATA MOD to WLAN (03), WLAN output to AF (`1A 05 01 14` = 00) and WLAN AF SQ
 (`01 15` = 01); a restore file left by a crash over the other connection is handed back
 too. A dead link closes at once and keeps the restore file. Choosing the WiFi entry asks
 for address/user/password (password in the Keychain).
+
+*Corrected 2026-10-06:* "network link = the radio's own WiFi" was wrong for VK3RQ's
+setup, where a Pi Zero W running wfview's server sits on the 705's USB in place of its
+faulty WiFi (repo `ic705-wifi-bridge`). Keyed through it, the radio transmitted a
+carrier with no audio: the server delivers TX audio to the radio's USB, and the app had
+set the modulation input to WLAN. Neither CI-V (no command reports the radio's own WLAN
+state) nor the network protocol (the server presents itself as the radio) tells the two
+apart, so the login has a **Through a USB bridge** option, saved with it: then the USB
+takeover applies (inputs USB, USB AF output at 100 % with squelch), exactly as on a cable.
 
 **On the radio, 2026-10-02.** Through the home router (Station mode, 192.168.1.77) the
 705's WiFi lost 87-98 % of pings at 0.2-1.4 s while the router answered in 4 ms: the
