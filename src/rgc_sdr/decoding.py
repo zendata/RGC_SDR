@@ -23,6 +23,8 @@ from .dsp.ais import AisDecoder
 from .dsp.adsb import FREQUENCY_HZ as ADSB_HZ
 from .dsp.adsb import AdsbDecoder
 from .dsp.aprs import AprsDecoder
+from .dsp.dmr import DmrDecoder
+from .dsp.p25 import P25Decoder
 from .dsp.pocsag import PocsagDecoder
 
 
@@ -54,6 +56,9 @@ DECODERS: dict[str, DecoderSpec] = {
     "acars": DecoderSpec("ACARS", AcarsDecoder, 10e3, mode="am"),
     # 1 Mbit/s pulses on 1090 MHz, read from raw IQ: the Pluto or HackRF at 2 MS/s+.
     "adsb": DecoderSpec("ADS-B", AdsbDecoder, 1e6, channels=(("", ADSB_HZ),), mode="iq"),
+    # 4800-symbol/s four-level FSK in a 12.5 kHz channel: metadata, not voice.
+    "p25": DecoderSpec("P25", P25Decoder, 12.5e3),
+    "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3),
 }
 
 #: Seconds of IQ handed to the chain at a time.

@@ -1578,7 +1578,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._scan_button)
         self._decode_button = QtWidgets.QPushButton("Decode")
         self._decode_button.setCheckable(True)
-        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS, ADS-B)")
+        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS, ADS-B, P25, DMR)")
         row.addWidget(self._decode_button)
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
