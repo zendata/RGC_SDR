@@ -2934,6 +2934,32 @@ def test_tx_gains_are_remembered_per_radio(qapp, tmp_path):
     win.close()
 
 
+def test_mic_gain_is_on_the_tx_row_and_remembered_per_radio(qapp, tmp_path):
+    from src.rgc_sdr.dsp.modulate import MIC_GAIN_DB
+    win, _, _ = switching_window(start="hackrf", settings=Settings(tmp_path / "s.json"))
+    assert win._tx_mic_spin.value() == MIC_GAIN_DB
+    win._tx_mic_spin.setValue(24.0)
+    win.switch_device("airspyhf")
+    win.switch_device("hackrf")
+    assert win._tx_mic_gain_db == 24.0 and win._tx_mic_spin.value() == 24.0
+    win.close()
+
+
+def test_mic_gain_reaches_the_transmitter_live(qapp):
+    win, _, _ = switching_window(start="hackrf")
+
+    class Keyed:
+        def __init__(self):
+            from src.rgc_sdr.dsp.modulate import Modulator
+            self.modulator = Modulator("nbfm", 48e3)
+
+    win.transmitter = Keyed()
+    win._tx_mic_spin.setValue(30.0)
+    assert win.transmitter.modulator.mic_gain_db == 30.0
+    win.transmitter = None
+    win.close()
+
+
 def test_the_default_transmitter_opens_the_radios_sink(qapp, monkeypatch):
     import src.rgc_sdr.ui.main_window as mw
 

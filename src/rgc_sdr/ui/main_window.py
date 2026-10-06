@@ -192,6 +192,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         #: Mac microphone level sent to a transceiver for TX (0-1), saved per radio.
         self._tx_audio_level = DEFAULT_TX_AUDIO_LEVEL
+        from ..dsp.modulate import MIC_GAIN_DB
+
+        #: Microphone gain (dB) for an SDR's own modulator, saved per radio.
+        self._tx_mic_gain_db = MIC_GAIN_DB
         #: A transceiver's received audio on the Mac (RadioAudio), while one is in use.
         #: Injectable so tests never open a sound device.
         self.radio_audio = None
@@ -829,6 +833,8 @@ class MainWindow(QtWidgets.QMainWindow):
             max_db=self._levels[1] if explicit else None,
             tx_gains=dict(self._tx_gains),
             tx_audio_level=self._tx_audio_level if self.is_transceiver else None,
+            tx_mic_gain_db=(self._tx_mic_gain_db
+                            if not self.is_transceiver and self.source.caps.tx else None),
         )
 
     def apply_radio_hardware(self, radio: RadioSettings) -> None:
@@ -854,6 +860,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._if_bw_chosen = True
         if radio.tx_audio_level is not None:
             self._tx_audio_level = min(1.0, max(0.01, radio.tx_audio_level))
+        if radio.tx_mic_gain_db is not None:
+            from ..dsp.modulate import MIC_GAIN_RANGE_DB
+
+            low, high = MIC_GAIN_RANGE_DB
+            self._tx_mic_gain_db = min(high, max(low, radio.tx_mic_gain_db))
         self._rebuild_device_controls()       # show what was just set
         tx = caps.tx
         if tx is not None:
@@ -2490,9 +2501,20 @@ class MainWindow(QtWidgets.QMainWindow):
                                     audio_out=audio_out)
         opener = getattr(self.source, "open_tx_sink", None)
         sink = opener(self.tx_freq, TX_IQ_RATE, dict(self._tx_gains)) if opener else None
-        return Transmitter(mode, sink=sink, tone=self.tx_tone())
+        return Transmitter(mode, sink=sink, tone=self.tx_tone(),
+                           mic_gain_db=self._tx_mic_gain_db)
+
+    def _set_tx_mic_gain(self, db: float) -> None:
+        self._tx_mic_gain_db = float(db)
+        modulator = getattr(self.transmitter, "modulator", None)
+        if modulator is not None:
+            modulator.set_mic_gain_db(self._tx_mic_gain_db)     # live, while transmitting
+        self._schedule_save()
 
     def _reset_tx_gains(self) -> None:
+        from ..dsp.modulate import MIC_GAIN_DB
+
+        self._tx_mic_gain_db = MIC_GAIN_DB
         tx = self.source.caps.tx
         self._tx_gains = {g.name: g.min_db for g in tx.gain_elements} if tx else {}
         self._rebuild_tx_controls()
@@ -2534,6 +2556,22 @@ class MainWindow(QtWidgets.QMainWindow):
                 spin.setToolTip(f"Transmit {element.name} gain")
                 spin.valueChanged.connect(lambda db, n=element.name: self._set_tx_gain(n, db))
                 layout.addWidget(spin)
+            from ..dsp.modulate import MIC_GAIN_RANGE_DB
+
+            layout.addWidget(QtWidgets.QLabel("Mic"))
+            mic = QtWidgets.QDoubleSpinBox()
+            mic.setRange(*MIC_GAIN_RANGE_DB)
+            mic.setSingleStep(1.0)
+            mic.setDecimals(0)
+            mic.setSuffix(" dB")
+            mic.setValue(self._tx_mic_gain_db)
+            mic.setToolTip("Microphone gain before the modulator. A limiter holds peaks at\n"
+                           "full deviation, so raise it until the audio is loud enough;\n"
+                           "\"drive\" in the status line shows how close peaks come.\n"
+                           "Can be changed while transmitting.")
+            mic.valueChanged.connect(self._set_tx_mic_gain)
+            self._tx_mic_spin = mic
+            layout.addWidget(mic)
         self._tx_slot.setVisible(tx is not None and bool(tx.gain_elements))
         self._sync_radio_row()
 
@@ -3322,7 +3360,9 @@ class MainWindow(QtWidgets.QMainWindow):
         elapsed = int(tx.elapsed_s)
         what = ("TX dry run, no RF" if tx.dry_run
                 else f"TX {tx.tx_freq / 1e6:.4f} MHz")
-        return (f"  |  {what}  {tx.mode.upper()}  mic {level:.0f} dBFS"
+        drive = getattr(getattr(tx, "modulator", None), "drive", None)
+        shown = f"  drive {drive * 100:.0f}%" if drive is not None else ""
+        return (f"  |  {what}  {tx.mode.upper()}  mic {level:.0f} dBFS{shown}"
                 f"  {elapsed // 60}:{elapsed % 60:02d}")
 
     def _audio_status(self) -> str:

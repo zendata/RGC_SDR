@@ -138,6 +138,8 @@ class RadioSettings:
     tx_gains: dict[str, float] = field(default_factory=dict)
     #: Microphone level sent to a transceiver (0-1); None means the default.
     tx_audio_level: float | None = None
+    #: Microphone gain (dB) for an SDR that transmits; None means the default.
+    tx_mic_gain_db: float | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -147,7 +149,8 @@ class RadioSettings:
         out = cls()
         if not isinstance(data, dict):
             return out
-        for name in ("sample_rate", "if_bandwidth_hz", "min_db", "max_db", "tx_audio_level"):
+        for name in ("sample_rate", "if_bandwidth_hz", "min_db", "max_db", "tx_audio_level",
+                     "tx_mic_gain_db"):
             if name in data:
                 setattr(out, name, _coerce(data[name], None))
         out.decimation = max(1, _coerce(data.get("decimation", 1), 1))

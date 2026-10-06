@@ -34,6 +34,16 @@ TX_MODES = ("am", "nbfm", "wbfm", "usb", "lsb")
 #: The microphone's rate. CoreAudio gives the MacBook Air Microphone 48 kHz natively.
 AUDIO_RATE = 48_000.0
 
+#: Microphone gain for an SDR transmitter, in dB. Full deviation (or full AM depth, or
+#: full SSB drive) needs audio at full scale, and speech into the MacBook Air Microphone
+#: peaks far below it: with no gain, VK3RQ's first HackRF transmission (2026-10-06) was
+#: reported low. The limiter below keeps peaks at full scale, so gain can be generous.
+#: The default is an estimate, to be adjusted by ear.
+MIC_GAIN_DB = 15.0
+MIC_GAIN_RANGE_DB = (0.0, 40.0)
+#: How fast the limiter lets the gain back up after a loud syllable.
+LIMITER_RELEASE_S = 0.3
+
 #: CTCSS/DCS share of full deviation. 15% is typical: enough for a repeater's decoder,
 #: not enough to eat into the voice.
 TONE_LEVEL = 0.15
@@ -151,6 +161,7 @@ class Modulator:
         audio_rate: float = AUDIO_RATE,
         am_depth: float = 0.8,
         tone: tuple[str, object] | None = None,
+        mic_gain_db: float = 0.0,
     ) -> None:
         if mode == "cw":
             raise ValueError("CW transmit is not supported: it needs a keyer, not a microphone")
@@ -173,6 +184,11 @@ class Modulator:
             )
 
         self.am_depth = float(am_depth)
+        self.set_mic_gain_db(mic_gain_db)
+        self._limit_gain = 1.0
+        self._release = 1.0 / (LIMITER_RELEASE_S * self.audio_rate)
+        #: Peak of the latest block after gain and limiting, as a share of full scale.
+        self.drive = 0.0
         if tone is not None and mode != "nbfm":
             raise ValueError("CTCSS and DCS are NBFM features")
         #: ("ctcss", Hz) or ("dcs", "023"), sent under the voice; None for neither.
@@ -196,12 +212,35 @@ class Modulator:
             # The receiver's own sideband filter, applied to real audio, leaves one side.
             self._ssb = Fir(sideband_taps(self.spec.audio_high_hz, base, upper=(mode == "usb")))
 
+    def set_mic_gain_db(self, db: float) -> None:
+        """Microphone gain; may change while transmitting."""
+        self.mic_gain_db = float(db)
+        self._mic_gain = 10.0 ** (self.mic_gain_db / 20.0)
+
+    def _limit(self, a: np.ndarray) -> np.ndarray:
+        """Hold peaks at full scale: the gain drops at once for a loud block and comes
+        back up over LIMITER_RELEASE_S, ramped across the block so it never steps."""
+        peak = float(np.max(np.abs(a)))
+        wanted = 1.0 / peak if peak > 1.0 else 1.0
+        previous = self._limit_gain
+        if wanted < previous:
+            self._limit_gain = wanted
+            y = a * wanted                    # attack: the whole block, no overshoot
+        else:
+            self._limit_gain = min(wanted, previous + self._release * a.size)
+            y = a * np.linspace(previous, self._limit_gain, a.size)
+        return np.clip(y, -1.0, 1.0)
+
     def process(self, audio: np.ndarray) -> np.ndarray:
         """Modulate a block of mono audio in -1..1. Returns complex64 IQ."""
         if audio.size == 0:
             return np.zeros(0, dtype=np.complex64)
         a = np.clip(np.asarray(audio, dtype=np.float64), -1.0, 1.0)
-        a = self._band.process(a)
+        # Gain, then the speech filter, then the limiter: it is the filtered audio's
+        # peaks that set the deviation.
+        a = self._band.process(a * self._mic_gain)
+        a = self._limit(a)
+        self.drive = float(np.max(np.abs(a)))
         if self._pre is not None:
             a = self._pre.process(a)
         if self._tone is not None:

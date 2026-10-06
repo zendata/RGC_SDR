@@ -181,8 +181,9 @@ headless-testable and lets modules be swapped independently.
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
   probe, the `IQSink` interface and a TX button. Since built: `SoapyIQSink` and the
   operational safeguards (gains start at minimum, tuning locked while keyed, 3-minute
-  timeout; no band, mode or power limits, at the owner's request). Remaining: the
-  owner's first real key-up (section 7m).
+  timeout; no band, mode or power limits, at the owner's request). ✅ Verified on air
+  2026-10-06: VK3RQ keyed the HackRF and it transmitted; audio was low, so a mic gain
+  and limiter were added (section 7m), to be retried.
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
 (originally part of the P3 DSP chain) and named memories with last-state restore
@@ -792,6 +793,16 @@ rate, radio, IF bandwidth and memories are locked while keyed (the RX and TX pat
 one synthesizer and amp); the 3-minute timeout stays. Tested against a recording
 stand-in device; **the first real key-up is the owner's** -- the harness refused to let
 the assistant key the radio.
+
+**First key-up, 2026-10-06 (VK3RQ):** the HackRF transmitted, but the audio was low. The
+modulator gave full deviation only for full-scale audio, and speech into the MacBook Air
+Microphone peaks well below that, with no gain between. Now: a **Mic** gain (0-40 dB,
+15 dB to start -- an estimate, to be set by ear), then the speech filter, then a peak
+limiter (instant attack, 0.3 s release) holding peaks at full scale, so the gain can be
+generous without over-deviating. Tested: a -26 dBFS tone goes from under 200 Hz to the
+full 2.5 kHz NBFM deviation at 26 dB; at 40 dB a near-full-scale tone still stays
+within 2.5 kHz. The status line shows the "drive" (peak share of full deviation) while
+keyed. Saved per radio; changeable while keyed.
 
 ## 7n. Repeaters, CTCSS and DCS (NBFM)
 

@@ -79,6 +79,35 @@ def test_nbfm_deviation_is_as_specified():
     assert peak == pytest.approx(2.5e3, rel=0.15)
 
 
+def deviation(mod, audio, block=1024):
+    iq = np.concatenate([mod.process(audio[i:i + block]) for i in range(0, audio.size, block)])
+    inst = np.angle(iq[1:] * np.conj(iq[:-1])) * 48e3 / (2 * np.pi)
+    return np.percentile(np.abs(inst[4000:]), 99.5)
+
+
+def test_mic_gain_brings_quiet_speech_up_to_full_deviation():
+    quiet = tone(1000.0, level=0.05, seconds=0.5)         # -26 dBFS, as a laptop mic
+    assert deviation(Modulator("nbfm", 48e3), quiet) < 200.0
+    loud = Modulator("nbfm", 48e3, mic_gain_db=26.0)
+    assert deviation(loud, quiet) == pytest.approx(2.5e3, rel=0.15)
+    assert loud.drive == pytest.approx(1.0, abs=0.1)
+
+
+def test_the_limiter_holds_deviation_however_much_gain():
+    shout = tone(800.0, level=0.9, seconds=0.5)
+    mod = Modulator("nbfm", 48e3, mic_gain_db=40.0)
+    assert deviation(mod, shout) <= 2.5e3 * 1.02
+    assert mod.drive <= 1.0
+
+
+def test_mic_gain_changes_while_transmitting():
+    mod = Modulator("nbfm", 48e3)
+    quiet = tone(1000.0, level=0.05, seconds=0.5)
+    before = deviation(mod, quiet)
+    mod.set_mic_gain_db(20.0)
+    assert deviation(mod, quiet) == pytest.approx(before * 10, rel=0.15)
+
+
 def test_cw_is_refused():
     with pytest.raises(ValueError, match="CW"):
         Modulator("cw", IQ_RATE)
