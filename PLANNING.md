@@ -682,8 +682,13 @@ opened, saved per radio, before its profile: the Pluto's profile says 325-3800 M
 VK3RQ's reports 70-6000. Detection takes 0.6 s (SoapySDR enumeration with the Pluto
 attached), so it is kept, and redone when the list opens and when no known radio reaches
 a requested frequency (one just plugged in). The WiFi IC-705 cannot be seen without
-logging in, so it counts as there only while in use. *Not yet tried with two radios
-attached at once* -- only the Pluto was here; the switching is tested with stand-ins.
+logging in, so it counts as there only while in use. *Measured 2026-10-06, Pluto and
+HackRF attached, the real window on the Pluto:* both yellow, the Freq box 1-6000 MHz;
+20 MHz handed over to the HackRF in 2.6 s, 100 MHz back to the Pluto (first choice) in
+4.0 s, 5000 MHz stayed on the Pluto; no overflows. SoapySDR prints "Unable to claim
+interface" when it looks for radios while the Pluto is open: harmless. *Found then:*
+the frame's status line replaced every notice within 40 ms, so "now using ..." (and
+"stop TX before retuning") was never seen; a notice now stays until its timeout, or 8 s.
 
 **Only the Airspy HF+ is verified on hardware.** The other four are exercised through
 their profiles with stand-in sources: 44 tests cover the table, availability and every

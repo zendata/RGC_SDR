@@ -2300,6 +2300,18 @@ def test_tuning_beyond_the_radio_hands_over_to_one_that_reaches(qapp):
     win.close()
 
 
+def test_a_notice_is_not_overwritten_by_the_next_frame(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    win._freq_spin.setValue(1090.0)
+    for _ in range(5):
+        win._update_status(np.full(1024, -90.0))
+    assert win._status.currentMessage().startswith("now using ADALM-Pluto")
+    win._status.clearMessage()                  # its timeout
+    win._update_status(np.full(1024, -90.0))
+    assert "MHz  |" in win._status.currentMessage()
+    win.close()
+
+
 def test_back_to_the_first_choice_when_it_reaches_again(qapp):
     win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
     win._freq_spin.setValue(1090.0)

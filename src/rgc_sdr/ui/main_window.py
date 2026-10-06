@@ -64,6 +64,8 @@ ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 APP_TITLE = "VK3RQ Super SDR"
 #: Background of radios detected now, in the radio list (VK3RQ, 2026-10-06).
 DETECTED_COLOUR = "#FFE45C"
+#: Seconds a status notice without its own timeout stays before the frame line returns.
+NOTICE_HOLD_S = 8.0
 
 #: A transceiver scope's width in points (IC-705: 475, measured) and line rate.
 SCOPE_POINTS = 475
@@ -3278,10 +3280,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._on_auto_levels()
         self._update_status(dbfs)
 
+    def _status_free(self) -> bool:
+        """Whether the frame's own line may replace what the status bar shows. A notice
+        ("now using ...", "stop TX before retuning") was overwritten within a frame,
+        25 times a second, so none was ever seen: one is kept until its timeout clears
+        it, or for NOTICE_HOLD_S if it has none."""
+        shown = self._status.currentMessage()
+        if not shown or shown == getattr(self, "_frame_status", None):
+            return True
+        if shown != getattr(self, "_notice", None):
+            self._notice, self._notice_since = shown, time.monotonic()
+        return time.monotonic() - self._notice_since > NOTICE_HOLD_S
+
     def _update_status(self, dbfs) -> None:
+        if not self._status_free():
+            return
         stats = getattr(self.source, "stats", {})
         span = self.effective_rate
-        self._status.showMessage(
+        self._frame_status = (
             f"{self.source.center_freq / 1e6:.4f} MHz  |  "
             f"{self.source.sample_rate / 1e3:.0f} kS/s  |  "
             f"zoom {self.decimator.factor}x  |  "
@@ -3296,6 +3312,7 @@ class MainWindow(QtWidgets.QMainWindow):
             f"err {stats.get('errors', 0)}"
             + self._audio_status()
         )
+        self._status.showMessage(self._frame_status)
 
     def _tx_status(self) -> str:
         tx = self.transmitter
