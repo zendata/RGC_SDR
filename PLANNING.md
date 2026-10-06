@@ -177,8 +177,10 @@ headless-testable and lets modules be swapped independently.
     (Pluto). No voice: it would need IMBE / AMBE+2 codecs from outside (mbelib), if at
     all; and the local P25 network carries its voice on Phase 2 TDMA, which a Phase 1
     receiver cannot follow anyway.
-  - DRM and DAB+ deferred: each is a large OFDM receiver ending in an audio codec that
-    would have to come from outside, with few test signals for DRM in Melbourne.
+  - DAB+ (VK3RQ, 2026-10-07: "9 and then 10"), in stages: 1) OFDM and the FIC --
+    ensemble and service names, the multiplex layout; 2) a station's audio, DAB+'s
+    HE-AAC through FAAD2 (Homebrew), as mbelib serves P25. DRM after it, only if a
+    signal can be heard here (shortwave: the HF+), its codec also from outside.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1204,6 +1206,21 @@ a Phase 2 (TDMA) grant's channel number to a frequency and slot, which follows t
 standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
+
+**DAB stage 1 (`dsp/dab.py`).** Mode I at 2.048 MS/s, a rate the HackRF and Pluto take
+but do not list, so profiles gained `extra_rates`; at 2 MS/s the guard (246.09 us) is
+not a whole number of samples, and rounding it would turn carriers' phases between
+symbols. Frames found by the null symbol, timing and the fractional frequency from the
+guard intervals' correlation, the whole-carrier offset from where the 1536 carriers'
+power lies -- and the *whole* offset removed in time before the FFT: shifting bins
+instead left each carrier turning between symbols (2552 samples is not a whole number
+of its cycles), which wrecked the differential QPSK in the first test. Carrier order
+from the standard's permutation, QPSK to soft bits (real parts, then imaginary), FIC
+depunctured (21 x PI_16, 3 x PI_15, tail) and Viterbi-decoded (K=7, 133/171/145/133,
+64 states, a whole frame's blocks at once: 15 ms per 96 ms frame), energy dispersal
+removed, each FIB's CRC-16 checked; FIG 0/0, 0/1, 0/2 and 1/0, 1/1 read. The phase
+reference's table is not needed (differential). Tested on a synthetic ensemble with
+noise and a 2.3-carrier offset; *on air: pending*.
 
 **DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
 XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4

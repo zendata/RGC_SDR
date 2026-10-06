@@ -23,6 +23,7 @@ from .dsp.ais import AisDecoder
 from .dsp.adsb import FREQUENCY_HZ as ADSB_HZ
 from .dsp.adsb import AdsbDecoder
 from .dsp.aprs import AprsDecoder
+from .dsp.dab import DabReceiver
 from .dsp.dmr import DmrDecoder
 from .dsp.p25 import P25Decoder
 from .dsp.pocsag import PocsagDecoder
@@ -62,6 +63,8 @@ DECODERS: dict[str, DecoderSpec] = {
     # Packet data can carry text and radios' positions: hideable, like pager text.
     "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True, listen_mode="p25"),
     "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3, private=True),
+    # A whole DAB ensemble (1.5 MHz) from raw IQ: tune to its centre at 2.048 MS/s.
+    "dab": DecoderSpec("DAB", DabReceiver, 1.536e6, mode="iq"),
 }
 
 #: Seconds of IQ handed to the chain at a time.
@@ -141,6 +144,14 @@ class DecodeWorker:
                 if shared is not None and hasattr(lane.decoder, "names"):
                     lane.decoder.names = shared
             self.follow_tuning()
+        elif self.spec.mode == "iq":
+            # Raw IQ at the listening frequency (DAB): shifted there, not demodulated.
+            try:
+                decoder, problem = self.spec.factory(rate), ""
+            except ValueError as exc:
+                decoder, problem = None, str(exc)
+            self._lanes.append(_Lane(None, decoder, mixer=Mixer(rate, self._offset),
+                                     problem=problem))
         else:
             chain = DemodChain(rate, self.spec.mode, offset_hz=self._offset,
                                bandwidth_hz=bw, agc=False)
@@ -198,8 +209,9 @@ class DecodeWorker:
         if self.fixed_channels:
             return
         with self._lock:
-            self._chain.set_offset(self._offset)
-            self.decoder.reset()
+            self._lanes[0].set_offset(self._offset)
+            if self.decoder is not None:
+                self.decoder.reset()
 
     def reset(self) -> None:
         """Drop everything in flight: called on retune, when it was another channel."""
