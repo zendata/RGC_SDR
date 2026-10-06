@@ -62,6 +62,8 @@ ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 
 #: Shown in the title bar, with the radio in use after it.
 APP_TITLE = "VK3RQ Super SDR"
+#: Background of radios detected now, in the radio list (VK3RQ, 2026-10-06).
+DETECTED_COLOUR = "#FFE45C"
 
 #: A transceiver scope's width in points (IC-705: 475, measured) and line rate.
 SCOPE_POINTS = 475
@@ -199,6 +201,10 @@ class MainWindow(QtWidgets.QMainWindow):
         #: without hardware.
         self._source_factory = source_factory or _open_soapy
         self._availability_fn = availability_fn or availability
+        #: The last look for attached radios (it takes about 0.6 s, so it is not repeated
+        #: on every retune): refreshed when the radio list opens, when radios change, and
+        #: when no radio known to be there reaches a requested frequency.
+        self._detected: list = []
         self.fps = max(1, int(fps))
         self.analyzer = SpectrumAnalyzer(fft_size=fft_size)
         self.decimator = Decimator(decimation)
@@ -330,10 +336,79 @@ class MainWindow(QtWidgets.QMainWindow):
         profile = getattr(self.source, "profile", None) or profile_for(self.source.caps.driver)
         return profile.key if profile else self.source.caps.driver
 
-    def _refresh_device_list(self) -> None:
-        """List every supported radio, saying which are connected, and select ours."""
-        entries = self._availability_fn()
+    def _detect_radios(self) -> list:
+        self._detected = list(self._availability_fn())
+        return self._detected
+
+    def detected_radios(self) -> set[str]:
+        """Radios known to be there: attached ones, and the one in use. The WiFi IC-705
+        cannot be seen without logging in, so it counts only while in use."""
+        found = {a.profile.key for a in self._detected
+                 if a.connected and a.profile.key != "icom705net"}
+        if not self.playing_back:
+            found.add(self.current_device_key())
+        return found
+
+    def radio_covers(self, key: str, hz: float) -> bool:
+        """Whether radio `key` can tune `hz`: by what it reported when last opened, or
+        failing that by its profile."""
+        if not self.playing_back and key == self.current_device_key():
+            return self.source.caps.covers(hz)
+        measured = self.settings.radio_ranges.get(key)
+        if measured:
+            return any(lo <= hz <= hi for lo, hi in measured)
+        profile = profile_for(key)
+        return bool(profile and profile.covers(hz))
+
+    def radio_for(self, hz: float) -> str:
+        """The radio that should tune `hz`: the preferred one if it reaches, else the
+        current one if it does, else the first other radio there that does (in list
+        order). The current one if none can."""
         current = self.current_device_key()
+        preferred = self.settings.preferred_device or current
+        there = self.detected_radios()
+        if preferred in there and self.radio_covers(preferred, hz):
+            return preferred
+        if self.radio_covers(current, hz):
+            return current
+        order = [a.profile.key for a in self._detected]
+        return next((k for k in order if k in there and self.radio_covers(k, hz)), current)
+
+    def _change_radio_for(self, hz: float) -> bool:
+        """Hand `hz` to another radio if `radio_for` says so; True if that happened (the
+        new radio is then already there). Looks for newly attached radios once if none
+        known reaches it."""
+        if self.settings.preferred_device is None:
+            # Never chosen from the list: the radio in use until now is first choice.
+            self.settings.preferred_device = self.current_device_key()
+        key = self.radio_for(hz)
+        if key == self.current_device_key() and not self.radio_covers(key, hz):
+            self._detect_radios()
+            key = self.radio_for(hz)
+        current = self.current_device_key()
+        if key == current:
+            if not self.radio_covers(current, hz):
+                self._status.showMessage(
+                    f"no radio here reaches {hz / 1e6:.4f} MHz", 6000)
+            return False
+        old = profile_for(current)
+        if not self.switch_device(key, freq_hz=hz, chosen=False):
+            return False
+        new = profile_for(key)
+        why = ("back to the first choice" if key == self.settings.preferred_device
+               else f"{hz / 1e6:.4f} MHz is beyond the {old.label if old else current}")
+        self._status.showMessage(f"now using {new.label if new else key}: {why}", 8000)
+        self._freq_spin.blockSignals(True)
+        self._freq_spin.setValue(self.source.center_freq / 1e6)
+        self._freq_spin.blockSignals(False)
+        return True
+
+    def _refresh_device_list(self) -> None:
+        """List every supported radio, saying which are connected, and select ours.
+        Radios detected now are shown in yellow."""
+        entries = self._detect_radios()
+        current = self.current_device_key()
+        there = self.detected_radios()
         combo = self._device_combo
         combo.blockSignals(True)
         combo.clear()
@@ -351,6 +426,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 tip.append(profile.notes)
             if not entry.installed:
                 tip.append(f"Install: {profile.install}")
+            if profile.key in there:
+                tip.append("Detected now")
+                row = combo.count() - 1
+                combo.setItemData(row, QtGui.QColor(DETECTED_COLOUR),
+                                  QtCore.Qt.ItemDataRole.BackgroundRole)
+                combo.setItemData(row, QtGui.QColor("black"),
+                                  QtCore.Qt.ItemDataRole.ForegroundRole)
             combo.setItemData(combo.count() - 1, "\n".join(tip),
                               QtCore.Qt.ItemDataRole.ToolTipRole)
         index = combo.findData(current)
@@ -358,9 +440,19 @@ class MainWindow(QtWidgets.QMainWindow):
         combo.blockSignals(False)
 
     def _refresh_freq_range(self) -> None:
+        """The frequency box takes anything a radio that is there can tune: going beyond
+        this one's reach changes radio (`radio_for`)."""
         caps = self.source.caps
-        lo = min((r.min_hz for r in caps.freq_ranges), default=0.0) / 1e6
-        hi = max((r.max_hz for r in caps.freq_ranges), default=6000.0) / 1e6
+        if not self.playing_back:
+            self.settings.radio_ranges[self.current_device_key()] = [
+                (r.min_hz, r.max_hz) for r in caps.freq_ranges]
+        spans = [(r.min_hz, r.max_hz) for r in caps.freq_ranges]
+        if not self.playing_back:
+            for key in self.detected_radios():
+                spans += self.settings.radio_ranges.get(key) or [
+                    (r.min_hz, r.max_hz) for r in getattr(profile_for(key), "freq_ranges", ())]
+        lo = min((a for a, _ in spans), default=0.0) / 1e6
+        hi = max((b for _, b in spans), default=6000e6) / 1e6
         self._freq_spin.blockSignals(True)
         self._freq_spin.setRange(lo, hi)
         self._freq_spin.setValue(self.source.center_freq / 1e6)
@@ -503,6 +595,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_device_chosen(self, index: int) -> None:
         key = self._device_combo.itemData(index)
+        if key and key != PLAYBACK_DRIVER:
+            # Choosing a radio makes it first choice wherever it reaches.
+            self.settings.preferred_device = key
+            self._schedule_save()
         if key == "icom705net" and not self._ask_network_login():
             self._refresh_device_list()
             return
@@ -523,9 +619,12 @@ class MainWindow(QtWidgets.QMainWindow):
         save_login(dialog.login())
         return True
 
-    def switch_device(self, key: str) -> bool:
-        """Change to another radio (or reopen this one). Returns False, leaving the
-        current one, on failure."""
+    def switch_device(self, key: str, freq_hz: float | None = None,
+                      chosen: bool = True) -> bool:
+        """Change to another radio (or reopen this one), at `freq_hz` if given and it
+        reaches it. A `chosen` radio becomes first choice (`radio_for`); one changed to
+        automatically or by a memory does not. Returns False, leaving the current one,
+        on failure."""
         profile = profile_for(key)
         if profile is None:
             return False
@@ -547,7 +646,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # recording's frequency.
             old_driver = profile.driver
             old_freq = self._radio_before_playback[1] if self._radio_before_playback else old_freq
-        centre = starting_frequency(profile, old_freq)
+        wanted = old_freq if freq_hz is None else float(freq_hz)
+        centre = (wanted if self.radio_covers(key, wanted)
+                  else starting_frequency(profile, wanted))
         try:
             old.close()
         except Exception:
@@ -571,6 +672,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._adopt_source(new, previous_mode, restore_settings=switched)
         if switched:
             self.settings.device = profile.key
+            if chosen:
+                self.settings.preferred_device = profile.key
             self._save_state()
             self._status.showMessage(
                 f"now using {profile.label} at {self.source.center_freq / 1e6:.4f} MHz", 5000
@@ -1508,6 +1611,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self._device_combo.setMinimumContentsLength(16)
         self._device_combo.view().setMinimumWidth(320)
+        # The macOS style's own popup ignores item colours; a plain delegate draws the
+        # yellow of detected radios.
+        self._device_combo.setItemDelegate(QtWidgets.QStyledItemDelegate(self._device_combo))
         self._device_combo.aboutToShow.connect(self._refresh_device_list)
         self._device_combo.activated.connect(self._on_device_chosen)
         row.addWidget(self._device_combo)
@@ -1518,11 +1624,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._freq_spin.setSuffix(" MHz")
         self._freq_spin.setKeyboardTracking(False)
         self._freq_spin.valueChanged.connect(
-            lambda mhz: self._retune(mhz * 1e6, from_spin=True)
+            lambda mhz: self._retune(mhz * 1e6, from_spin=True, auto_radio=True)
         )
         # A dragged digit is an exact frequency: the step grid must not round it away.
         self._freq_spin.digitDragged.connect(
-            lambda mhz: self._retune(mhz * 1e6, from_spin=True, allow_snap=False)
+            lambda mhz: self._retune(mhz * 1e6, from_spin=True, allow_snap=False,
+                                     auto_radio=True)
         )
         row.addWidget(self._freq_spin)
 
@@ -2004,7 +2111,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not steps:
             return self.source.center_freq
         target = self.source.center_freq + steps * self.step_hz
-        self._retune(target)
+        self._retune(target, auto_radio=True)
         return self.source.center_freq
 
     def fine_tune_limit(self) -> float:
@@ -2022,8 +2129,13 @@ class MainWindow(QtWidgets.QMainWindow):
         from_spin: bool = False,
         from_scan: bool = False,
         allow_snap: bool = True,
+        auto_radio: bool = False,
     ) -> None:
         """Tune, dropping whatever described the old frequency.
+
+        With `auto_radio` (a frequency the user chose), a radio that is there and
+        reaches it better takes over first: the preferred radio wherever it reaches, else
+        any that does (`radio_for`).
 
         A large move invalidates everything: the ring, the waterfall history, the
         spectrum smoothing and the audio in flight all describe the previous tuning, and
@@ -2046,6 +2158,8 @@ class MainWindow(QtWidgets.QMainWindow):
             # A manual tune means the user wants to stay here, so stop sweeping rather
             # than fighting them for the dial.
             self.stop_scan()
+        if auto_radio and not self.playing_back and self._change_radio_for(float(hz)):
+            return
 
         previous = self.source.center_freq
         requested = float(hz)
@@ -2927,7 +3041,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 profile = profile_for(radio_key)
                 if (radio_key in connected and profile is not None
                         and profile.covers(wanted) and radio_key != self.current_device_key()):
-                    if self.switch_device(radio_key):
+                    if self.switch_device(radio_key, chosen=False):
                         break
         key = self.current_device_key()
         radio = memory.radios.get(key)

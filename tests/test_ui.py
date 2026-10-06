@@ -2206,7 +2206,15 @@ def test_frequency_moves_somewhere_useful_when_it_cannot(qapp):
     win._freq_spin.setValue(7.1)
     win.switch_device("rtlsdr")                 # starts at 24 MHz
     assert win.source.center_freq == pytest.approx(profile_for("rtlsdr").default_freq)
-    assert win._freq_spin.minimum() >= 24.0 - 1e-6
+    win.close()
+
+
+def test_frequency_box_takes_whatever_a_detected_radio_reaches(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    assert win._freq_spin.minimum() <= 0.01 and win._freq_spin.maximum() >= 3800.0
+    win.close()
+    win, _, _ = switching_window(connected=("airspyhf",))
+    assert win._freq_spin.maximum() == pytest.approx(260.0)
     win.close()
 
 
@@ -2268,6 +2276,94 @@ def test_the_chosen_radio_is_remembered(qapp, tmp_path):
     win.switch_device("hackrf")
     win.close()
     assert Settings.load(path).device == "hackrf"
+
+
+def test_detected_radios_are_yellow_in_the_list(qapp):
+    from src.rgc_sdr.ui.main_window import DETECTED_COLOUR
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    combo = win._device_combo
+    combo.aboutToShow.emit()
+    colours = {combo.itemData(i): combo.itemData(i, QtCore.Qt.ItemDataRole.BackgroundRole)
+               for i in range(combo.count())}
+    assert colours["airspyhf"] == QtGui.QColor(DETECTED_COLOUR)
+    assert colours["plutosdr"] == QtGui.QColor(DETECTED_COLOUR)
+    assert colours["hackrf"] is None and colours["icom705net"] is None
+    win.close()
+
+
+def test_tuning_beyond_the_radio_hands_over_to_one_that_reaches(qapp):
+    win, first, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    win._freq_spin.setValue(1090.0)
+    assert win.current_device_key() == "plutosdr" and first.closed
+    assert win.source.center_freq == pytest.approx(1090e6)
+    assert "beyond the Airspy HF+" in win._status.currentMessage()
+    win.close()
+
+
+def test_back_to_the_first_choice_when_it_reaches_again(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    win._freq_spin.setValue(1090.0)
+    win._freq_spin.setValue(145.175)            # the HF+ reaches this again
+    assert win.current_device_key() == "airspyhf"
+    assert win.source.center_freq == pytest.approx(145.175e6)
+    win.close()
+
+
+def test_choosing_from_the_list_sets_which_radio_comes_first(qapp, tmp_path):
+    path = tmp_path / "s.json"
+    win, _, _ = switching_window(connected=("airspyhf", "hackrf"), settings=Settings(path))
+    combo = win._device_combo
+    combo.activated.emit(combo.findData("hackrf"))
+    assert win.current_device_key() == "hackrf"
+    win._freq_spin.setValue(7.1)                # both reach it: the HackRF was chosen
+    assert win.current_device_key() == "hackrf"
+    combo.activated.emit(combo.findData("airspyhf"))
+    win._freq_spin.setValue(1090.0)             # only the HackRF reaches it
+    assert win.current_device_key() == "hackrf"
+    win._freq_spin.setValue(7.1)
+    assert win.current_device_key() == "airspyhf"
+    win.close()
+    assert Settings.load(path).preferred_device == "airspyhf"
+
+
+def test_a_sideways_swipe_past_the_edge_changes_radio_too(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    win.settings.radio_ranges["plutosdr"] = [(70e6, 6000e6)]     # as VK3RQ's reports
+    win._retune(259.99e6)
+    win._step_combo.setCurrentIndex(win._step_combo.findData(10e3))
+    win.nudge_frequency(5)                      # 260.04 MHz: past the HF+
+    assert win.current_device_key() == "plutosdr"
+    win.close()
+
+
+def test_scanning_and_memories_do_not_change_radio_on_their_own(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    win._retune(1090e6)                         # not the user's dial: clamped instead
+    assert win.current_device_key() == "airspyhf"
+    win.close()
+
+
+def test_with_no_radio_in_reach_the_current_one_stays_and_says_so(qapp):
+    win, _, _ = switching_window(connected=("airspyhf",))
+    assert win._change_radio_for(1090e6) is False
+    assert win.current_device_key() == "airspyhf"
+    assert "no radio here reaches 1090" in win._status.currentMessage()
+    win.close()
+
+
+def test_a_radios_measured_range_beats_its_profile(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
+    assert not win.radio_covers("plutosdr", 145e6)          # the profile: 325-3800 MHz
+    win.settings.radio_ranges["plutosdr"] = [(70e6, 6000e6)]  # as this Pluto reported
+    assert win.radio_covers("plutosdr", 145e6)
+    win.close()
+
+
+def test_the_wifi_ic705_counts_as_there_only_while_in_use(qapp):
+    win, _, _ = switching_window(connected=("airspyhf", "icom705net"))
+    win._detect_radios()
+    assert "icom705net" not in win.detected_radios()
+    win.close()
 
 
 def test_scanner_presets_outside_the_radio_are_greyed_out(qapp):

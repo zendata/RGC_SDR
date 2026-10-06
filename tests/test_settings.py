@@ -302,3 +302,14 @@ def test_nonsense_radio_settings_fall_back_quietly(tmp_path):
     assert loaded.radios["hackrf"].gains == {"VGA": 30.0}
     assert loaded.radios["hackrf"].decimation == 1
     assert loaded.radios["rtlsdr"] == RadioSettings()
+
+
+def test_preferred_radio_and_measured_ranges_round_trip(tmp_path):
+    path = tmp_path / "s.json"
+    s = Settings(path)
+    s.preferred_device = "airspyhf"
+    s.radio_ranges["plutosdr"] = [(70e6, 6000e6)]
+    s.save()
+    loaded = Settings.load(path)
+    assert loaded.preferred_device == "airspyhf"
+    assert loaded.radio_ranges == {"plutosdr": [(70e6, 6000e6)]}

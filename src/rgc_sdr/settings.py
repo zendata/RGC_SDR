@@ -274,6 +274,12 @@ class Settings:
         self.scan = ScanSettings()
         #: The radio last used, by profile key.
         self.device: str | None = None
+        #: The radio last chosen from the list: first choice wherever it reaches.
+        self.preferred_device: str | None = None
+        #: What each radio reported it could tune when last opened, as (low, high) Hz
+        #: pairs: trusted over the profile's nominal ranges (a Pluto may have had the
+        #: 70-6000 MHz firmware change).
+        self.radio_ranges: dict[str, list[tuple[float, float]]] = {}
         #: Each radio type's last-used settings, restored when it is opened again.
         self.radios: dict[str, RadioSettings] = {}
 
@@ -322,6 +328,16 @@ class Settings:
         device = raw.get("device")
         settings.device = str(device) if isinstance(device, str) and device else None
         settings.radios = _radios_from(raw.get("radios"))
+        preferred = raw.get("preferred_device")
+        settings.preferred_device = (str(preferred) if isinstance(preferred, str) and preferred
+                                     else None)
+        ranges = raw.get("radio_ranges")
+        if isinstance(ranges, dict):
+            for key, pairs in ranges.items():
+                try:
+                    settings.radio_ranges[str(key)] = [(float(lo), float(hi)) for lo, hi in pairs]
+                except (TypeError, ValueError):
+                    continue
         if (not settings.radios and settings.last is not None and settings.device
                 and raw.get("version", 1) < 2):
             # Only when the file says which radio the last state came from: a HackRF's
@@ -343,6 +359,8 @@ class Settings:
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),
             "device": self.device,
+            "preferred_device": self.preferred_device,
+            "radio_ranges": {k: [list(r) for r in v] for k, v in self.radio_ranges.items()},
             "radios": {k: r.to_dict() for k, r in self.radios.items()},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -150,8 +150,10 @@ headless-testable and lets modules be swapped independently.
   HackRF, grows the controls with no code change.)*
 - **P3 — Demod.** AM, NBFM, WBFM, USB and LSB with audio out. ✅ See section 7c.
 - **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
-- **P5 — Extras.** Scanner ✅ (section 7e). IQ playback moved to P8a. Remaining:
-  multi-device, network (SpyServer-style), plugins.
+- **P5 — Extras.** Scanner ✅ (section 7e). IQ playback moved to P8a. More than one
+  radio ✅ (2026-10-06, VK3RQ's design: detected radios yellow in the list, automatic
+  hand-over by coverage, the chosen radio first; section 7k). Remaining: network
+  (SpyServer-style), plugins.
 - **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ✅ P8a-P8e done;
   the next phase is to be agreed.
   - **P8a** IQ playback of the recorder's files, and the decode framework (a Decode
@@ -665,6 +667,22 @@ RTL-SDR's range). If the new radio fails to open, the previous one is reopened. 
 audio mode is restored afterwards and the choice remembered for next launch. An
 unconnected radio is refused with the reason, including the install command when the
 driver is missing.
+
+**More than one radio (2026-10-06, as VK3RQ asked).** The list shows radios detected now
+in yellow (the macOS style's popup ignores item colours, so the list has a plain item
+delegate; checked by rendering it with that style). The radio picked from the list (or
+switched to deliberately) is first choice. A frequency the user chooses -- typed, a
+dragged digit, a swipe -- goes to the first choice if it reaches it, else stays on the
+current radio if that does, else hands over to the first other detected radio that
+does, in list order; so after a hand-over, tuning back into the first choice's range
+returns to it. The scanner, memories, snap and zero beat never change radio this way
+(memories keep their own rule, below). Coverage is what each radio reported when last
+opened, saved per radio, before its profile: the Pluto's profile says 325-3800 MHz, but
+VK3RQ's reports 70-6000. Detection takes 0.6 s (SoapySDR enumeration with the Pluto
+attached), so it is kept, and redone when the list opens and when no known radio reaches
+a requested frequency (one just plugged in). The WiFi IC-705 cannot be seen without
+logging in, so it counts as there only while in use. *Not yet tried with two radios
+attached at once* -- only the Pluto was here; the switching is tested with stand-ins.
 
 **Only the Airspy HF+ is verified on hardware.** The other four are exercised through
 their profiles with stand-in sources: 44 tests cover the table, availability and every

@@ -123,6 +123,13 @@ R2/Mini, HackRF One, RTL-SDR and ADALM-Pluto — and says which are connected. P
 the window rebuilds for it: its frequency range and sample rates, and whatever gain stages,
 AGC and bias-tee it actually has. The HF+ has none of those, so none are shown.
 
+Radios detected right now are **yellow** in the list. More than one can be attached:
+the one you pick is first choice, and tuning anywhere it cannot reach (typing a
+frequency, dragging a digit or swiping) hands over to the next detected radio that can,
+in list order -- then back to your first choice when you tune within its range again.
+The Freq box accepts anything a detected radio can tune. The WiFi IC-705 cannot be
+detected without logging in, so it is never switched to automatically.
+
 Radios need their SoapySDR driver. `python -m src.rgc_sdr --list` shows what is installed,
 connected, and how to install what isn't (`brew install soapyrtlsdr` for an RTL-SDR; the
 Airspy R2 and Pluto drivers must be built from source). The app starts on the radio you
