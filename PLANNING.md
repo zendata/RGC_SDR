@@ -152,17 +152,16 @@ headless-testable and lets modules be swapped independently.
 - **P4 — UX polish.** S-meter, recording (WAV/IQ), audio bandwidth control. ✅ See section 7d.
 - **P5 — Extras.** Scanner ✅ (section 7e). IQ playback moved to P8a. Remaining:
   multi-device, network (SpyServer-style), plugins.
-- **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ← **current**
+- **P8 — Decoders and IQ playback (agreed 2026-10-05, section 7p).** ← **current: P8e**
   - **P8a** IQ playback of the recorder's files, and the decode framework (a Decode
     selector and a text panel fed from the FM discriminator). ✅
   - **P8b** POCSAG pagers (512/1200/2400 baud). Then a survey of local paging channels;
     FLEX only if that is what is used here. ✅ Verified on air; no FLEX found, so none built.
   - **P8c** APRS (AX.25 over 1200 baud AFSK, 145.175 MHz in VK). ✅ Verified on air.
   - **P8d**, after P8c is done: AIS ✅ (verified on air), a map window for ships and
-    aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), ADS-B ✅ built and
-    checked against published messages; **on-air check pending** (needs the Pluto or
-    HackRF at 1090 MHz, 2 MS/s). ADS-B
-    (1090 MHz) needs the Pluto or HackRF; ACARS (131.55 MHz) works on the HF+.
+    aircraft ✅ (requested 2026-10-05), ACARS ✅ (verified on air), ADS-B ✅ (verified on
+    air with the Pluto, 2026-10-06). ADS-B (1090 MHz) needs the Pluto or HackRF; ACARS
+    (131.55 MHz) works on the HF+.
   - **P8e**, after P8d: P25 and DMR framing and metadata. Voice only through an outside
     codec library (mbelib), if at all.
   - DRM and DAB+ deferred: each is a large OFDM receiver ending in an audio codec that
@@ -174,8 +173,10 @@ headless-testable and lets modules be swapped independently.
   (headsets and D-STAR phone apps only). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
-  probe, the `IQSink` interface, and a TX button that runs a *dry run*. Remaining: a
-  Soapy `IQSink` and the interlocks below, before anything is radiated.
+  probe, the `IQSink` interface and a TX button. Since built: `SoapyIQSink` and the
+  operational safeguards (gains start at minimum, tuning locked while keyed, 3-minute
+  timeout; no band, mode or power limits, at the owner's request). Remaining: the
+  owner's first real key-up (section 7m).
 
 **Pulled forward out of order (requested 2026-09-23), see section 7b:** decimation/zoom
 (originally part of the P3 DSP chain) and named memories with last-state restore
@@ -1063,6 +1064,20 @@ fix -- so no receiver location is needed or stored. Checked against Junzi Sun's 
 examples ("The 1090 Megahertz Riddle"): KLM1023; 52.2572 N 3.91937 E at 38000 ft; 159.20
 kt on 182.88 at -832 ft/min; heading 243.98 at 375 kt TAS. Aircraft go on the map by
 their 24-bit ICAO address.
+
+*Measured on air, 2026-10-06 (Pluto at 1090 MHz, PGA 50 dB, Melbourne):* at 2 MS/s, 718
+messages in 60 s from 12 aircraft, 278 with positions -- departures out of Tullamarine
+climbing through 12000 ft, light aircraft and helicopters over the city, call signs such
+as QLK55D, VOZ267 and JST514 -- using 5 % of a core. Through `DecodeWorker` into the map
+store: 8 aircraft in 30 s, all placed, no worker errors. **4 MS/s nearly doubles the
+yield** (1265 messages against 675 at 2 MS/s, back to back, same aircraft) for 8.5 % of
+a core: at 2 MS/s a pulse often straddles two samples. So 4 MS/s is the rate to use for
+ADS-B. Of the DF17/18 candidates failing parity at 2 MS/s (85 against 124 good in 10 s),
+none were a good message found again a sample away, and flipping the one or two least
+confident bits rescued only 7, so error correction is not worth adding: they are weak or
+overlapping messages. Altitude is missing for some light aircraft: they send the older
+Gillham coding, which is not decoded. 1 ms of this capture (one call sign message) is a
+test fixture, so the slicer is pinned on real pulses, not only synthesised ones.
 
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the

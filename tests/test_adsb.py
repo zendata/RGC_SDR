@@ -5,6 +5,8 @@ Reference messages and their values are from Junzi Sun, "The 1090 Megahertz Ridd
 against an outside source rather than only an encoder written here.
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -105,6 +107,16 @@ def test_decodes_pulses_across_block_boundaries():
     found = run(AdsbDecoder(RATE), ppm([IDENT, ODD, EVEN, VELOCITY]))
     assert [m.hex for m in found] == [IDENT, ODD, EVEN, VELOCITY]
     assert found[2].position == pytest.approx((52.2572, 3.91937), abs=1e-4)
+
+
+def test_decodes_real_pulses_off_air():
+    # 1 ms of the Pluto at 2 MS/s on 1090 MHz, Melbourne, 2026-10-06: real pulse shapes,
+    # noise and timing, not synthesised ones.
+    iq = np.fromfile(Path(__file__).parent / "data" / "adsb_1090_2msps.cf32",
+                     dtype=np.complex64)
+    found = run(AdsbDecoder(RATE), iq, block=700)
+    assert [(m.icao, m.fields["callsign"], m.hex) for m in found] == [
+        ("7C72AC", "WXQ", "8D7C72AC215D84608208200797A5")]
 
 
 def test_noise_alone_decodes_nothing():
