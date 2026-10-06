@@ -1200,7 +1200,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_decoder_changed(self, key: str) -> None:
         self._mode_for_decoder(key)
         self._start_decoder(key)
-        if key in ("ais", "acars", "adsb", "p25"):
+        if key in ("ais", "acars", "adsb", "p25", "dmr"):
             self.show_map()                 # ships and aircraft are best seen on a map
 
     def classify_signal(self) -> None:

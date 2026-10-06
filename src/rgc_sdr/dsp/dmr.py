@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .fsk4 import RepeatFilter, SyncFinder, bits_to_int, crc_ccitt, dibits_to_bits, to_dibits
+from .p25 import trellis34_decode
+from .packetdata import _content, describe_packet
 
 #: Data syncs; each one's negative is the voice sync of the same source.
 SYNCS = {"bs": 0xDFF57D75DF5D, "ms": 0xD5D7F77FD757,
@@ -196,6 +198,38 @@ def csbk_crc(bits80: np.ndarray) -> int:
     return crc_ccitt(bits80) ^ 0xFFFF ^ 0xA5A5
 
 
+def data_header_crc(bits80: np.ndarray) -> int:
+    """A data header's CRC: CRC-CCITT inverted, masked 0xCCCC (on air, every header)."""
+    return crc_ccitt(bits80) ^ 0xFFFF ^ 0xCCCC
+
+
+def crc9(bits) -> int:
+    """A confirmed block's CRC-9 (x^9+x^6+x^4+x^3+1) over its data then its serial
+    number, not inverted -- what every block on air matched."""
+    r = 0
+    for b in bits:
+        fb = ((r >> 8) ^ int(b)) & 1
+        r = (r << 1) & 0x1FF
+        if fb:
+            r ^= 0x059
+    return r
+
+
+def packet_crc32(data: bytes) -> bytes:
+    """A packet's CRC-32 as sent: over the bytes swapped in pairs, MSB first, not
+    inverted, and stored least significant byte first (on air, every packet)."""
+    swapped = bytes(b for i in range(0, len(data) - 1, 2) for b in (data[i + 1], data[i]))
+    if len(data) % 2:
+        swapped += data[-1:]
+    r = 0
+    for bit in np.unpackbits(np.frombuffer(swapped, np.uint8)):
+        fb = ((r >> 31) ^ int(bit)) & 1
+        r = (r << 1) & 0xFFFFFFFF
+        if fb:
+            r ^= 0x04C11DB7
+    return r.to_bytes(4, "little")
+
+
 # -- Messages ----------------------------------------------------------------------
 
 @dataclass
@@ -207,6 +241,11 @@ class DmrMessage:
     fields: dict = field(default_factory=dict)
     channel: str = ""
     received: float = field(default_factory=time.time)
+    #: What a data packet carried (text, a location, bytes): shown unless hidden.
+    content: str = field(default="", repr=False)
+    #: (lat, lon) a radio reported, for the map; and which radio.
+    position: tuple[float, float] | None = field(default=None, repr=False)
+    radio: int | None = None
 
     def summary(self, show_text: bool = True) -> str:
         stamp = time.strftime("%H:%M:%S", time.localtime(self.received))
@@ -215,7 +254,10 @@ class DmrMessage:
             where.append(f"CC {self.colour_code}")
         if self.slot is not None:
             where.append(f"slot {self.slot}")
-        return f"{stamp}  DMR  {'  '.join(where + [self.text])}"
+        line = f"{stamp}  DMR  {'  '.join(where + [self.text])}"
+        if self.content:
+            line += f"  {self.content}" if show_text else f"  [{len(self.content)} characters hidden]"
+        return line
 
 
 def _field(bits: np.ndarray, start: int, n: int) -> int:
@@ -262,6 +304,8 @@ class DmrDecoder:
         self.bursts = 0
         self.bad_bursts = 0
         self._repeats = RepeatFilter()
+        #: Packets being assembled, by timeslot.
+        self._packets: dict = {}
         self.reset()
 
     def reset(self) -> None:
@@ -275,7 +319,7 @@ class DmrDecoder:
             if message is None:
                 continue
             message.channel = self.channel
-            if self._repeats.fresh(message.summary()[10:]):
+            if self._repeats.fresh(message.summary()[10:] + "|" + message.content):
                 out.append(message)
         return out
 
@@ -303,7 +347,12 @@ class DmrDecoder:
         name = DATA_TYPES.get(dtype, f"data type {dtype}")
         if dtype == 9:
             return None                                   # idle: nothing to say
-        payload = bptc_data(np.concatenate([bits[24:122], bits[190:288]]))
+        info = np.concatenate([bits[24:122], bits[190:288]])
+        if dtype in (7, 8):
+            return self._block(cc, slot, dtype, info)
+        payload = bptc_data(info)
+        if dtype == 6:
+            return self._header(cc, slot, payload)
         if dtype == 3:
             if csbk_crc(payload[:80]) != _field(payload, 80, 16):
                 self.bad_bursts += 1
@@ -319,3 +368,72 @@ class DmrDecoder:
             text, f = parse_lc(payload)
             return DmrMessage(cc, slot, name, f"{name}  {text}", f)
         return DmrMessage(cc, slot, name, name, {"data_type": dtype})
+
+    # -- packet data ---------------------------------------------------------------
+
+    def _header(self, cc, slot, payload) -> DmrMessage | None:
+        if data_header_crc(payload[:80]) != _field(payload, 80, 16):
+            self.bad_bursts += 1
+            return None
+        dpf, sap = _field(payload, 4, 4), _field(payload, 8, 4)
+        pending = self._packets.get(slot)
+        if dpf == 15 and pending is not None:            # a proprietary second header
+            pending["proprietary"] = True
+            pending["have"] += 1
+            return self._complete(cc, slot)
+        group, dest, source = bool(payload[0]), _field(payload, 16, 24), _field(payload, 40, 24)
+        f = {"dpf": dpf, "sap": sap, "group": group, "target": dest, "source": source}
+        to = f"{'TG' if group else 'to'} {dest}  from {source}"
+        if dpf == 1:
+            return DmrMessage(cc, slot, "data", f"data acknowledgement  {to}", f)
+        if dpf not in (2, 3):
+            return DmrMessage(cc, slot, "data", f"data header (format {dpf})  {to}", f)
+        self._packets[slot] = {"f": f, "confirmed": dpf == 3, "to": to,
+                               "pad": (_field(payload, 3, 1) << 4) | _field(payload, 12, 4),
+                               "blocks": _field(payload, 65, 7), "have": 0, "data": [],
+                               "proprietary": False}
+        return None
+
+    def _block(self, cc, slot, dtype, info) -> DmrMessage | None:
+        pending = self._packets.get(slot)
+        if pending is None:
+            return None
+        if dtype == 8:
+            d98 = np.array([2 * info[k] + info[k + 1] for k in range(0, 196, 2)])
+            bits = trellis34_decode(d98)
+        else:
+            bits = bptc_data(info)
+        if pending["confirmed"]:
+            body = bits[16:]
+            if crc9(np.concatenate([body, bits[:7]])) != _field(bits, 7, 9):
+                self.bad_bursts += 1
+                del self._packets[slot]
+                return None
+        else:
+            body = bits
+        pending["data"].append(np.packbits(body).tobytes())
+        pending["have"] += 1
+        return self._complete(cc, slot)
+
+    def _complete(self, cc, slot) -> DmrMessage | None:
+        pending = self._packets[slot]
+        if pending["have"] < pending["blocks"]:
+            return None
+        del self._packets[slot]
+        data = b"".join(pending["data"])
+        if len(data) < 4 + pending["pad"] or packet_crc32(data[:-4]) != data[-4:]:
+            self.bad_bursts += 1
+            return None
+        user = data[:len(data) - 4 - pending["pad"]]
+        f = pending["f"]
+        if f["sap"] == 4:
+            what, content, position = describe_packet(user)
+        elif f["sap"] == 3:
+            what, content, position = "compressed UDP/IP", _content(user), None
+        elif pending["proprietary"] or f["sap"] == 9:
+            what, content, position = "proprietary data", _content(user), None
+        else:
+            what, content, position = f"data (SAP {f['sap']})", _content(user), None
+        f["service"] = what
+        return DmrMessage(cc, slot, "data", f"packet data  {pending['to']}: {what}", f,
+                          content=content, position=position, radio=f["source"])

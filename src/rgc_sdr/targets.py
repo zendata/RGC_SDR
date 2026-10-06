@@ -84,6 +84,8 @@ class TargetStore:
                 changed += self._from_adsb(message)
             elif getattr(message, "nac", None) is not None:
                 changed += self._from_p25(message)
+            elif hasattr(message, "colour_code"):
+                changed += self._from_dmr(message)
         if changed:
             self.version += 1
         return changed
@@ -175,7 +177,21 @@ class TargetStore:
         t.last_seen = m.received
         t.messages += 1
         t.details["network"] = f"P25 NAC {m.nac:03X}"
-        t.details["position"] = "LRRP layout unverified"
+        t.details["position"] = "location reported by the radio (LRRP)"
+        t.lat, t.lon = m.position
+        if not t.trail or t.trail[-1] != m.position:
+            t.trail.append(m.position)
+        return 1
+
+    def _from_dmr(self, m) -> int:
+        """A DMR radio that reported its position (LRRP), by its radio ID."""
+        if getattr(m, "position", None) is None or m.radio is None:
+            return 0
+        t = self._get(f"dmr:{m.colour_code}:{m.radio}", "radio", str(m.radio))
+        t.last_seen = m.received
+        t.messages += 1
+        t.details["network"] = f"DMR CC {m.colour_code}"
+        t.details["position"] = "location reported by the radio (LRRP)"
         t.lat, t.lon = m.position
         if not t.trail or t.trail[-1] != m.position:
             t.trail.append(m.position)

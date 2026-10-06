@@ -189,7 +189,8 @@ def test_a_text_message_shows_its_text():
 
 def test_a_location_report_puts_the_radio_on_the_map():
     lat, lon = -37.8136, 144.9631
-    point = (b"\x66" + round(lat / 90 * 2 ** 31).to_bytes(4, "big", signed=True)
+    # Latitude sign and magnitude, longitude two's complement (measured on air).
+    point = (b"\x66" + (0x80000000 | round(-lat / 90 * 2 ** 31)).to_bytes(4, "big")
              + round(lon / 180 * 2 ** 31).to_bytes(4, "big", signed=True) + b"\x00\x10")
     lrrp = b"\x0d\x10\x22\x03\x00\x00\x01" + point
     (m,) = run(P25Decoder(RATE), fsk4_wave(pdu_dibits(udp_packet(4001, lrrp))))

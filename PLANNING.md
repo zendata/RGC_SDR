@@ -1205,6 +1205,20 @@ standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
 
+**DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
+XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4
+trellis exactly** (same points, same interleave); each block's CRC-9 runs over the data
+then the 7-bit serial, *not* inverted. The packet's CRC-32 is over the bytes swapped in
+pairs, MSB first, not inverted, stored least significant byte first. All settled on
+four captures: 56 blocks, every packet. Assembled per timeslot (CACH); a proprietary
+second header (DPF 15) counts as one of the blocks to follow. Locally: SAP 4 IPv4 with
+LRRP location reports (UDP 4001), SAP 3 compressed UDP/IP, SAP 9 Motorola proprietary.
+**LRRP position fixed:** latitude is sign and magnitude (sign bit, 31-bit magnitude x
+90/2^31), longitude two's complement x 180/2^31 -- the open-source layout had latitude
+as two's complement, which put real DMR reports outside Victoria; the right reading puts
+them inside. `dsp/packetdata.py` now holds the packet decoding both P25 and DMR use.
+DMR radios with positions go on the map (green, by colour code and radio ID).
+
 **P25 voice (VK3RQ, 2026-10-07: "I would like to hear voice when I tune to a P25 voice
 channel"; his group uses the VK3RMM repeater).** `dsp/p25voice.py`. LDU1/LDU2 frames
 (864 symbols) carry nine IMBE frames between Hamming(10,6) hex words; LDU1's twelve words

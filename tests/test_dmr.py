@@ -7,6 +7,7 @@ published check value (tests/test_fsk4.py) -- and the layout was confirmed on ai
 """
 
 import numpy as np
+import pytest
 
 from src.rgc_sdr.decoding import DecodeWorker
 from src.rgc_sdr.dsp.dmr import (
@@ -133,3 +134,74 @@ def test_worker_decodes_from_iq():
     for block in np.array_split(iq, 20):
         found += worker.process(block)
     assert [m.fields.get("target") for m in found] == [100]
+
+
+
+# -- packet data ---------------------------------------------------------------------
+
+from src.rgc_sdr.dsp.dmr import crc9, data_header_crc, packet_crc32  # noqa: E402
+from src.rgc_sdr.dsp.p25 import trellis34_encode  # noqa: E402
+from src.rgc_sdr.targets import TargetStore  # noqa: E402
+from tests.test_p25 import udp_packet  # noqa: E402
+
+
+def data_burst(slot, info196, data_type, colour=7):
+    """A burst carrying `info196` already coded (BPTC or trellis)."""
+    cach = np.zeros(24, dtype=int)
+    cach[TACT_POSITIONS] = bits_of(tact_encode(0b1000 | (slot - 1) << 2), 7)
+    slot_type = bits_of(golay20_encode(colour << 4 | data_type), 20)
+    bits = (list(cach) + list(info196[:98]) + slot_type[:10] + bits_of(SYNCS["bs"], 48)
+            + slot_type[10:] + list(info196[98:]))
+    return [2 * bits[i] + bits[i + 1] for i in range(0, 288, 2)]
+
+
+def packet_bursts(user: bytes, sap=4, source=2000, target=100, slot=1):
+    """A confirmed rate-3/4 data packet: header, then 16-byte blocks, CRC-32 last."""
+    blocks = -(-(len(user) + 4) // 16)
+    pad = blocks * 16 - len(user) - 4
+    data = user + bytes(pad)
+    data += packet_crc32(data)
+    head = [0, 0, 0, pad >> 4 & 1] + bits_of(3, 4) + bits_of(sap, 4) + bits_of(pad & 15, 4)
+    head += bits_of(target, 24) + bits_of(source, 24) + [1] + bits_of(blocks, 7)
+    head += [0] * (80 - len(head))
+    head += bits_of(data_header_crc(np.array(head)), 16)
+    out = data_burst(slot, bptc_encode(np.array(head)), 6)
+    for k in range(blocks):
+        body = list(np.unpackbits(np.frombuffer(data[16 * k:16 * k + 16], np.uint8)))
+        serial = bits_of(k, 7)
+        coded = np.array(serial + bits_of(crc9(np.array(body + serial)), 9) + body)
+        d98 = trellis34_encode(coded)
+        info = np.ravel([[d >> 1, d & 1] for d in d98])
+        out += data_burst(slot, info, 8)
+    return out
+
+
+def test_a_location_report_goes_on_the_map():
+    lat, lon = -37.6, 144.9
+    point = (b"\x51" + (0x80000000 | round(-lat / 90 * 2 ** 31)).to_bytes(4, "big")
+             + round(lon / 180 * 2 ** 31).to_bytes(4, "big", signed=True))
+    lrrp = b"\x0d\x15\x22\x03\x00\x00\x01" + point
+    found = run(DmrDecoder(RATE), wave(packet_bursts(udp_packet(4001, lrrp)[2:])))
+    (m,) = [m for m in found if m.kind == "data"]
+    assert m.text == "packet data  to 100  from 2000: location report (LRRP)"
+    assert m.position == pytest.approx((lat, lon), abs=1e-5)
+    assert "-37.60000, 144.90000" in m.summary() and "-37.6" not in m.summary(show_text=False)
+    store = TargetStore()
+    assert store.update([m]) == 1 and store.placed()[0].ident == "2000"
+
+
+def test_a_text_message_shows_its_text():
+    text = "RADIO CHECK"
+    body = b"\x00\x10\x00\x00" + text.encode("utf-16-le")
+    found = run(DmrDecoder(RATE), wave(packet_bursts(udp_packet(4007, body)[2:])))
+    (m,) = [m for m in found if m.kind == "data"]
+    assert "text message (TMS)" in m.text and text in m.summary()
+
+
+def test_a_damaged_packet_is_rejected():
+    bursts = packet_bursts(udp_packet(4007, "HI".encode("utf-16-le"))[2:])
+    bursts[144 + 20] ^= 0b11                           # inside the header's payload
+    bursts[144 + 21] ^= 0b11
+    bursts[144 + 40] ^= 0b11
+    decoder = DmrDecoder(RATE)
+    assert [m for m in run(decoder, wave(bursts)) if m.kind == "data"] == []

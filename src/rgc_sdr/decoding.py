@@ -61,7 +61,7 @@ DECODERS: dict[str, DecoderSpec] = {
     # 4800-symbol/s four-level FSK in a 12.5 kHz channel: metadata, not voice.
     # Packet data can carry text and radios' positions: hideable, like pager text.
     "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True, listen_mode="p25"),
-    "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3),
+    "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3, private=True),
 }
 
 #: Seconds of IQ handed to the chain at a time.
