@@ -174,8 +174,8 @@ headless-testable and lets modules be swapped independently.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
-  Pi bridge keyed with no audio, 2026-10-06 -- the modulation input was WLAN; fixed with
-  a "USB bridge" login option, to be retried) (section 7o). Bluetooth ruled out
+  Pi bridge verified 2026-10-06 -- first a carrier with no audio, as the modulation
+  input was WLAN; with the "USB bridge" login option it carries audio) (section 7o). Bluetooth ruled out
   (headsets and D-STAR phone apps only). No D-STAR for now. Section 7o.
 - **P6 — Transmit (HackRF).** AM, NBFM, WBFM, USB, LSB from the MacBook Air Microphone;
   not CW. Groundwork done (section 7m): modulators, microphone capture, TX capability
