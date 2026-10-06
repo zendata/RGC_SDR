@@ -1181,6 +1181,24 @@ standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
 
+**Classifying a signal (the "?" button, VK3RQ 2026-10-06).** `classify.py` takes 2.5 s
+of IQ (enough for a 512-baud POCSAG batch) on a thread. First the decoders, at the
+tuned frequency and then at the measured centre: any error-checked frame names the
+signal for certain (P25 NID, DMR slot type, POCSAG batch, AX.25/AIS/ACARS CRC, Mode S
+parity; RDS blocks through the WBFM chain). Otherwise features: width from a 50 ms
+max-hold spectrum, stopping at a valley that reaches the noise (*measured:* a stronger
+signal 20-90 kHz above 131.55 MHz made ACARS look 250 kHz wide); only the stretches
+where the signal is on (bursts); filtered to its own width (*measured:* stations 200 kHz
+away made a broadcast station's envelope look like AM). AM is a carrier line with
+matching sidebands, SSB one-sided relative to the tuned frequency; and because a lightly
+modulated ATIS (119.8 MHz) has an envelope steady enough to pass for FM, AM vs FM is
+also decided by which carries the audio -- the envelope's spectrum shaped like speech
+and the frequency's like noise, or the other way round. Anything wider than 100 kHz in
+87.5-108 MHz is WBFM. The label shows the tuned frequency when the signal spans it --
+the measured centre carries the radio's crystal error. *Measured on air (Pluto):* P25
+(NAC 161, control) at 420.0125, DMR (CC 12, control) at 473.075, WBFM stereo + RDS at
+101.9 and 93.1, ACARS at 131.55, AM at 119.8, ADS-B at 1090 -- each in under 2 s of CPU.
+
 **APRS.** Bell 202 AFSK (mark 1200 Hz, space 2200 Hz) inside the NBFM audio: the
 discriminator output is mixed down by 1700 Hz, low-passed and FM-detected again, so the
 sign is mark or space whatever the transmitter's pre-emphasis did to the tone levels. Then

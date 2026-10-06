@@ -389,6 +389,17 @@ whatever the audio is doing, including with audio off.
   repeats itself many times a second, so a message identical to one in the last 30 s is
   not shown again.
 
+Choosing a decoder also sets the mode its signal is sent in: NBFM for POCSAG, APRS, AIS,
+P25 and DMR, AM for ACARS (ADS-B leaves the mode alone).
+
+**What is this signal?** The yellow **?** button beside Map listens to the tuned frequency
+for 2.5 seconds and names what is there, on the waterfall above the signal: a protocol
+(P25 with its NAC, DMR with its colour code, POCSAG and its rate, AIS, ACARS, ADS-B, AX.25
+packet) when one of the decoders finds frames that pass their checks, or else the
+modulation judged from the signal's shape -- WBFM (stereo, and RDS when its blocks
+decode), NBFM, FSK data, AM, USB, LSB, CW or a plain carrier -- marked with a **?**.
+Nothing decoded is shown, pager text least of all.
+
 Choosing AIS, ACARS or ADS-B opens a **map** in its own window (or press **Map** in the Decode panel):
 ships as arrows pointing where they are heading, with short trails; navigation marks as
 yellow diamonds and shore stations as blue squares; a sortable list beside it. Drag to

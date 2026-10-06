@@ -549,7 +549,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Hide what only an IQ radio can do; the rest works on a transceiver as is."""
         sdr = not self.is_transceiver
         for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
-                       self._scan_button, self._decode_button):
+                       self._scan_button, self._decode_button, self._classify_button):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
@@ -1155,14 +1155,77 @@ class MainWindow(QtWidgets.QMainWindow):
         key = key if key in DECODERS else ""
         combo = self.decoder_panel.combo
         if combo.currentData() != key:
-            combo.setCurrentIndex(max(0, combo.findData(key)))   # starts or stops it
+            # The memory brings its own mode: the decoder must not replace it.
+            self._decoder_from_memory = True
+            try:
+                combo.setCurrentIndex(max(0, combo.findData(key)))   # starts or stops it
+            finally:
+                self._decoder_from_memory = False
         if key and not self.is_transceiver:
             self._decode_button.setChecked(True)
 
+    def _mode_for_decoder(self, key: str) -> None:
+        """Listen in the mode a chosen decoder's signal is sent in (VK3RQ, 2026-10-06):
+        NBFM for the FM data modes, AM for ACARS. ADS-B's pulses have no audio worth a
+        mode, so it leaves the mode alone, as does a memory, which has its own."""
+        from ..decoding import DECODERS
+
+        spec = DECODERS.get(key)
+        if (spec is None or spec.mode not in MODES or self.is_transceiver
+                or getattr(self, "_decoder_from_memory", False) or self.mode == spec.mode):
+            return
+        index = self._mode_combo.findData(spec.mode)
+        if index >= 0:
+            self._mode_combo.setCurrentIndex(index)
+
     def _on_decoder_changed(self, key: str) -> None:
+        self._mode_for_decoder(key)
         self._start_decoder(key)
         if key in ("ais", "acars", "adsb"):
             self.show_map()                 # ships and aircraft are best seen on a map
+
+    def classify_signal(self) -> None:
+        """Capture the tuned frequency for a few seconds and name what is there, on the
+        waterfall (`classify.py`). Runs on its own thread; `_poll_classify` collects it."""
+        from ..classify import CAPTURE_S, ClassifyJob
+
+        if self.is_transceiver or getattr(self, "_classify_job", None) is not None:
+            return
+        self.waterfall.clear_label()
+        self._classify_job = ClassifyJob(self.source, self.listen_freq)
+        self._classify_button.setEnabled(False)
+        self._classify_button.setText("\u2026")
+        self._status.showMessage(
+            f"listening to {self.listen_freq / 1e6:.4f} MHz for {CAPTURE_S:g} s to "
+            "classify it...", int(CAPTURE_S * 1000) + 2000)
+        QtCore.QTimer.singleShot(100, self._poll_classify)
+
+    def _cancel_classify(self) -> None:
+        job = getattr(self, "_classify_job", None)
+        if job is not None:
+            job.cancel()
+
+    def _poll_classify(self) -> None:
+        job = getattr(self, "_classify_job", None)
+        if job is None:
+            return
+        if not job.done:
+            QtCore.QTimer.singleShot(100, self._poll_classify)
+            return
+        self._classify_job = None
+        self._classify_button.setEnabled(True)
+        self._classify_button.setText("?")
+        if job._cancel.is_set() or job.centre_hz != self.source.center_freq:
+            return                                 # retuned meanwhile: it is stale
+        if job.error:
+            self._status.showMessage(f"could not classify: {job.error}", 8000)
+        elif job.result is None:
+            self._status.showMessage(
+                f"no signal at {job.listen_hz / 1e6:.4f} MHz to classify", 8000)
+        else:
+            text = job.result.text()
+            self.waterfall.show_label(job.result.freq_hz, text)
+            self._status.showMessage(text, 15000)
 
     def show_map(self) -> None:
         if self.map_window is None:
@@ -1613,6 +1676,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._map_button.setStyleSheet("QPushButton { font-weight: bold; padding: 2px 12px; }")
         self._map_button.clicked.connect(self.show_map)
         row.addWidget(self._map_button)
+        # What is this signal? Yellow, top left beside Map (VK3RQ, 2026-10-06).
+        self._classify_button = QtWidgets.QPushButton("?")
+        self._classify_button.setToolTip(
+            "What is this signal? Listens to the tuned frequency for a few seconds and\n"
+            "names it -- P25, DMR, POCSAG, AIS, ACARS, ADS-B, packet, or by its\n"
+            "modulation (WBFM, NBFM, AM, USB, LSB, CW) -- on the waterfall. A name with\n"
+            "'?' is a judgement from the signal's shape; without, a decoder confirmed it.")
+        self._classify_button.setStyleSheet(
+            f"QPushButton {{ background: {DETECTED_COLOUR}; color: black; "
+            "font-weight: bold; padding: 2px 10px; }"
+            "QPushButton:disabled { background: #776f3a; color: #333; }")
+        self._classify_button.clicked.connect(self.classify_signal)
+        row.addWidget(self._classify_button)
+
         row.addSpacing(8)
 
         row.addWidget(QtWidgets.QLabel("SDR"))
@@ -2194,6 +2271,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not fine:
             self.spectrum.reset()
             self.waterfall.clear_history()
+            self.waterfall.clear_label()          # it named what was here before
+            self._cancel_classify()
             if self.audio is not None:
                 self.audio.reset()
             if self.decode_worker is not None:

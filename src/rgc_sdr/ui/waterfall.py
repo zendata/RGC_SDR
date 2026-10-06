@@ -52,6 +52,8 @@ class WaterfallView(pg.PlotWidget):
         self.showGrid(x=True, y=False, alpha=0.2)
         self.setMenuEnabled(False)
         self.scene().sigMouseClicked.connect(self._on_click)
+        #: Text placed on the waterfall at a frequency (a classified signal), or None.
+        self.label: pg.TextItem | None = None
 
     def _on_click(self, event) -> None:
         """Click-to-tune. pyqtgraph only raises this for a click without a drag, so it
@@ -64,6 +66,20 @@ class WaterfallView(pg.PlotWidget):
         self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
         event.accept()
 
+
+    def show_label(self, freq_hz: float, text: str) -> None:
+        """Put `text` at the top of the waterfall over `freq_hz`, replacing any other."""
+        self.clear_label()
+        self.label = pg.TextItem(f"\u25bc {text}", color="#000000", anchor=(0.5, 0.0),
+                                 fill=pg.mkBrush(255, 228, 92, 220))
+        self.label.setPos(float(freq_hz), 0.0)
+        self.label.setZValue(10)
+        self.addItem(self.label)
+
+    def clear_label(self) -> None:
+        if self.label is not None:
+            self.removeItem(self.label)
+            self.label = None
 
     def set_colormap(self, name: str) -> None:
         self._img.setColorMap(pg.colormap.get(name))

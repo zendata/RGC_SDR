@@ -2312,6 +2312,66 @@ def test_a_notice_is_not_overwritten_by_the_next_frame(qapp):
     win.close()
 
 
+def test_choosing_a_decoder_sets_the_mode_its_signal_needs(qapp):
+    win, _, _ = switching_window()
+    combo = win.decoder_panel.combo
+    combo.setCurrentIndex(combo.findData("acars"))
+    assert win.mode == "am"
+    combo.setCurrentIndex(combo.findData("pocsag"))
+    assert win.mode == "nbfm"
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    combo.setCurrentIndex(combo.findData("adsb"))           # no audio mode suits it
+    assert win.mode == "usb"
+    combo.setCurrentIndex(0)
+    win.close()
+
+
+def test_a_memory_keeps_its_own_mode_with_its_decoder(qapp):
+    win, _, _ = switching_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("wbfm"))
+    win._apply_decoder("pocsag")
+    assert win.mode == "wbfm"
+    win._apply_decoder("")
+    win.close()
+
+
+class FakeClassifyJob:
+    def __init__(self, result, centre):
+        from src.rgc_sdr.classify import Classification
+        import threading
+        self.done, self.error, self.centre_hz, self.listen_hz = True, "", centre, 145.175e6
+        self.result = Classification(**result) if result else None
+        self._cancel = threading.Event()
+
+    def cancel(self):
+        self._cancel.set()
+
+
+def test_the_question_button_labels_the_waterfall(qapp):
+    win, _, _ = switching_window()
+    button = win._classify_button
+    assert button.text() == "?" and "background" in button.styleSheet()
+    win._classify_job = FakeClassifyJob(
+        {"freq_hz": 145.175e6, "label": "AX.25 packet", "detail": "APRS", "certain": True},
+        win.source.center_freq)
+    win._poll_classify()
+    assert win.waterfall.label is not None
+    assert "145.1750 MHz  AX.25 packet (APRS)" in win.waterfall.label.textItem.toPlainText()
+    assert win.waterfall.label.pos().x() == pytest.approx(145.175e6)
+    win._retune(win.source.center_freq + 1e6)             # what it named is gone
+    assert win.waterfall.label is None
+    win.close()
+
+
+def test_the_question_button_says_when_nothing_is_there(qapp):
+    win, _, _ = switching_window()
+    win._classify_job = FakeClassifyJob(None, win.source.center_freq)
+    win._poll_classify()
+    assert win.waterfall.label is None
+    assert "no signal" in win._status.currentMessage()
+    win.close()
+
+
 def test_back_to_the_first_choice_when_it_reaches_again(qapp):
     win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
     win._freq_spin.setValue(1090.0)
