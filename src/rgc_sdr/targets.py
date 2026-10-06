@@ -16,13 +16,14 @@ TRAIL_POINTS = 200
 #: How long each kind stays on the map after it was last heard, in seconds. Ships
 #: report every few seconds to every few minutes; marks and shore stations are fixed;
 #: an aircraft's ACARS position reports can be ten minutes or more apart.
-EXPIRY_S = {"ship": 30 * 60, "aid": 60 * 60, "base": 60 * 60, "aircraft": 20 * 60}
+EXPIRY_S = {"ship": 30 * 60, "aid": 60 * 60, "base": 60 * 60, "aircraft": 20 * 60,
+            "radio": 30 * 60}
 
 
 @dataclass
 class Target:
     key: str                       # "ais:503020660", later "adsb:7c6b2d"
-    kind: str                      # "ship", "aid", "base" or "aircraft"
+    kind: str                      # "ship", "aid", "base", "aircraft" or "radio"
     ident: str                     # MMSI or ICAO address, as text
     name: str = ""
     lat: float | None = None
@@ -81,6 +82,8 @@ class TargetStore:
                 changed += self._from_acars(message)
             elif getattr(message, "icao", None) is not None:
                 changed += self._from_adsb(message)
+            elif getattr(message, "nac", None) is not None:
+                changed += self._from_p25(message)
         if changed:
             self.version += 1
         return changed
@@ -161,6 +164,21 @@ class TargetStore:
             t.lat, t.lon = position
             if not t.trail or t.trail[-1] != position:
                 t.trail.append(position)
+        return 1
+
+    def _from_p25(self, m) -> int:
+        """A P25 radio that reported its position (LRRP), by its radio ID; placed only
+        with a position, as a radio has no other identity worth a map entry."""
+        if m.position is None or m.radio is None:
+            return 0
+        t = self._get(f"p25:{m.nac:03X}:{m.radio}", "radio", str(m.radio))
+        t.last_seen = m.received
+        t.messages += 1
+        t.details["network"] = f"P25 NAC {m.nac:03X}"
+        t.details["position"] = "LRRP layout unverified"
+        t.lat, t.lon = m.position
+        if not t.trail or t.trail[-1] != m.position:
+            t.trail.append(m.position)
         return 1
 
     def expire(self, now: float | None = None) -> int:

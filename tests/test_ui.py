@@ -4245,20 +4245,20 @@ def test_decoder_survives_a_change_of_radio(qapp):
     win._stop_decoder()
 
 
-def test_pager_text_is_hidden_until_asked_for(qapp):
+def test_pager_text_is_shown_and_can_be_hidden(qapp):
     from src.rgc_sdr.dsp.pocsag import PagerMessage
 
     win = window_for(StubSource(_caps()))
     panel = win.decoder_panel
     _choose_decoder(win, "pocsag")
-    assert panel.show_text.isVisibleTo(panel) and not panel.show_text.isChecked()
+    assert panel.show_text.isVisibleTo(panel) and panel.show_text.isChecked()
     panel.add([PagerMessage(1200, 1234567, 3, "alpha", "SECRET STUFF")])
-    assert "SECRET" not in panel.log.toPlainText()
-    assert "1234567" in panel.log.toPlainText()
-    panel.show_text.setChecked(True)
     assert "SECRET STUFF" in panel.log.toPlainText()
+    assert "1234567" in panel.log.toPlainText()
     panel.show_text.setChecked(False)
     assert "SECRET" not in panel.log.toPlainText()
+    panel.show_text.setChecked(True)
+    assert "SECRET STUFF" in panel.log.toPlainText()
     win._stop_decoder()
 
 

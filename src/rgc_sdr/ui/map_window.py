@@ -32,7 +32,8 @@ HOME = (-37.95, 144.85)
 HOME_ZOOM = 10
 
 COLOURS = {"ship": QtGui.QColor("#e53935"), "aid": QtGui.QColor("#fdd835"),
-           "base": QtGui.QColor("#1e88e5"), "aircraft": QtGui.QColor("#8e24aa")}
+           "base": QtGui.QColor("#1e88e5"), "aircraft": QtGui.QColor("#8e24aa"),
+           "radio": QtGui.QColor("#43a047")}
 
 
 # -- Web Mercator ------------------------------------------------------------------

@@ -1205,6 +1205,22 @@ standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
 
+**P25 packet data and content (VK3RQ, 2026-10-06: "every protocol that can show text
+to show text", then "show content", "and the location on the map").** Pager text is now
+shown by default ("Show text" hides it). P25 packet data (DUID C): the header is coded
+like a TSBK; confirmed packets follow in rate 3/4 trellis blocks of 16 bytes, each with a
+7-bit serial and an inverted CRC-9, and an inverted CRC-32 over the packet. The 3/4
+table's points map to dibits through the 1/2-rate table confirmed on air; *confirmed on
+air:* 48 blocks, all CRC-9 good, every packet's CRC-32 good, first try. Both Viterbi
+decoders now measure in symbol-level steps, not bits (noise moves a symbol one level).
+The user data is SNDCP (2 bytes) then IPv4. *On air* (420.7125 MHz, 30 s): Motorola ARS
+registrations (UDP 4005), an LRRP request to start reporting (UDP 4001), IPsec (IP 50,
+encrypted), and acknowledgements; no text messages (TMS, UDP 4007, UTF-16). Shown:
+service, LLID and content -- a text message's text, readable runs, else hex. LRRP
+positions go on the map as green "radio" targets; their token layout comes from
+open-source decoders and is *not yet confirmed by a real position report*, so each says
+so. Frames are now held for up to 16 data blocks (1771 symbols, 0.37 s) before decoding.
+
 **Classifying a signal (the "?" button, VK3RQ 2026-10-06).** `classify.py` takes 2.5 s
 of IQ (enough for a 512-baud POCSAG batch) on a thread. First the decoders, at the
 tuned frequency and then at the measured centre: any error-checked frame names the

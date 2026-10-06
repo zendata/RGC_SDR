@@ -1,7 +1,8 @@
 """The Decode dock: choose a data decoder and read what it finds.
 
-Pager text is hidden unless "Show text" is ticked, and that choice is not remembered
-(PLANNING.md 7p). Nothing shown here is written to disk.
+Every decoder shows its text, pager messages included (VK3RQ, 2026-10-06; at first they
+were hidden unless asked for). "Show text" can hide pager text again, for this session.
+Nothing shown here is written to disk (PLANNING.md 7p).
 """
 
 from __future__ import annotations
@@ -34,9 +35,10 @@ class DecoderPanel(QtWidgets.QWidget):
         self.combo.currentIndexChanged.connect(self._on_choice)
         top.addWidget(self.combo)
         self.show_text = QtWidgets.QCheckBox("Show text")
+        self.show_text.setChecked(True)
         self.show_text.setToolTip(
             "Pager messages can carry names, addresses and medical details.\n"
-            "Hidden unless ticked; this is not remembered, and nothing is saved.")
+            "Untick to hide their text; nothing decoded is ever saved.")
         self.show_text.toggled.connect(self._redraw)
         top.addWidget(self.show_text)
         self.map_button = QtWidgets.QPushButton("Map")
@@ -77,8 +79,6 @@ class DecoderPanel(QtWidgets.QWidget):
         spec = DECODERS.get(self.decoder)
         private = bool(spec and spec.private)
         self.show_text.setVisible(private)
-        if not private:
-            self.show_text.setChecked(False)
 
     def add(self, messages: list) -> None:
         if not messages:

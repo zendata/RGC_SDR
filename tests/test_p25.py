@@ -6,6 +6,7 @@ confirmed on air (PLANNING.md 7p). All IDs here are made up.
 """
 
 import numpy as np
+import pytest
 
 from src.rgc_sdr.decoding import DecodeWorker
 from src.rgc_sdr.dsp.p25 import (
@@ -50,7 +51,7 @@ IDEN = tsbk(0x34, [(3, 4), (4, 4), (0, 14), (50, 10), (int(420.0125e6 / 5), 32)]
 NETWORK = tsbk(0x3B, [(0, 8), (0xABCDE, 20), (0x123, 12), (3 << 12 | 8, 16), (0, 8)], False)
 GRANT = tsbk(0x00, [(0, 8), (3 << 12 | 8, 16), (100, 16), (2000, 24)], True)
 #: What follows a frame on air: more frames, or noise.
-FILLER = list(np.random.default_rng(9).integers(0, 4, 300))
+FILLER = list(np.random.default_rng(9).integers(0, 4, 1800))
 CONTROL = frame_dibits(0x7, [IDEN, NETWORK, GRANT]) + FILLER
 
 
@@ -101,7 +102,7 @@ def test_repeats_are_held_back_and_bad_blocks_counted():
 
 
 def test_voice_and_inverted_signals():
-    stream = frame_dibits(0x5) + list(np.random.default_rng(7).integers(0, 4, 400))
+    stream = frame_dibits(0x5) + FILLER
     found = run(P25Decoder(RATE), -fsk4_wave(stream))
     assert [(m.nac, m.kind) for m in found] == [(NAC, "voice")]
 
@@ -120,3 +121,90 @@ def test_worker_decodes_from_iq():
     for block in np.array_split(iq, 30):
         found += worker.process(block)
     assert [m.fields.get("source") for m in found][-1] == 2000
+
+
+# -- packet data ---------------------------------------------------------------------
+
+from src.rgc_sdr.dsp.p25 import (  # noqa: E402
+    block_crc9, packet_crc32, trellis34_decode, trellis34_encode,
+)
+from src.rgc_sdr.targets import TargetStore  # noqa: E402
+
+
+def udp_packet(port: int, body: bytes) -> bytes:
+    """SNDCP's 2-byte header, then IPv4/UDP to `port` (checksums not checked here)."""
+    udp = (40000).to_bytes(2, "big") + port.to_bytes(2, "big") + \
+        (8 + len(body)).to_bytes(2, "big") + b"\x00\x00" + body
+    ip = bytes([0x45, 0]) + (20 + len(udp)).to_bytes(2, "big") + bytes(5) + bytes([17]) + \
+        bytes(10)
+    return b"\x51\x00" + ip + udp
+
+
+def pdu_dibits(user: bytes, llid: int = 1234, outbound: bool = False) -> list[int]:
+    """A confirmed data packet: header, 16-byte blocks with serial and CRC-9, CRC-32."""
+    blocks = -(-(len(user) + 4) // 16)
+    pad = blocks * 16 - len(user) - 4
+    data = user + bytes(pad)
+    data += packet_crc32(data).to_bytes(4, "big")
+    head = [0, 1, int(outbound)] + bits_of(22, 5) + [0, 0] + bits_of(0, 6) + bits_of(0, 8)
+    head += bits_of(llid, 24) + [1] + bits_of(blocks, 7) + [0, 0, 0] + bits_of(pad, 5)
+    head += [0] * (80 - len(head))
+    head += bits_of(tsbk_crc(np.array(head)), 16)
+    coded = [np.array(head)]
+    for k in range(blocks):
+        body = list(np.unpackbits(np.frombuffer(data[16 * k:16 * k + 16], np.uint8)))
+        serial = bits_of(k, 7)
+        coded.append(np.array(serial + bits_of(block_crc9(np.array(serial + body)), 9) + body))
+    out = word_dibits(FRAME_SYNC, 24)
+    nid = bits_of(bch_encode(NAC << 4 | 0xC), 63) + [0]
+    content = [2 * nid[i] + nid[i + 1] for i in range(0, 64, 2)]
+    content += list(trellis_encode(np.array([2 * coded[0][i] + coded[0][i + 1]
+                                             for i in range(0, 96, 2)])))
+    for block in coded[1:]:
+        content += list(trellis34_encode(block))
+    for d in content:
+        if len(out) % 36 == 35:
+            out.append(0b10)
+        out.append(d)
+    return out + FILLER
+
+
+def test_rate_three_quarter_trellis_corrects_errors():
+    bits = np.random.default_rng(12).integers(0, 2, 144)
+    sent = trellis34_encode(bits)
+    # One symbol a level off. Rate 3/4 has less to spare than 1/2: two errors close
+    # together after deinterleaving can defeat it, so this checks one.
+    sent[60] ^= 0b01
+    assert list(trellis34_decode(sent)) == list(bits)
+
+
+def test_a_text_message_shows_its_text():
+    text = "MEET AT THE GATE"
+    body = b"\x00\x10\x00\x00" + text.encode("utf-16-le")
+    found = run(P25Decoder(RATE), fsk4_wave(pdu_dibits(udp_packet(4007, body))))
+    (m,) = found
+    assert m.text == "packet data from 1234: text message (TMS)"
+    assert text in m.summary() and text not in m.summary(show_text=False)
+
+
+def test_a_location_report_puts_the_radio_on_the_map():
+    lat, lon = -37.8136, 144.9631
+    point = (b"\x66" + round(lat / 90 * 2 ** 31).to_bytes(4, "big", signed=True)
+             + round(lon / 180 * 2 ** 31).to_bytes(4, "big", signed=True) + b"\x00\x10")
+    lrrp = b"\x0d\x10\x22\x03\x00\x00\x01" + point
+    (m,) = run(P25Decoder(RATE), fsk4_wave(pdu_dibits(udp_packet(4001, lrrp))))
+    assert m.position == pytest.approx((lat, lon), abs=1e-5)
+    assert "location report (LRRP)" in m.text and "-37.81360, 144.96310" in m.summary()
+    store = TargetStore()
+    assert store.update([m]) == 1
+    (radio,) = store.placed()
+    assert (radio.kind, radio.ident) == ("radio", "1234")
+
+
+def test_a_damaged_block_is_rejected_not_shown():
+    dibits = pdu_dibits(udp_packet(4007, "HELLO".encode("utf-16-le")))
+    for i in range(57 + 98 + 10, 57 + 98 + 40):                  # wreck the first block
+        if i % 36 != 35:
+            dibits[i] ^= 0b11
+    decoder = P25Decoder(RATE)
+    assert run(decoder, fsk4_wave(dibits)) == [] and decoder.bad_blocks == 1

@@ -32,10 +32,16 @@ from .fsk4 import RepeatFilter, SyncFinder, bits_to_int, crc_ccitt, dibits_to_bi
 FRAME_SYNC = 0x5575F5FF77FF
 DUIDS = {0x0: "header", 0x3: "terminator", 0x5: "voice LDU1", 0xA: "voice LDU2",
          0x7: "TSDU", 0xC: "packet data", 0xF: "terminator with LC"}
-#: Symbols from the frame sync to the end of a third TSBK, status symbols included:
-#: 24 of sync, then 32 of NID and 3 x 98 of TSBK, with a status symbol every 36th.
-FRAME_SYMBOLS = next(n for n in range(24, 500)
-                     if sum(1 for i in range(24, n) if i % 36 != 35) == 32 + 3 * 98)
+def _symbols_for(blocks: int) -> int:
+    """Symbols from the frame sync to the end of `blocks` 98-dibit blocks after the NID:
+    24 of sync, 32 of NID, then the blocks, with a status symbol every 36th."""
+    return next(n for n in range(24, 20000)
+                if sum(1 for i in range(24, n) if i % 36 != 35) == 32 + blocks * 98)
+
+
+#: Enough for a header and PDU_MAX_BLOCKS data blocks; a TSDU needs only three.
+PDU_MAX_BLOCKS = 16
+FRAME_SYMBOLS = _symbols_for(1 + PDU_MAX_BLOCKS)
 #: Errors BCH(63,16,23) can correct.
 NID_MAX_ERRORS = 11
 
@@ -115,7 +121,13 @@ DEINTERLEAVE = np.array([
     74, 75, 82, 83, 90, 91, 4, 5, 12, 13, 20, 21, 28, 29, 36, 37, 44, 45, 52, 53, 60, 61,
     68, 69, 76, 77, 84, 85, 92, 93, 6, 7, 14, 15, 22, 23, 30, 31, 38, 39, 46, 47, 54, 55,
     62, 63, 70, 71, 78, 79, 86, 87, 94, 95])
-_POPCOUNT = np.array([bin(i).count("1") for i in range(16)])
+#: How far apart two dibit pairs are, in symbol-level steps: noise moves a symbol to the
+#: next level (+1 read as +3), which flips one bit or two depending on the pair, so bit
+#: counting misjudges it -- with it, the 3/4-rate code could not correct even single
+#: errors. Index [sent ^ ...] is not enough; the table is [sent][received].
+_LEVEL = {0b01: 3, 0b00: 2, 0b10: 1, 0b11: 0}
+_DISTANCE = np.array([[abs(_LEVEL[a >> 2] - _LEVEL[b >> 2]) + abs(_LEVEL[a & 3] - _LEVEL[b & 3])
+                       for b in range(16)] for a in range(16)])
 
 
 def trellis_encode(dibits48: np.ndarray) -> np.ndarray:
@@ -130,7 +142,8 @@ def trellis_encode(dibits48: np.ndarray) -> np.ndarray:
 
 def trellis_decode(dibits98: np.ndarray) -> tuple[np.ndarray, int]:
     """Viterbi over 49 steps of four states: 98 dibits -> 48 dibits, and the distance
-    (bits) to the nearest valid sequence. A loop over symbols, not samples."""
+    (symbol-level steps) to the nearest valid sequence. A loop over symbols, not
+    samples."""
     de = np.empty(98, dtype=np.int64)
     de[DEINTERLEAVE] = dibits98
     nibbles = (de[0::2] << 2) | de[1::2]
@@ -138,7 +151,7 @@ def trellis_decode(dibits98: np.ndarray) -> tuple[np.ndarray, int]:
     metric = np.array([0, big, big, big])
     back = []
     for r in nibbles:
-        cost = metric[:, None] + _POPCOUNT[TRELLIS ^ r]      # [state, input]
+        cost = metric[:, None] + _DISTANCE[TRELLIS, r]       # [state, input]
         prev = np.argmin(cost, axis=0)
         metric = cost[prev, np.arange(4)]
         back.append(prev)
@@ -153,6 +166,165 @@ def trellis_decode(dibits98: np.ndarray) -> tuple[np.ndarray, int]:
 
 def tsbk_crc(bits80: np.ndarray) -> int:
     return crc_ccitt(bits80) ^ 0xFFFF
+
+
+# -- packet data: rate 3/4 trellis ----------------------------------------------------
+
+#: TIA-102.BAAA's constellation points for [state][input]: 1/2 rate (dibits) and 3/4 rate
+#: (tribits). The point -> dibit-pair mapping is read off the 1/2-rate table confirmed on
+#: air (TRELLIS), so the 3/4 one is built from the same points. Confirmed on air
+#: 2026-10-06: all 48 data blocks in a capture passed their CRC-9, every packet its
+#: CRC-32.
+_POINTS_12 = ((0, 15, 12, 3), (4, 11, 8, 7), (13, 2, 1, 14), (9, 6, 5, 10))
+_POINTS_34 = ((0, 8, 4, 12, 2, 10, 6, 14), (4, 12, 2, 10, 6, 14, 0, 8),
+              (1, 9, 5, 13, 3, 11, 7, 15), (5, 13, 3, 11, 7, 15, 1, 9),
+              (3, 11, 7, 15, 1, 9, 5, 13), (7, 15, 1, 9, 5, 13, 3, 11),
+              (2, 10, 6, 14, 0, 8, 4, 12), (6, 14, 0, 8, 4, 12, 2, 10))
+_POINT_DIBITS = [0] * 16
+for _s in range(4):
+    for _d in range(4):
+        _POINT_DIBITS[_POINTS_12[_s][_d]] = int(TRELLIS[_s][_d])
+TRELLIS_34 = np.array([[_POINT_DIBITS[p] for p in row] for row in _POINTS_34])
+
+
+def trellis34_encode(bits144: np.ndarray) -> np.ndarray:
+    """144 data bits -> 98 transmitted dibits (for tests)."""
+    tribits = [int(bits144[i]) << 2 | int(bits144[i + 1]) << 1 | int(bits144[i + 2])
+               for i in range(0, 144, 3)]
+    state, nibbles = 0, []
+    for t in tribits + [0]:
+        nibbles.append(TRELLIS_34[state, t])
+        state = t
+    pairs = np.ravel([[n >> 2, n & 3] for n in nibbles])
+    return pairs[DEINTERLEAVE]
+
+
+def trellis34_decode(dibits98: np.ndarray) -> np.ndarray:
+    """Viterbi over eight states: 98 dibits -> 144 bits."""
+    de = np.empty(98, dtype=np.int64)
+    de[DEINTERLEAVE] = dibits98
+    nibbles = (de[0::2] << 2) | de[1::2]
+    big = 1 << 20
+    metric = np.array([0] + [big] * 7)
+    back = []
+    for r in nibbles:
+        cost = metric[:, None] + _DISTANCE[TRELLIS_34, r]
+        prev = np.argmin(cost, axis=0)
+        metric = cost[prev, np.arange(8)]
+        back.append(prev)
+    state, out = int(np.argmin(metric)), []
+    for prev in reversed(back):
+        out.append(state)
+        state = int(prev[state])
+    return np.ravel([[(t >> 2) & 1, (t >> 1) & 1, t & 1] for t in out[::-1][:48]])
+
+
+def _crc(bits, width: int, poly: int) -> int:
+    r, top, mask = 0, width - 1, (1 << width) - 1
+    for b in bits:
+        fb = ((r >> top) ^ int(b)) & 1
+        r = (r << 1) & mask
+        if fb:
+            r ^= poly
+    return r
+
+
+def block_crc9(bits) -> int:
+    """A confirmed data block's CRC-9 (x^9+x^6+x^4+x^3+1), inverted (on air)."""
+    return _crc(bits, 9, 0x059) ^ 0x1FF
+
+
+def packet_crc32(data: bytes) -> int:
+    """A packet's CRC-32 (the Ethernet polynomial, MSB first), inverted (on air)."""
+    return _crc(np.unpackbits(np.frombuffer(data, np.uint8)), 32, 0x04C11DB7) ^ 0xFFFFFFFF
+
+
+#: What well-known UDP ports carry on Motorola P25 data (and DMR) networks.
+UDP_SERVICES = {4001: "location report (LRRP)", 4005: "registration (ARS)",
+                4007: "text message (TMS)", 4008: "telemetry", 4012: "over-the-air rekeying"}
+
+
+#: Motorola LRRP message types (from open-source decoders; not a published standard).
+LRRP_TYPES = {0x04: "location request", 0x05: "location", 0x09: "start reporting",
+              0x0A: "start acknowledged", 0x0B: "location", 0x0D: "location",
+              0x0F: "stop reporting", 0x10: "stop acknowledged", 0x14: "protocol request",
+              0x15: "protocol response"}
+
+
+def _content(body: bytes) -> str:
+    """Readable runs of 4 characters or more, else the bytes in hex (48 at most)."""
+    runs, current = [], []
+    for c in body:
+        if 32 <= c < 127:
+            current.append(chr(c))
+        else:
+            if len(current) >= 4:
+                runs.append("".join(current))
+            current = []
+    if len(current) >= 4:
+        runs.append("".join(current))
+    if runs:
+        return " | ".join(r.strip() for r in runs if r.strip())
+    return body[:48].hex(" ") + (" ..." if len(body) > 48 else "")
+
+
+def _lrrp(body: bytes) -> tuple[str, tuple[float, float] | None]:
+    """An LRRP message: its kind, request id, and a position if it carries one (the
+    0x51/0x54/0x66/0x69 tokens). Layout from open-source decoders, *not yet checked on
+    air*: the label says so."""
+    if len(body) < 2:
+        return _content(body), None
+    kind = LRRP_TYPES.get(body[0], f"type {body[0]:02X}")
+    parts, position = [kind], None
+    i = 2
+    while i < len(body):
+        token = body[i]
+        if token == 0x22 and i + 1 < len(body):                    # request id
+            n = body[i + 1]
+            parts.append(f"request {body[i + 2:i + 2 + n].hex()}")
+            i += 2 + n
+        elif token in (0x51, 0x54, 0x66, 0x69) and i + 9 <= len(body):
+            lat = int.from_bytes(body[i + 1:i + 5], "big", signed=True) * 90.0 / 2 ** 31
+            lon = int.from_bytes(body[i + 5:i + 9], "big", signed=True) * 180.0 / 2 ** 31
+            parts.append(f"position {lat:.5f}, {lon:.5f} (layout unverified)")
+            if abs(lat) <= 90 and abs(lon) <= 180:
+                position = (lat, lon)
+            break
+        else:
+            break
+    if len(parts) == 1:
+        parts.append(_content(body[2:]))
+    return "  ".join(parts), position
+
+
+def describe_packet(user: bytes) -> tuple[str, str, tuple[float, float] | None]:
+    """(what, content) for a packet's user data: SNDCP's 2-byte header, then IPv4. The
+    content is what can be shown: a text message's text, a registration's identifier, a
+    location message, else readable text or the bytes in hex. Encrypted data has none.
+    Third, a position (lat, lon) when the packet reports one."""
+    if len(user) > 2 and user[0] >> 4 == 5 and user[2] >> 4 == 4:
+        user = user[2:]
+    if len(user) < 20 or user[0] >> 4 != 4:
+        return f"{len(user)} bytes", _content(user), None
+    ihl, proto = (user[0] & 15) * 4, user[9]
+    if proto == 50:
+        return "encrypted (IPsec)", "", None
+    if proto != 17 or len(user) < ihl + 8:
+        return f"IP protocol {proto}", _content(user[ihl:]), None
+    dport = int.from_bytes(user[ihl + 2:ihl + 4], "big")
+    sport = int.from_bytes(user[ihl:ihl + 2], "big")
+    port = dport if dport in UDP_SERVICES else sport
+    what = UDP_SERVICES.get(port, f"UDP port {dport}")
+    body = user[ihl + 8:]
+    if port == 4007:
+        # Motorola's text messages are UTF-16LE after a short header: keep the longest
+        # printable run.
+        decoded = body[: len(body) // 2 * 2].decode("utf-16-le", errors="replace")
+        runs = "".join(c if c.isprintable() else "\0" for c in decoded).split("\0")
+        return what, max(runs, key=len, default="").strip(), None
+    if port == 4001:
+        return (what, *_lrrp(body))
+    return what, _content(body), None
 
 
 # -- TSBK contents (TIA-102.AABC) --------------------------------------------------
@@ -193,10 +365,18 @@ class P25Message:
     fields: dict = field(default_factory=dict)
     channel: str = ""
     received: float = field(default_factory=time.time)
+    #: What a data packet carried (text, a location, bytes): shown unless hidden.
+    content: str = field(default="", repr=False)
+    #: (lat, lon) a radio reported, for the map; and which radio (its LLID).
+    position: tuple[float, float] | None = field(default=None, repr=False)
+    radio: int | None = None
 
     def summary(self, show_text: bool = True) -> str:
         stamp = time.strftime("%H:%M:%S", time.localtime(self.received))
-        return f"{stamp}  P25  NAC {self.nac:03X}  {self.text}"
+        line = f"{stamp}  P25  NAC {self.nac:03X}  {self.text}"
+        if self.content:
+            line += f"  {self.content}" if show_text else f"  [{len(self.content)} characters hidden]"
+        return line
 
 
 def _field(bits: np.ndarray, start: int, n: int) -> int:
@@ -234,9 +414,11 @@ class P25Decoder:
                 continue
             self.frames += 1
             nac, duid = value >> 4, value & 0xF
+            payload = np.array([dibits[i] for i in range(57, dibits.size) if i % 36 != 35])
             if duid == 0x7:
-                payload = np.array([dibits[i] for i in range(57, dibits.size) if i % 36 != 35])
                 messages = self._tsdu(nac, payload)
+            elif duid == 0xC:
+                messages = self._pdu(nac, payload)
             else:
                 name = DUIDS.get(duid, f"DUID {duid:X}")
                 kind = "voice" if duid in (0x0, 0x5, 0xA) else name
@@ -244,7 +426,7 @@ class P25Decoder:
                                        {"duid": duid})]
             for m in messages:
                 m.channel = self.channel
-                if self._repeats.fresh(m.text):
+                if self._repeats.fresh(m.text + "|" + m.content):
                     out.append(m)
         return out
 
@@ -265,6 +447,43 @@ class P25Decoder:
             if bits[0]:                                 # last block
                 break
         return out
+
+    def _pdu(self, nac: int, payload: np.ndarray) -> list[P25Message]:
+        """A data packet: its header (coded as a TSBK is), then confirmed data blocks of
+        16 bytes (rate 3/4, each with a serial number and CRC-9) and a CRC-32 over all."""
+        data, _ = trellis_decode(payload[:98])
+        head = dibits_to_bits(data)
+        if tsbk_crc(head[:80]) != _field(head, 80, 16):
+            self.bad_blocks += 1
+            return []
+        outbound, fmt = bool(head[2]), _field(head, 3, 5)
+        sap, llid = _field(head, 10, 6), _field(head, 24, 24)
+        blocks, pad = _field(head, 49, 7), _field(head, 59, 5)
+        f = {"format": fmt, "sap": sap, "llid": llid, "outbound": outbound}
+        way = "to" if outbound else "from"
+        if fmt == 3:
+            return [P25Message(nac, "data", f"data acknowledgement {way} {llid}", f)]
+        if fmt != 22:
+            return [P25Message(nac, "data", f"packet data {way} {llid} (format {fmt})", f)]
+        chunks = []
+        for k in range(blocks):
+            block = payload[98 * (k + 1): 98 * (k + 2)]
+            if block.size < 98:
+                return [P25Message(nac, "data", f"packet data {way} {llid}, "
+                                   f"{blocks} blocks (too long to read)", f)]
+            bits = trellis34_decode(block)
+            if block_crc9(np.concatenate([bits[:7], bits[16:]])) != _field(bits, 7, 9):
+                self.bad_blocks += 1
+                return []
+            chunks.append(np.packbits(bits[16:]).tobytes())
+        packet = b"".join(chunks)
+        if len(packet) < pad + 4 or packet_crc32(packet[:-4]) != int.from_bytes(packet[-4:], "big"):
+            self.bad_blocks += 1
+            return []
+        what, content, position = describe_packet(packet[:len(packet) - pad - 4])
+        f.update(service=what)
+        return [P25Message(nac, "data", f"packet data {way} {llid}: {what}", f,
+                           content=content, position=position, radio=llid)]
 
     def _channel(self, value: int) -> str:
         iden, number = value >> 12, value & 0xFFF

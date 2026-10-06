@@ -165,7 +165,7 @@ class PagerMessage:
     corrected_bits: int = 0
     received: float = field(default_factory=time.time)
 
-    def summary(self, show_text: bool = False) -> str:
+    def summary(self, show_text: bool = True) -> str:
         stamp = time.strftime("%H:%M:%S", time.localtime(self.received))
         head = (f"{stamp}  POCSAG{self.baud}  addr {self.address:7d}  func {self.function}  "
                 f"{self.kind}")

@@ -57,7 +57,8 @@ DECODERS: dict[str, DecoderSpec] = {
     # 1 Mbit/s pulses on 1090 MHz, read from raw IQ: the Pluto or HackRF at 2 MS/s+.
     "adsb": DecoderSpec("ADS-B", AdsbDecoder, 1e6, channels=(("", ADSB_HZ),), mode="iq"),
     # 4800-symbol/s four-level FSK in a 12.5 kHz channel: metadata, not voice.
-    "p25": DecoderSpec("P25", P25Decoder, 12.5e3),
+    # Packet data can carry text and radios' positions: hideable, like pager text.
+    "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True),
     "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3),
 }
 

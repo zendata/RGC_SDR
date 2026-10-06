@@ -368,8 +368,7 @@ whatever the audio is doing, including with audio off.
   two bit errors per codeword. Each page shows its address (capcode), function and type.
   Whether a page is text or numeric is judged from its content, since networks differ in
   how they use the function code. Pager messages can carry names, addresses and medical
-  details, so the text is hidden unless **Show text** is ticked; that is not remembered,
-  and nothing is saved to disk.
+  details: untick **Show text** to hide it. Nothing decoded is saved to disk.
 - **APRS** (AX.25 over 1200 baud AFSK; 145.175 MHz in Australia): `SOURCE>DEST,PATH:info`,
   plus the position in decimal degrees when the packet has one, in any of the plain,
   compressed or Mic-E formats.
@@ -394,7 +393,11 @@ whatever the audio is doing, including with audio off.
   neighbouring sites, registrations and voice grants (talkgroup, radio and the granted
   frequency). DMR shows the colour code and slot of each burst, call headers and
   terminators (group or private call, talkgroup or destination, source, encrypted or
-  not) and control blocks; manufacturers' own blocks appear by opcode. A control channel
+  not) and control blocks; manufacturers' own blocks appear by opcode. P25 packet data
+  is decoded too: who it is to or from and what it is -- a text message (with its
+  text), a registration, a location report, or encrypted -- with its content; a radio
+  that reports its position goes on the **map** (green). P25 content, like pager text,
+  can be hidden with **Show text**. A control channel
   repeats itself many times a second, so a message identical to one in the last 30 s is
   not shown again.
 

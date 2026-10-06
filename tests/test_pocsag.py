@@ -157,12 +157,13 @@ def test_noise_alone_decodes_nothing():
     assert decode(discriminator(iq.astype(np.complex64))) == []
 
 
-def test_summary_hides_the_text_unless_asked():
+def test_summary_shows_the_text_and_can_hide_it():
     bits = encode(77, 3, _alpha_chunks("PRIVATE DETAILS"))
     (m,) = decode(discriminator(fsk_iq(bits, 1200)))
-    assert "PRIVATE" not in m.summary() and "15 characters hidden" in m.summary()
-    assert "PRIVATE DETAILS" in m.summary(show_text=True)
-    assert "PRIVATE" not in repr(m)
+    assert "PRIVATE DETAILS" in m.summary()
+    hidden = m.summary(show_text=False)
+    assert "PRIVATE" not in hidden and "15 characters hidden" in hidden
+    assert "PRIVATE" not in repr(m)               # still kept out of logs and reprs
 
 
 # -- numeric or text: by content, not by function code ------------------------------
