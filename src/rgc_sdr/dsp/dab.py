@@ -119,16 +119,27 @@ def viterbi(soft: np.ndarray) -> np.ndarray:
 
 # -- puncturing -------------------------------------------------------------------------
 
-def _pi(x: int) -> np.ndarray:
-    """Puncturing vector PI_x: which of 32 mother-code bits are sent (8 + x of them).
-    Built from the standard's pattern: groups of four, the first 8 + x ones."""
-    keep = np.zeros(32, dtype=bool)
-    order = [i * 4 + j for j in range(4) for i in range(8)]   # all first bits, then seconds...
-    keep[order[: 8 + x]] = True
-    return keep
+#: Puncturing vectors V_PI (EN 300 401 table 13): which of 32 mother-code bits are sent.
+#: Copied from the standard: a rule that spread the ones evenly matched only some of them
+#: (PI 1, 8, 15, 16, 24), not PI 2, 9 and most others.
+_TABLE_13 = (
+    "11001000100010001000100010001000", "11001000100010001100100010001000",
+    "11001000110010001100100010001000", "11001000110010001100100011001000",
+    "11001100110010001100100011001000", "11001100110010001100110011001000",
+    "11001100110011001100110011001000", "11001100110011001100110011001100",
+    "11101100110011001100110011001100", "11101100110011001110110011001100",
+    "11101100111011001110110011001100", "11101100111011001110110011101100",
+    "11101110111011001110110011101100", "11101110111011001110111011101100",
+    "11101110111011101110111011101100", "11101110111011101110111011101110",
+    "11111110111011101110111011101110", "11111110111011101111111011101110",
+    "11111110111111101111111011101110", "11111110111111101111111011111110",
+    "11111111111111101111111011111110", "11111111111111101111111111111110",
+    "11111111111111111111111111111110", "11111111111111111111111111111111",
+)
 
 
-PI = {x: _pi(x) for x in range(1, 25)}
+PI = {x: np.array([c == "1" for c in v]) for x, v in enumerate(_TABLE_13, start=1)}
+assert all(PI[x].sum() == 8 + x for x in PI)
 #: The tail's vector: 12 of 24 bits.
 PI_TAIL = np.array([1, 1, 0, 0] * 6, dtype=bool)
 

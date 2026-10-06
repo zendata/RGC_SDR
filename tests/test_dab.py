@@ -80,6 +80,9 @@ def test_puncturing_vectors_are_the_standards():
     assert "".join(map(str, D.PI[16].astype(int))) == "1110" * 8
     assert "".join(map(str, D.PI[1].astype(int))) == "1100" + "1000" * 7
     assert D.PI[24].all() and D.FIC_PATTERN.sum() == 2304
+    # Not an even spread of ones: what an evenly spread rule got wrong.
+    assert "".join(map(str, D.PI[2].astype(int))) == "1100100010001000" "1100100010001000"
+    assert "".join(map(str, D.PI[9].astype(int))) == "1110110011001100" "1100110011001100"
 
 
 def test_carrier_order_is_a_permutation_of_the_1536_carriers():
