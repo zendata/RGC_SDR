@@ -38,8 +38,8 @@ AUDIO_RATE = 48_000.0
 #: full SSB drive) needs audio at full scale, and speech into the MacBook Air Microphone
 #: peaks far below it: with no gain, VK3RQ's first HackRF transmission (2026-10-06) was
 #: reported low. The limiter below keeps peaks at full scale, so gain can be generous.
-#: The default is an estimate, to be adjusted by ear.
-MIC_GAIN_DB = 15.0
+#: 25 dB chosen by VK3RQ on air (2026-10-06), after a first estimate of 15 dB.
+MIC_GAIN_DB = 25.0
 MIC_GAIN_RANGE_DB = (0.0, 40.0)
 #: How fast the limiter lets the gain back up after a loud syllable.
 LIMITER_RELEASE_S = 0.3

@@ -258,7 +258,7 @@ show in the status bar. It is enabled only for radios with a transmitter (the Ha
 
 - **TX gains** are on the Radio row (TX VGA, TX AMP), saved per radio. They start at
   minimum; raise them as needed. They can be changed while transmitting.
-- **Mic** beside them sets the microphone gain (0-40 dB, 15 dB to start). A limiter holds
+- **Mic** beside them sets the microphone gain (0-40 dB, 25 dB to start). A limiter holds
   speech peaks at full deviation, so raise it until the audio is loud enough; while
   keyed, the status line shows the microphone's level and the **drive** (how near full
   deviation the peaks come).

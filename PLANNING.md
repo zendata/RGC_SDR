@@ -797,7 +797,7 @@ the assistant key the radio.
 **First key-up, 2026-10-06 (VK3RQ):** the HackRF transmitted, but the audio was low. The
 modulator gave full deviation only for full-scale audio, and speech into the MacBook Air
 Microphone peaks well below that, with no gain between. Now: a **Mic** gain (0-40 dB,
-15 dB to start -- an estimate, to be set by ear), then the speech filter, then a peak
+25 dB to start, as VK3RQ set it by ear on air; first estimated at 15 dB), then the speech filter, then a peak
 limiter (instant attack, 0.3 s release) holding peaks at full scale, so the gain can be
 generous without over-deviating. Tested: a -26 dBFS tone goes from under 200 Hz to the
 full 2.5 kHz NBFM deviation at 26 dB; at 40 dB a near-full-scale tone still stays
