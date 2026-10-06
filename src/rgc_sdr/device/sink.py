@@ -95,10 +95,15 @@ class SoapyIQSink(IQSink):
     def keyed(self) -> bool:
         return self._stream is not None
 
+    def _hardware_freq(self) -> float:
+        """The TX LO, corrected by the receiver's measured error: one crystal serves
+        both, so a radio that reads high also transmits low by the same parts."""
+        return (self._freq + self._lo_offset) * (1.0 + getattr(self._source, "ppm", 0.0) * 1e-6)
+
     def set_center_freq(self, hz: float) -> float:
         self._freq = float(hz)
         if self._stream is not None:
-            self._dev.setFrequency(SOAPY_TX, 0, self._freq + self._lo_offset)
+            self._dev.setFrequency(SOAPY_TX, 0, self._hardware_freq())
         return self._freq
 
     def set_gain(self, name: str, db: float) -> None:
@@ -115,7 +120,7 @@ class SoapyIQSink(IQSink):
         try:
             d = self._dev
             d.setSampleRate(SOAPY_TX, 0, self._rate)
-            d.setFrequency(SOAPY_TX, 0, self._freq + self._lo_offset)
+            d.setFrequency(SOAPY_TX, 0, self._hardware_freq())
             for name, db in self._gains.items():
                 d.setGain(SOAPY_TX, 0, name, float(db))
             stream = d.setupStream(SOAPY_TX, "CF32")

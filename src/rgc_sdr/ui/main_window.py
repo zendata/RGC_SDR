@@ -178,6 +178,7 @@ class MainWindow(QtWidgets.QMainWindow):
         source_factory=None,
         availability_fn=None,
         transmitter_factory=None,
+        auto_calibrate: bool = False,
         parent=None,
     ) -> None:
         super().__init__(parent=parent)
@@ -196,6 +197,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
         #: Microphone gain (dB) for an SDR's own modulator, saved per radio.
         self._tx_mic_gain_db = MIC_GAIN_DB
+        #: This radio's measured frequency error (ppm), None until calibrated.
+        self._ppm_measured: float | None = None
+        #: Measure a new radio's error when it is first connected (the app does; tests
+        #: do not, so stand-in radios are never retuned behind their backs).
+        self._auto_calibrate = bool(auto_calibrate)
+        self._calibration_tried: set[str] = set()
         #: A transceiver's received audio on the Mac (RadioAudio), while one is in use.
         #: Injectable so tests never open a sound device.
         self.radio_audio = None
@@ -335,6 +342,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         self._timer.timeout.connect(self._on_frame)
         self._timer.start(int(1000 / self.fps))
+        self._sync_ppm()
+        if self._auto_calibrate:
+            QtCore.QTimer.singleShot(1500, self._calibrate_if_new)
 
     # -- SDR selection -----------------------------------------------------
 
@@ -715,6 +725,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # refit the colours if it has none saved.
         self._levels_explicit = False
         self._auto_pending = True
+        self._ppm_measured = None
         self._apply_device_profile()
         saved = (self.settings.radios.get(self.current_device_key())
                  if restore_settings and not self.playing_back else None)
@@ -731,6 +742,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if previous_mode != "off":
             self.set_mode(previous_mode)
         self._start_decoder(self.decoder_panel.decoder)
+        self._sync_ppm()
+        if self._auto_calibrate:
+            QtCore.QTimer.singleShot(500, self._calibrate_if_new)
 
     # -- IQ playback ---------------------------------------------------------
 
@@ -835,6 +849,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tx_audio_level=self._tx_audio_level if self.is_transceiver else None,
             tx_mic_gain_db=(self._tx_mic_gain_db
                             if not self.is_transceiver and self.source.caps.tx else None),
+            ppm=self._ppm_measured,
         )
 
     def apply_radio_hardware(self, radio: RadioSettings) -> None:
@@ -860,6 +875,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._if_bw_chosen = True
         if radio.tx_audio_level is not None:
             self._tx_audio_level = min(1.0, max(0.01, radio.tx_audio_level))
+        if radio.ppm is not None and self.can_correct_ppm:
+            self._set_ppm(radio.ppm)
         if radio.tx_mic_gain_db is not None:
             from ..dsp.modulate import MIC_GAIN_RANGE_DB
 
@@ -1227,6 +1244,95 @@ class MainWindow(QtWidgets.QMainWindow):
             self.waterfall.show_label(job.result.freq_hz, text)
             self._status.showMessage(text, 15000)
 
+    # -- frequency correction ------------------------------------------------------
+
+    @property
+    def can_correct_ppm(self) -> bool:
+        return (not self.is_transceiver and not self.playing_back
+                and hasattr(self.source, "set_ppm"))
+
+    def _sync_ppm(self) -> None:
+        """Show the radio's correction, or hide the control for one that has none (a
+        transceiver tunes itself; a recording is what it is)."""
+        usable = self.can_correct_ppm
+        self._ppm_slot.setVisible(usable)
+        self._ppm_spin.blockSignals(True)
+        self._ppm_spin.setValue(getattr(self.source, "ppm", 0.0) if usable else 0.0)
+        self._ppm_spin.blockSignals(False)
+        self._sync_radio_row()
+
+    def _set_ppm(self, ppm: float) -> None:
+        self.source.set_ppm(ppm)
+        self._ppm_measured = float(ppm)
+        self._ppm_spin.blockSignals(True)
+        self._ppm_spin.setValue(ppm)
+        self._ppm_spin.blockSignals(False)
+
+    def _on_ppm_changed(self, ppm: float) -> None:
+        if self.can_correct_ppm:
+            self._set_ppm(ppm)
+            self._schedule_save()
+
+    def calibrate(self, references=None) -> None:
+        """Measure this radio's error from a known carrier, on a thread: at `references`
+        (Hz or (Hz, name) pairs; the Cal button passes the listening frequency), else the
+        known local ones (calibrate.REFERENCES). The radio is retuned while it measures
+        and put back; `_poll_calibration` applies the result."""
+        from ..calibrate import REFERENCES, CalibrateJob
+
+        if not self.can_correct_ppm or getattr(self, "_calibration", None) is not None:
+            return
+        if references is None:
+            references = REFERENCES
+        elif not isinstance(references, (list, tuple)):
+            references = [float(references)]
+        self._calibration = CalibrateJob(self.source, references)
+        self._cal_button.setEnabled(False)
+        self._status.showMessage("measuring this radio's frequency error...", 15000)
+        QtCore.QTimer.singleShot(200, self._poll_calibration)
+
+    def _cancel_calibration(self) -> None:
+        job = getattr(self, "_calibration", None)
+        if job is not None:
+            job.cancel()
+
+    def _poll_calibration(self) -> None:
+        job = getattr(self, "_calibration", None)
+        if job is None:
+            return
+        if not job.done:
+            if job.stage:
+                self._status.showMessage(job.stage + "...", 3000)
+            QtCore.QTimer.singleShot(200, self._poll_calibration)
+            return
+        self._calibration = None
+        self._cal_button.setEnabled(True)
+        if job.cancelled or job.source is not self.source:
+            return
+        self.waterfall.clear_history()            # rows from the reference frequency
+        label = self.source.caps.label or self.current_device_key()
+        if job.result is None:
+            self._status.showMessage(
+                f"{label} not calibrated: {job.error}. Tune exactly to a known carrier "
+                "and press Cal.", 15000)
+            return
+        self._set_ppm(job.result.ppm)
+        self._schedule_save()
+        self._status.showMessage(job.result.describe(label), 15000)
+
+    def _calibrate_if_new(self) -> None:
+        """A radio never calibrated is measured against the known references when it is
+        first connected (VK3RQ: "set up once for each new radio"). Once a session: a
+        radio that heard none of them is not retuned again and again."""
+        key = self.current_device_key()
+        saved = self.settings.radios.get(key)
+        if (not self.can_correct_ppm or key in self._calibration_tried
+                or self._ppm_measured is not None
+                or (saved is not None and saved.ppm is not None)):
+            return
+        self._calibration_tried.add(key)
+        self.calibrate()
+
     def show_map(self) -> None:
         if self.map_window is None:
             self.map_window = MapWindow(self.targets, parent=self)
@@ -1339,6 +1445,32 @@ class MainWindow(QtWidgets.QMainWindow):
         self._device_slot_layout.setContentsMargins(12, 0, 0, 0)
         row.addWidget(self._device_slot)
 
+        # Frequency correction (VK3RQ, 2026-10-06): the radio's error in ppm, and Cal to
+        # measure it from a known carrier at the listening frequency.
+        self._ppm_slot = QtWidgets.QWidget()
+        ppm_row = QtWidgets.QHBoxLayout(self._ppm_slot)
+        ppm_row.setContentsMargins(12, 0, 0, 0)
+        ppm_row.addWidget(QtWidgets.QLabel("PPM"))
+        self._ppm_spin = QtWidgets.QDoubleSpinBox()
+        self._ppm_spin.setRange(-200.0, 200.0)
+        self._ppm_spin.setDecimals(2)
+        self._ppm_spin.setSingleStep(0.1)
+        self._ppm_spin.setKeyboardTracking(False)
+        self._ppm_spin.setToolTip(
+            "This radio's frequency error in parts per million (+ when it reads high),\n"
+            "corrected in tuning so the display shows true frequency. Saved per radio.\n"
+            "Measured automatically when a radio is first connected, from a known\n"
+            "carrier (Essendon ATIS 119.8 MHz, or the 144.650 MHz beacon).")
+        self._ppm_spin.valueChanged.connect(self._on_ppm_changed)
+        ppm_row.addWidget(self._ppm_spin)
+        self._cal_button = QtWidgets.QPushButton("Cal")
+        self._cal_button.setToolTip(
+            "Measure the error from a carrier at the listening frequency: tune exactly\n"
+            "to a signal whose frequency you know (a CW beacon, an AM carrier) first.")
+        self._cal_button.clicked.connect(lambda: self.calibrate(self.listen_freq))
+        ppm_row.addWidget(self._cal_button)
+        row.addWidget(self._ppm_slot)
+
         # Transmit gains, for radios that transmit.
         self._tx_slot = QtWidgets.QWidget()
         self._tx_slot_layout = QtWidgets.QHBoxLayout(self._tx_slot)
@@ -1350,7 +1482,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_radio_row(self) -> None:
         self._radio_row.setVisible(
             not self._bw_combo.isHidden() or not self._device_slot.isHidden()
-            or not self._tx_slot.isHidden()
+            or not self._tx_slot.isHidden() or not self._ppm_slot.isHidden()
         )
 
     def _build_fm_row(self) -> QtWidgets.QWidget:
@@ -2273,6 +2405,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.waterfall.clear_history()
             self.waterfall.clear_label()          # it named what was here before
             self._cancel_classify()
+            self._cancel_calibration()
             if self.audio is not None:
                 self.audio.reset()
             if self.decode_worker is not None:
@@ -3528,6 +3661,7 @@ def run(source: IQSource, debug_gestures: bool = False, **kwargs) -> int:
 
         install(app)
     source.start()
+    kwargs.setdefault("auto_calibrate", True)
     window = MainWindow(source, **kwargs)
     window.resize(1280, 800)
     window.show()

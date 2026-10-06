@@ -476,6 +476,9 @@ class SoapyIQSource(IQSource):
         # Radios are tuned their profile's LO offset away and shifted back (_Nco): 200 kHz
         # for one with a DC spike, 100 kHz for the HF+.
         self._lo_offset = self.profile.lo_offset if self.profile else 0.0
+        #: The radio's frequency error in parts per million, + when it reads high (its
+        #: crystal runs slow). Corrected in tuning, so the display shows true frequency.
+        self._ppm = 0.0
         self._nco = _Nco(0.0, self._rate)
         self._freq = float(center_freq)
         self._tune_hardware(self._caps.clamp_freq(self._freq))
@@ -653,8 +656,9 @@ class SoapyIQSource(IQSource):
         shift = self._lo_offset
         if shift and not self._caps.covers(wanted + shift):
             shift = -shift
-        self._dev.setFrequency(SOAPY_RX, 0, wanted + shift)
-        hardware = float(self._dev.getFrequency(SOAPY_RX, 0)) - shift
+        scale = 1.0 + self._ppm * 1e-6
+        self._dev.setFrequency(SOAPY_RX, 0, (wanted + shift) * scale)
+        hardware = float(self._dev.getFrequency(SOAPY_RX, 0)) / scale - shift
         # A synthesizer lands within a few hertz (the Pluto reads back 101.899998 MHz
         # for 101.9) -- far inside its crystal's own error of several kHz at VHF. Report
         # the frequency asked for then, rather than a step nobody can use.
@@ -662,6 +666,17 @@ class SoapyIQSource(IQSource):
         if shift != self._nco.shift_hz or self._nco.rate != self._rate:
             # Swapped whole, so the reader thread only ever sees a complete NCO.
             self._nco = _Nco(shift, self._rate)
+
+    @property
+    def ppm(self) -> float:
+        return self._ppm
+
+    def set_ppm(self, ppm: float) -> None:
+        """Correct the radio's frequency error (PLANNING.md 7k): a radio reading
+        `ppm` parts per million high is tuned that much higher, so a signal shows at
+        its true frequency. Retunes at once, without a flush (a few hundred hertz)."""
+        self._ppm = float(ppm)
+        self._tune_hardware(self._freq)
 
     @property
     def soapy_device(self):

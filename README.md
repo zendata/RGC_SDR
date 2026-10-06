@@ -126,6 +126,15 @@ R2/Mini, HackRF One, RTL-SDR and ADALM-Pluto — and says which are connected. P
 the window rebuilds for it: its frequency range and sample rates, and whatever gain stages,
 AGC and bias-tee it actually has. The HF+ has none of those, so none are shown.
 
+**Frequency correction.** SDRs read a few parts per million off (the Pluto about +4.7 ppm,
+the HackRF about -11.7, measured). The **PPM** field on the Radio row holds each radio's
+error, saved per radio, and tuning corrects for it -- receive and transmit -- so the
+display shows true frequency. A radio connected for the first time measures it by itself
+from a known carrier (the Essendon ATIS on 119.8 MHz, else the 144.650 MHz beacon),
+retuning for a few seconds and coming back. To do it by hand, tune exactly to any
+carrier whose frequency you know (a CW beacon, an AM transmitter) and press **Cal**.
+Broadcast FM is not used: its programme makes the measurement scatter by several ppm.
+
 Radios detected right now are **yellow** in the list. More than one can be attached:
 the one you pick is first choice, and tuning anywhere it cannot reach (typing a
 frequency, dragging a digit or swiping) hands over to the next detected radio that can,

@@ -104,6 +104,14 @@ appears 200 kHz above it, and the scanner's DC guard moves there too. Measured o
 HackRF, tuned straight to the station: The Fox and SmoothFM in stereo with full RDS (535/10
 and 546/0 blocks), Triple M stereo 97% (0% before).
 
+**Frequency error, measured 2026-10-06** against the Essendon ATIS carrier (119.8 MHz,
+continuous, 60 dB clear on the Pluto): **Pluto +4.67 ppm** (reads 560 Hz high; +4.66 again
+after correction, residual 2 Hz), **HackRF -11.7 ppm** (reads 1.39 kHz low; residual
+14-17 Hz, its readings of one carrier wander about 20 Hz). The P25 control channel at
+420 MHz agrees for the Pluto (+5.2 ppm by a cruder measure). Corrected in tuning
+(`set_ppm`, section 7k); the "119.84 MHz" first reported for the ATIS on the Pluto was
+another signal, not 330 ppm of crystal error.
+
 **ADALM-Pluto, measured 2026-09-25** (VK3RQ's, over USB, `usb:0.1.5`): reports
 **70-6000 MHz** (the extended-range firmware change; stock is 325-3800), RX gain PGA 0-73
 dB with a working AGC, rates 65 kS/s and 1-10 MS/s, IF bandwidth options 0.2-10 MHz, and
@@ -690,6 +698,22 @@ HackRF attached, the real window on the Pluto:* both yellow, the Freq box 1-6000
 interface" when it looks for radios while the Pluto is open: harmless. *Found then:*
 the frame's status line replaced every notice within 40 ms, so "now using ..." (and
 "stop TX before retuning") was never seen; a notice now stays until its timeout, or 8 s.
+
+**Frequency correction (VK3RQ, 2026-10-06).** Each SDR keeps its error in ppm (+ reads
+high), saved per radio and applied by the source: the LO is set to the wanted
+frequency x (1 + ppm/1e6), and the HackRF's TX LO likewise (one crystal serves both).
+`calibrate.py` measures it from a known carrier as the strongest line within 25 ppm of
+it, to a fraction of a hertz -- but only a line found at the same frequency at two
+tunings 200 kHz apart: the HackRF's spur combs move with the tuning, real signals do
+not (with a +/-100 ppm window and one tuning, other signals 6-7 kHz from 119.8 and
+144.65 MHz gave the Pluto +42.8 and the HackRF +57.5 ppm). A radio never calibrated is
+measured on first connection against REFERENCES (Essendon ATIS 119.8 MHz, then the
+144.650 MHz beacon), once a session; failing that it says so and stays uncorrected.
+**Broadcast FM was tried and rejected:** a station's mean instantaneous frequency over
+4 s scattered from -22 to +51 ppm across five stations, and by up to 10 ppm between
+repeats of one -- the programme's bass does not average away. Checked in the real
+window: the HackRF calibrated itself to -11.74 ppm and came back to where it was tuned;
+the Pluto, with its antenna off, reported that it heard no reference.
 
 **Only the Airspy HF+ is verified on hardware.** The other four are exercised through
 their profiles with stand-in sources: 44 tests cover the table, availability and every

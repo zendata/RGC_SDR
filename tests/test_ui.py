@@ -2050,6 +2050,7 @@ class ProfiledStub(StubSource):
         self.profile = profile
         self.closed = False
         self.started = False
+        self.ppm = 0.0
         self.written = {}
         self.gains = {}
 
@@ -2062,6 +2063,9 @@ class ProfiledStub(StubSource):
     def set_gain(self, name, db):
         self.gain = (name, db)
         self.gains[name] = db
+
+    def set_ppm(self, ppm):
+        self.ppm = float(ppm)
 
     def get_gain(self, name):
         return self.gains.get(name, 0.0)
@@ -2142,13 +2146,14 @@ def test_switching_to_hackrf_brings_up_its_gain_stages(qapp):
 def test_radio_settings_have_their_own_row(qapp):
     """A HackRF's gains pushed the tuning row off the screen; they live below it now."""
     win, _, _ = switching_window()
-    assert win._radio_row.isHidden()                 # the HF+ has nothing to set
+    # The HF+ has no gains to set: its row holds only the frequency correction.
+    assert win._device_slot.isHidden() and not win._ppm_slot.isHidden()
     win.switch_device("hackrf")
-    assert not win._radio_row.isHidden()
+    assert not win._radio_row.isHidden() and not win._device_slot.isHidden()
     assert win._device_slot.parentWidget() is win._radio_row
     assert win._device_slot.parentWidget() is not win._freq_spin.parentWidget()
     win.switch_device("airspyhf")
-    assert win._radio_row.isHidden()
+    assert win._device_slot.isHidden()
     win.close()
 
 
@@ -3017,6 +3022,64 @@ def test_mic_gain_reaches_the_transmitter_live(qapp):
     win._tx_mic_spin.setValue(30.0)
     assert win.transmitter.modulator.mic_gain_db == 30.0
     win.transmitter = None
+    win.close()
+
+
+def test_ppm_is_on_the_radio_row_saved_per_radio_and_applied(qapp, tmp_path):
+    win, first, opened = switching_window(settings=Settings(tmp_path / "s.json"))
+    assert not win._ppm_slot.isHidden() and not win._radio_row.isHidden()   # even the HF+
+    win.switch_device("plutosdr")
+    win._ppm_spin.setValue(4.66)
+    assert opened[-1].ppm == pytest.approx(4.66)
+    win.switch_device("airspyhf")
+    assert win._ppm_spin.value() == 0.0                   # the HF+ has its own
+    win.switch_device("plutosdr")
+    assert opened[-1].ppm == pytest.approx(4.66) and win._ppm_spin.value() == 4.66
+    win.close()
+
+
+class FakeCalibration:
+    def __init__(self, source, result=None, error=""):
+        self.source, self.result, self.error = source, result, error
+        self.done, self.cancelled, self.stage = True, False, ""
+
+    def cancel(self):
+        self.cancelled = True
+
+
+def test_a_calibration_result_is_applied_and_reported(qapp):
+    from src.rgc_sdr.calibrate import Calibration
+    win, _, opened = switching_window()
+    win.switch_device("plutosdr")
+    win._calibration = FakeCalibration(win.source, Calibration(
+        4.67, 119.8e6, 560.0, "carrier of Essendon ATIS", 58.0))
+    win._poll_calibration()
+    assert win.source.ppm == pytest.approx(4.67) and win._ppm_spin.value() == 4.67
+    assert "+4.67 ppm" in win._status.currentMessage()
+    assert win._cal_button.isEnabled()
+    win.close()
+
+
+def test_a_failed_calibration_says_what_to_do(qapp):
+    win, _, _ = switching_window()
+    win._calibration = FakeCalibration(win.source, error="no clear carrier from ATIS")
+    win._poll_calibration()
+    assert win.source.ppm == 0.0
+    assert "press Cal" in win._status.currentMessage()
+    win.close()
+
+
+def test_only_a_radio_never_calibrated_is_measured_on_connecting(qapp, tmp_path):
+    win, _, _ = switching_window(settings=Settings(tmp_path / "s.json"))
+    calls = []
+    win.calibrate = lambda references=None: calls.append(win.current_device_key())
+    win._calibrate_if_new()
+    win._calibrate_if_new()                               # once a session
+    assert calls == ["airspyhf"]
+    win.switch_device("plutosdr")
+    win._ppm_spin.setValue(4.66)                          # calibrated by hand
+    win._calibrate_if_new()
+    assert calls == ["airspyhf"]
     win.close()
 
 
