@@ -51,7 +51,8 @@ class SdrProfile:
     notes: str = ""
     #: Gains to start from, where the driver's own defaults are measurably poor.
     default_gains: tuple[tuple[str, float], ...] = ()
-    #: Rates the driver takes but does not list, offered as well: DAB's 2.048 MS/s.
+    #: Rates the driver takes but does not list, offered as well: DAB's 2.048 MS/s, and
+    #: 4.096 MS/s, which DAB needs on a radio whose own filter is too wide at 2.048.
     extra_rates: tuple[float, ...] = ()
     #: The transmitter, for radios that have one. Probing wins once the radio is open.
     tx: TxCaps | None = None
@@ -126,7 +127,7 @@ PROFILES: tuple[SdrProfile, ...] = (
         driver="hackrf",
         freq_ranges=(FreqRange(1e6, 6000e6),),
         sample_rates=(10e6, 8e6, 6e6, 4e6, 2e6),
-        extra_rates=(2.048e6,),
+        extra_rates=(2.048e6, 4.096e6),
         default_rate=4e6,
         max_rate=APP_MAX_RATE,
         default_freq=100.0e6,
@@ -178,7 +179,7 @@ PROFILES: tuple[SdrProfile, ...] = (
         driver="plutosdr",
         freq_ranges=(FreqRange(325e6, 3800e6),),
         sample_rates=(6e6, 4e6, 2.5e6, 2e6, 1e6),
-        extra_rates=(2.048e6,),
+        extra_rates=(2.048e6, 4.096e6),
         default_rate=2e6,
         # Measured 2026-10-03 over USB: every sample arrives up to 6 MS/s, then the
         # link tops out near 7.7 MS/s (95% delivered at 8, 78% at 10) with no overflow

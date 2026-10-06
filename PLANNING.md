@@ -1220,7 +1220,40 @@ depunctured (21 x PI_16, 3 x PI_15, tail) and Viterbi-decoded (K=7, 133/171/145/
 64 states, a whole frame's blocks at once: 15 ms per 96 ms frame), energy dispersal
 removed, each FIB's CRC-16 checked; FIG 0/0, 0/1, 0/2 and 1/0, 1/1 read. The phase
 reference's table is not needed (differential). Tested on a synthetic ensemble with
-noise and a 2.3-carrier offset; *on air: pending*.
+noise and a 2.3-carrier offset.
+
+*On air, 2026-10-07 (HackRF):* all three Melbourne ensembles -- DAB+ Melbourne 1 (9A),
+DAB+ Melbourne 2 (9B, 20 stations), ME ABC&SBS RADIO (9C, 19 stations) -- named with
+their stations. Four faults found and fixed there, each measured:
+- **Aliasing:** at 2.048 MS/s the HackRF's analogue filter (1.75 MHz at its narrowest)
+  let the next ensemble, 1.712 MHz away, fold onto this one; 9A and 9B decoded almost
+  nothing. Now sampled at 4.096 MS/s (`extra_rates`) and halved by the receiver's own
+  filter.
+- **Overload:** the HackRF's default gains (LNA 32, VGA 30) clipped 20-30 % of samples;
+  LNA 24 / VGA 22 clipped none. The DAB info line now says OVERLOAD.
+- **Carriers by the LO leak:** the carriers next to the HackRF's LO (+200 kHz) erred
+  20-50 %, always in the same FIC positions, and cost alternate FIBs every frame (the
+  channel's overall bit error rate was only 1.2 %). Channel-state weighting -- each
+  carrier by how well its points sit on the QPSK constellation over the frame (z^4) --
+  took 9B from 78 % of FIBs to 100 %.
+- **Integer frequency offset:** judged from one symbol's power it jumped 6-12 carriers
+  on single frames and lost them; now eight symbols, and held unless a new value
+  repeats. 9B and 9C: every FIB of every frame. 9A: 80 %, a weaker, fading signal (62
+  carriers below half quality, 12 dB spread).
+
+**DAB+ stage 2 (`dsp/dabplus.py`).** EEP profiles from EN 300 401 tables 17-20 -- a test
+checks every profile fills its sub-channel's CUs exactly -- and the puncturing vectors
+copied from table 13 (an evenly-spread rule matched PI 1, 8, 15, 16, 24 only; the FIC
+uses 15 and 16, so stage 1 was unaffected). Time deinterleaving per table 21, energy
+dispersal per logical frame, superframes (TS 102 563): Reed-Solomon (120,110) over
+GF(256) (corrects five bytes, refuses six, never miscorrects -- checked on 700 random
+words), the Fire code finding alignment, AU CRCs. Audio by **FAAD2** (Homebrew,
+ctypes), 960-sample frames, AudioSpecificConfig from the header. *On air (9C):* ABC Jazz
+(88 kbit/s) and triple j (72 kbit/s), HE-AAC 48 kHz stereo: 13 superframes each, no RS
+failure, every AU's CRC good, 1.5 s of audio from 2 s (0.5 s is the interleaving and
+alignment). FAAD2's float output is already normalised; scaled again it gave silence,
+so its 16-bit output is used. The "dab" mode plays the first DAB+ station in about a
+second, 57 % of a core at 4.096 MS/s; the Station list picks another.
 
 **DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
 XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4

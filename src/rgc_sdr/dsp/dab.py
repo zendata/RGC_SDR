@@ -205,8 +205,9 @@ class Ensemble:
     services: dict[int, str] = field(default_factory=dict)
     #: SId -> subchannel id of its primary audio component.
     components: dict[int, int] = field(default_factory=dict)
-    #: subchannel id -> (start address, size in CUs, protection text)
-    subchannels: dict[int, tuple[int, int, str]] = field(default_factory=dict)
+    #: subchannel id -> (start address in CUs, size in CUs, EEP option (0 = A, 1 = B, -1
+    #: for UEP), protection level 1-4, protection text)
+    subchannels: dict[int, tuple[int, int, int, int, str]] = field(default_factory=dict)
     #: SId -> whether its audio is DAB+ (ASCTy 63) rather than DAB (MP2).
     dab_plus: dict[int, bool] = field(default_factory=dict)
 
@@ -248,10 +249,11 @@ def _fig0(body: bytes, e: Ensemble) -> None:
             if d[j + 2] & 0x80:                                     # long form: EEP
                 option, level = d[j + 2] >> 4 & 7, (d[j + 2] >> 2 & 3) + 1
                 size = (d[j + 2] & 3) << 8 | d[j + 3]
-                e.subchannels[sub] = (start, size, f"EEP {level}-{'AB'[option] if option < 2 else '?'}")
+                e.subchannels[sub] = (start, size, option, level,
+                                      f"EEP {level}-{'AB'[option] if option < 2 else '?'}")
                 j += 4
             else:                                                   # short form: UEP
-                e.subchannels[sub] = (start, 0, f"UEP table {d[j + 2] & 63}")
+                e.subchannels[sub] = (start, 0, -1, 0, f"UEP table {d[j + 2] & 63}")
                 j += 3
     elif ext == 2:
         j = 0
@@ -303,9 +305,23 @@ class DabReceiver:
     name = "DAB"
 
     def __init__(self, sample_rate: float, channel: str = "") -> None:
-        if abs(sample_rate - RATE) > 1.0:
-            raise ValueError(f"DAB needs {RATE / 1e6:g} MS/s; this is "
-                             f"{sample_rate / 1e6:g} MS/s")
+        # 2.048 MS/s times a power of two: faster, then halved here through a proper
+        # filter. *Measured:* at 2.048 MS/s the HackRF's analogue filter (1.75 MHz at its
+        # narrowest) lets the next ensemble, 1.712 MHz away, fold onto this one -- 9A
+        # and 9B decoded almost nothing until sampled at 4.096 MS/s.
+        ratio = sample_rate / RATE
+        factor = int(round(ratio))
+        if factor < 1 or abs(ratio - factor) > 1e-6 or factor & (factor - 1):
+            raise ValueError(f"DAB needs {RATE / 1e6:g} MS/s or a power-of-two multiple "
+                             f"(4.096 is best); this is {sample_rate / 1e6:g} MS/s")
+        from .decimate import StreamDecimator
+
+        self._decimator = StreamDecimator(factor) if factor > 1 else None
+        #: How far into the guard interval each FFT starts, in samples.
+        self.backoff = GUARD // 4
+        #: Share of samples at full scale lately: over a few tenths of a percent, the
+        #: radio's gain is too high for this signal.
+        self.clipped = 0.0
         self.channel = channel
         self.ensemble = Ensemble()
         self.frames = 0
@@ -314,10 +330,45 @@ class DabReceiver:
         #: Carrier frequency offset found, in Hz (after the radio's own correction).
         self.offset_hz = 0.0
         self._reported: set = set()
+        #: The station being listened to (DAB+), and its sub-channel decoder.
+        self.service: int | None = None
+        self._audio = None
+        self._pcm: list[np.ndarray] = []
         self.reset()
+
+    def select(self, sid: int | None) -> bool:
+        """Listen to service `sid` (DAB+ only). False if the FIC has not yet said where
+        it is, or it is not DAB+."""
+        from .dabplus import DabPlusAudio, codec_available
+
+        self.service, self._audio = sid, None
+        if sid is None:
+            return True
+        sub = self.ensemble.components.get(sid)
+        layout = self.ensemble.subchannels.get(sub) if sub is not None else None
+        if layout is None or layout[2] < 0 or not self.ensemble.dab_plus.get(sid):
+            return False
+        if not codec_available():
+            return False
+        self._audio = DabPlusAudio(layout[0], layout[1], layout[2], layout[3])
+        return True
+
+    @property
+    def audio(self):
+        """The selected station's sub-channel decoder (rates, error counts), or None."""
+        return self._audio
+
+    def take_audio(self) -> np.ndarray:
+        """Audio decoded since last asked: [n, 2] at `audio.sample_rate`."""
+        if not self._pcm:
+            return np.zeros((0, 2), dtype=np.float32)
+        out, self._pcm = np.concatenate(self._pcm), []
+        return out
 
     def reset(self) -> None:
         self._buf = np.zeros(0, dtype=np.complex64)
+        self._offset: int | None = None
+        self._last_candidate: int | None = None
 
     # -- synchronisation
     def _find_frame(self, x: np.ndarray) -> int | None:
@@ -348,7 +399,15 @@ class DabReceiver:
         return best, phase / (2 * np.pi)                         # offset in carrier units
 
     def process(self, iq: np.ndarray) -> list[DabMessage]:
-        self._buf = np.concatenate([self._buf, np.asarray(iq, dtype=np.complex64)])
+        iq = np.asarray(iq, dtype=np.complex64)
+        if iq.size:
+            # Share of samples at full scale. *Measured:* the HackRF at its default gains
+            # clipped 20-30 % of samples on Melbourne's Band III, and decoded little.
+            clipped = float(np.mean((np.abs(iq.real) > 0.95) | (np.abs(iq.imag) > 0.95)))
+            self.clipped += 0.2 * (clipped - self.clipped)
+        if self._decimator is not None:
+            iq = self._decimator.process(iq).astype(np.complex64)
+        self._buf = np.concatenate([self._buf, iq])
         out: list[DabMessage] = []
         while self._buf.size >= 2 * FRAME + NULL:
             start = self._find_frame(self._buf)
@@ -367,12 +426,23 @@ class DabReceiver:
     def _frame(self, frame: np.ndarray, frac: float) -> list[DabMessage]:
         # FFT each symbol's useful part, starting a little into the guard (a constant
         # phase per carrier, which the differential demodulation cancels).
-        backoff = GUARD // 4
-        starts = NULL + np.arange(FIC_SYMBOLS + 1) * SYMBOL + GUARD - backoff
+        backoff = self.backoff
+        # Every symbol, even for the FIC alone: the carriers' reliability is judged over
+        # the whole frame.
+        count = SYMBOLS
+        starts = NULL + np.arange(count) * SYMBOL + GUARD - backoff
         n = np.arange(frame.size)
-        first = frame[starts[0]:starts[0] + TU] * np.exp(
-            -2j * np.pi * frac * n[starts[0]:starts[0] + TU] / TU)
-        offset = self._integer_offset(np.fft.fft(first))
+        # The whole-carrier offset, from eight symbols' power across the frame and held
+        # unless a new value repeats: *measured*, one symbol's power put single frames 6
+        # or 12 carriers out (and lost them) while the true offset never moved.
+        sample = starts[:: max(1, count // 8)][:8]
+        rotate = np.exp(-2j * np.pi * frac * np.arange(TU) / TU)
+        power = sum(np.abs(np.fft.fft(frame[s:s + TU] * rotate)) ** 2 for s in sample)
+        candidate = self._integer_offset(power)
+        if self._offset is None or candidate == self._last_candidate:
+            self._offset = candidate
+        self._last_candidate = candidate
+        offset = self._offset
         # The whole offset comes out in time, not by moving bins: an offset also turns
         # each carrier's phase from one symbol to the next (2552 samples is not a whole
         # number of its cycles), which would wreck the differential QPSK.
@@ -380,16 +450,33 @@ class DabReceiver:
         spectra = np.fft.fft(np.stack([frame[s:s + TU] for s in starts]), axis=1)
         cells = spectra[:, _BINS]                                   # [symbol, n]
         z = cells[1:] * np.conj(cells[:-1])                         # differential
+        # Channel-state weighting: each carrier by how well its points sit on the QPSK
+        # constellation over the frame (z^4 takes the data out: an ideal point gives -1).
+        # *Measured:* the carriers next to the HackRF's LO leak (+200 kHz) erred 20-50 %,
+        # always in the same FIC positions, and cost alternate FIBs every frame -- the
+        # code corrects scattered errors, not ones that recur in one place.
+        unit = z / (np.abs(z) + 1e-12)
+        quality = np.clip(-np.mean((unit ** 4).real, axis=0), 0.0, 1.0)     # [n]
         scale = np.mean(np.abs(z)) + 1e-12
-        soft = np.concatenate([z.real, z.imag], axis=1) / scale     # [3, 3072]
+        weighted = z * quality / scale
+        soft = np.concatenate([weighted.real, weighted.imag], axis=1)   # [symbols, 3072]
         self.frames += 1
         self.offset_hz = (offset + frac) * RATE / TU
-        return self._fic(soft.ravel())
+        messages = self._fic(soft[:FIC_SYMBOLS].ravel())
+        if self._audio is not None:
+            # The MSC: 72 symbols, four 24 ms CIFs of 55296 bits; the station's
+            # sub-channel is its CUs (64 bits each) in every CIF.
+            cifs = soft[FIC_SYMBOLS:].ravel().reshape(4, 55296)
+            a, b = self._audio.start_cu * 64, (self._audio.start_cu + self._audio.size_cu) * 64
+            pcm = self._audio.push([cif[a:b].astype(np.float32) for cif in cifs])
+            if pcm.size:
+                self._pcm.append(pcm)
+        return messages
 
-    def _integer_offset(self, spectrum: np.ndarray) -> int:
+    def _integer_offset(self, power: np.ndarray) -> int:
         """Whole carriers the ensemble sits off centre: where the 1536 occupied carriers
-        hold the most power."""
-        power = np.abs(spectrum) ** 2
+        hold the most power. (Fooled by the neighbouring ensembles when they had folded
+        in at 2.048 MS/s; sampled at 4.096 and filtered, they are gone.)"""
         best, best_power = 0, -1.0
         for k in range(-20, 21):
             p = power[(_BINS + k) % TU].sum()
@@ -425,7 +512,7 @@ class DabReceiver:
             sub = e.components[sid]
             kind = "DAB+" if e.dab_plus.get(sid) else "DAB"
             layout = e.subchannels.get(sub)
-            extra = f", {layout[1]} CU, {layout[2]}" if layout and layout[1] else ""
+            extra = f", {layout[1]} CU, {layout[4]}" if layout and layout[1] else ""
             out.append(DabMessage(f"{name}  ({kind}, service {sid:04X}, subchannel {sub}{extra})",
                                   e.label, {"sid": sid, "subchannel": sub}))
         return out

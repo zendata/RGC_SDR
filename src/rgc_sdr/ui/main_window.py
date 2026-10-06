@@ -1781,7 +1781,13 @@ class MainWindow(QtWidgets.QMainWindow):
             "Untick for mono, which is quieter on a weak station."
         )
         self._stereo_check.toggled.connect(self._on_stereo_toggled)
+        # DAB: which of the ensemble's stations to hear, filled as the FIC names them.
+        self._dab_combo = QtWidgets.QComboBox()
+        self._dab_combo.setMinimumWidth(160)
+        self._dab_combo.setToolTip("The DAB+ station to listen to, from the ensemble's list")
+        self._dab_combo.activated.connect(self._on_dab_station)
         row.addWidget(self._stereo_check)
+        row.addWidget(self._dab_combo)
 
         row.addWidget(QtWidgets.QLabel("Vol"))
         self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
@@ -2659,8 +2665,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_fm_row()
         self._zerobeat_button.setVisible(mode == "cw")
         self._stereo_check.setVisible(mode == "wbfm")
+        self._dab_combo.setVisible(mode == "dab")
         # Decoding is the app's own, so none for a transceiver: the radio demodulates.
-        show = mode in ("cw", "wbfm") and not self.is_transceiver
+        show = mode in ("cw", "wbfm", "dab") and not self.is_transceiver
         self._info_label.setVisible(show)
         if not show:
             self._info_label.setText("")
@@ -2675,6 +2682,50 @@ class MainWindow(QtWidgets.QMainWindow):
             self._info_label.setText(f"{text}   [{wpm:.0f} wpm]" if text else "")
         elif self.mode == "wbfm":
             self._show_broadcast_info()
+        elif self.mode == "dab":
+            self._show_dab_info()
+
+    def _show_dab_info(self) -> None:
+        """The ensemble, its stations in the Station list, and what is playing."""
+        if self.audio.dab_problem:
+            self._info_label.setText(self.audio.dab_problem)
+            return
+        rx = self.audio.dab
+        if rx is None:
+            return
+        e = rx.ensemble
+        plus = [(sid, name) for sid, name in sorted(e.services.items(), key=lambda s: s[1])
+                if e.dab_plus.get(sid)]
+        combo = self._dab_combo
+        if [combo.itemData(i) for i in range(combo.count())] != [sid for sid, _ in plus]:
+            combo.blockSignals(True)
+            combo.clear()
+            for sid, name in plus:
+                combo.addItem(name, sid)
+            combo.blockSignals(False)
+        if rx.service is not None:
+            index = combo.findData(rx.service)
+            if index >= 0 and index != combo.currentIndex() and not combo.view().isVisible():
+                combo.setCurrentIndex(index)
+        audio = rx.audio
+        if not e.label:
+            text = "looking for the ensemble..."
+        elif audio is None:
+            text = f"{e.label}  \u00b7  choosing a station"
+        else:
+            playing = e.services.get(rx.service, "")
+            text = (f"{e.label}  \u00b7  {playing}  \u00b7  {audio.bitrate} kbit/s"
+                    f"  \u00b7  superframes {audio.superframes}"
+                    + (f", {audio.bad_aus} bad" if audio.bad_aus else ""))
+        if rx.clipped > 0.002:
+            text = f"OVERLOAD ({rx.clipped:.0%} clipped): lower the gain  \u00b7  " + text
+        self._info_label.setText(text)
+
+    def _on_dab_station(self, index: int) -> None:
+        rx = self.audio.dab if self.audio is not None else None
+        sid = self._dab_combo.itemData(index)
+        if rx is not None and sid is not None:
+            rx.select(int(sid))
 
     def _show_broadcast_info(self) -> None:
         """STEREO or MONO, then the RDS station name, programme type and radio text."""

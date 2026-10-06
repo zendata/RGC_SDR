@@ -281,6 +281,15 @@ class AudioSink:
     def rds(self):
         return self._chain.rds if self._chain else None
 
+    @property
+    def dab(self):
+        """The DAB ensemble receiver, in DAB mode."""
+        return self._chain.dab if self._chain else None
+
+    @property
+    def dab_problem(self) -> str:
+        return getattr(self._chain, "dab_problem", "") if self._chain else ""
+
     def set_force_mono(self, mono: bool) -> None:
         self._force_mono = bool(mono)
         with self._lock:

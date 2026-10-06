@@ -143,3 +143,9 @@ def test_the_worker_explains_the_rate_dab_needs():
     from tests.test_decoding import RingSource
 
     assert "2.048 MS/s" in DecodeWorker(RingSource(2e6), "dab").problem
+
+
+def test_overload_is_measured():
+    rx = D.DabReceiver(D.RATE)
+    rx.process(np.full(10000, 1.0 + 1.0j, dtype=np.complex64))
+    assert rx.clipped > 0.1

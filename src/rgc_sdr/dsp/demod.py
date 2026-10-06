@@ -19,7 +19,7 @@ from .decimate import StreamDecimator, lowpass_taps
 from .filters import Fir, bandpass_taps, fir_length_for  # noqa: F401  (re-exported)
 
 #: Modes the UI offers, in the order the roadmap introduces them.
-MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw", "p25")
+MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw", "p25", "dab")
 
 
 #: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
@@ -34,6 +34,8 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "cw": (100.0, 250.0, 500.0, 800.0, 1.5e3),
     # A P25 channel is 12.5 kHz; the voice decoder needs all of it.
     "p25": (12.5e3,),
+    # A DAB ensemble is 1.536 MHz, all of it needed.
+    "dab": (1.536e6,),
 }
 
 #: Beat-note pitches offered for CW, in Hz. Operator preference varies a lot, and a
@@ -98,6 +100,9 @@ MODE_SPECS: dict[str, ModeSpec] = {
     # P25 Phase 1 digital voice (dsp/p25voice.py): the FM discriminator's four-level
     # symbols, decoded to IMBE frames and through mbelib to 8 kHz audio.
     "p25": ModeSpec(bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3),
+    # DAB+ (dsp/dab.py, dsp/dabplus.py): the whole ensemble at 2.048 MS/s, a station's
+    # HE-AAC through FAAD2.
+    "dab": ModeSpec(bandwidth_hz=1.536e6, if_target_hz=2.048e6),
 }
 
 
@@ -379,7 +384,7 @@ class DemodChain:
 
         #: 2 for broadcast FM, which is always delivered as stereo -- duplicated mono when
         #: the station sends no pilot -- so the audio stream never changes shape mid-way.
-        self.channels = 2 if mode == "wbfm" else 1
+        self.channels = 2 if mode in ("wbfm", "dab") else 1
         self._stereo = None
         self._rds = None
         audio_source_rate = self.if_rate
@@ -405,6 +410,21 @@ class DemodChain:
             self.audio_decim = self._pick_factor(audio_source_rate, self.spec.audio_target_hz)
         self._audio_decimator = StreamDecimator(self.audio_decim)
         self.audio_rate = audio_source_rate / self.audio_decim
+        #: DAB: the ensemble receiver, which makes a station's audio itself.
+        self._dab = None
+        self.dab_problem = ""
+        if mode == "dab":
+            from .dab import DabReceiver, RATE as DAB_RATE
+
+            try:
+                # Given the full rate: the receiver halves 4.096 MS/s itself.
+                self._dab = DabReceiver(self.sample_rate)
+            except ValueError as exc:
+                self.dab_problem = str(exc)
+            self.audio_rate = 48000.0
+            self._dab_owed = 0.0
+            self._dab_up = None
+            self.dab_messages: list = []
         #: P25's voice decoder, which makes its own 8 kHz audio from the discriminator.
         self._p25 = None
         if mode == "p25":
@@ -532,9 +552,10 @@ class DemodChain:
         self._mixer.set_offset(self._mix_offset())
 
     def input_for_audio(self, n_audio: int) -> int:
-        """Input IQ samples needed for roughly `n_audio` output samples."""
-        mpx = getattr(self, "mpx_decim", 1)
-        return int(n_audio * self.if_decim * mpx * self.audio_decim)
+        """Input IQ samples needed for roughly `n_audio` output samples: the ratio of the
+        rates, which is the decimation for the demodulators and also holds for P25 and
+        DAB, whose decoders make their audio at a rate of their own."""
+        return int(np.ceil(n_audio * self.sample_rate / self.audio_rate))
 
     def reset(self) -> None:
         """Drop all filter state. Call on retune: the history is a different signal."""
@@ -572,6 +593,8 @@ class DemodChain:
             return np.zeros(0, dtype=np.float32)
 
         shifted = self._mixer.process(iq)
+        if self.mode == "dab":
+            return self._dab_audio(shifted)
         narrow = self._decimator.process(shifted)
         if narrow.size == 0:
             return np.zeros(0, dtype=np.float32)
@@ -652,6 +675,39 @@ class DemodChain:
             audio = self._agc.process(audio)
 
         return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
+
+    def _dab_audio(self, iq: np.ndarray) -> np.ndarray:
+        """The ensemble to the receiver; its station's audio out at 48 kHz stereo, silence
+        filling the gaps (decoding runs half a second behind, and in 120 ms bursts)."""
+        self._dab_owed += iq.size / self.sample_rate * self.audio_rate
+        pcm = np.zeros((0, 2), dtype=np.float32)
+        if self._dab is not None:
+            self.dab_messages += self._dab.process(iq)
+            if self._dab.service is None:
+                # The first DAB+ station the FIC names, so there is something to hear.
+                for sid, plus in self._dab.ensemble.dab_plus.items():
+                    if plus and self._dab.select(sid):
+                        break
+            pcm = self._dab.take_audio()
+            audio = self._dab.audio
+            if pcm.size and audio is not None and audio.sample_rate == 32000.0:
+                if self._dab_up is None:
+                    from .modulate import Interpolator
+
+                    self._dab_up = [(Interpolator(3), StreamDecimator(2)) for _ in range(2)]
+                pcm = np.column_stack([
+                    dec.process(up.process(pcm[:, c].astype(np.float64)))
+                    for c, (up, dec) in enumerate(self._dab_up)])
+        if pcm.shape[0] == 0 and self._dab_owed > 0:
+            fill = int(self._dab_owed)
+            pcm = np.zeros((fill, 2), dtype=np.float32)
+        self._dab_owed = max(self._dab_owed - pcm.shape[0], -48000.0)
+        return np.clip(pcm * self.volume, -1.0, 1.0).astype(np.float32)
+
+    @property
+    def dab(self):
+        """The DAB ensemble receiver (stations, `select`), in DAB mode."""
+        return self._dab
 
     def _broadcast_fm(self, channel: np.ndarray) -> np.ndarray:
         """Discriminate, split the multiplex into left and right, and read the RDS."""
