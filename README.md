@@ -412,6 +412,12 @@ modulation judged from the signal's shape -- WBFM (stereo, and RDS when its bloc
 decode), NBFM, FSK data, AM, USB, LSB, CW or a plain carrier -- marked with a **?**.
 Nothing decoded is shown, pager text least of all.
 
+**Classify** (beside **?**) does the same for everything strong on screen, wherever the
+radio is tuned: it names up to five signals across the span the waterfall shows, skips
+any it cannot identify, and gives a trunked system's channels one label (P25 by NAC,
+DMR by colour code), its other channels marked in the same colour. Labels snap to the
+channel grid; each appears as soon as it is found.
+
 Choosing AIS, ACARS or ADS-B opens a **map** in its own window (or press **Map** in the Decode panel):
 ships as arrows pointing where they are heading, with short trails; navigation marks as
 yellow diamonds and shore stations as blue squares; a sortable list beside it. Drag to

@@ -2356,15 +2356,62 @@ def test_the_question_button_labels_the_waterfall(qapp):
     win, _, _ = switching_window()
     button = win._classify_button
     assert button.text() == "?" and "background" in button.styleSheet()
+    c = win.source.center_freq
     win._classify_job = FakeClassifyJob(
-        {"freq_hz": 145.175e6, "label": "AX.25 packet", "detail": "APRS", "certain": True},
-        win.source.center_freq)
+        {"freq_hz": c, "label": "AX.25 packet", "detail": "APRS", "certain": True}, c)
     win._poll_classify()
     assert win.waterfall.label is not None
-    assert "145.1750 MHz  AX.25 packet (APRS)" in win.waterfall.label.textItem.toPlainText()
-    assert win.waterfall.label.pos().x() == pytest.approx(145.175e6)
-    win._retune(win.source.center_freq + 1e6)             # what it named is gone
+    text = win.waterfall.label.textItem.toPlainText()
+    assert text.startswith("\u25bc") and "MHz  AX.25 packet (APRS)" in text
+    # The label starts a few pixels left, so its arrow sits on the signal.
+    (lo, hi), _ = win.waterfall.getViewBox().viewRange()
+    assert 0 <= c - win.waterfall.label.pos().x() < 0.02 * (hi - lo)
+    win._retune(c + 1e6)                                  # what it named is gone
     assert win.waterfall.label is None
+    win.close()
+
+
+def test_a_label_near_the_right_edge_reads_leftwards(qapp):
+    win, _, _ = switching_window()
+    (lo, hi), _ = win.waterfall.getViewBox().viewRange()
+    win.waterfall.show_label(hi - 0.01 * (hi - lo), "123.4567 MHz  NBFM?")
+    text = win.waterfall.label.textItem.toPlainText()
+    assert text.endswith("\u25bc") and win.waterfall.label.pos().x() <= hi
+    win.close()
+
+
+class FakeSweepJob:
+    def __init__(self, results, centre):
+        import threading
+        self.results, self.centre_hz, self.error = results, centre, ""
+        self.done, self.cancelled = True, False
+
+    def cancel(self):
+        self.cancelled = True
+
+    def labels(self):
+        from src.rgc_sdr.sweep import merge
+        return merge(self.results)
+
+
+def test_classify_labels_every_signal_with_systems_merged(qapp):
+    from src.rgc_sdr.classify import Classification
+    win, _, _ = switching_window()
+    assert win._sweep_button.text() == "Classify"
+    c = win.source.center_freq
+    win._sweep_job = FakeSweepJob([
+        Classification(c + 100e3, "P25", "NAC 161", certain=True, system="P25 NAC 161"),
+        Classification(c - 50e3, "NBFM", "about +/-2.5 kHz deviation"),
+        Classification(c + 150e3, "P25", "NAC 161", certain=True, system="P25 NAC 161"),
+    ], c)
+    win._poll_sweep()
+    texts = [item.textItem.toPlainText() for item, _, _ in win.waterfall.labels]
+    assert len(texts) == 3                                # two labels and a marker
+    assert any("P25 (NAC 161)  +1 channel" in s for s in texts)
+    assert texts.count("\u25bc") == 1
+    assert "P25" in win._status.currentMessage() and win._sweep_button.isEnabled()
+    win._retune(c + 2e6)
+    assert win.waterfall.labels == []
     win.close()
 
 

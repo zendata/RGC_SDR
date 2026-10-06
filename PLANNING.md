@@ -1205,6 +1205,25 @@ standard (channel number over slots per carrier). Live, 30 s each: a P25 control
 channel gave 397 frames and 162 distinct messages, a DMR repeater 426 bursts, none
 rejected; about 1 % of a core each.
 
+**Classify the whole screen (VK3RQ, 2026-10-06: a "Classify" button, unknowns skipped,
+trunked channels merged with colour coding).** `sweep.py`: one capture of the span (2 s
+at 6 MS/s); candidates from the 50 ms max-hold spectrum, 20 dB over the floor, inside
+the visible span, clear of the edges and the DC spike, at least a channel (12.5 kHz)
+apart -- a synthetic P25 signal's spectral nulls otherwise split it in two; then one FFT
+of the capture serves as the channeliser: each candidate is its bins transformed back
+(250 kHz, 500 kHz for broadcast width), where mixing and decimating 12 M samples per
+candidate cost seconds each. `classify()` runs on each, strongest first, until five
+labels; "Unknown" and USB/LSB are skipped (which side of a carrier needs the tuned
+frequency; measured from the occupied band, noise passed for LSB). P25 by NAC and DMR by
+colour code merge into one label with coloured markers on the other channels. Labels
+snap to 100 kHz (broadcast FM), 25/8.33 kHz (airband) or 6.25 kHz grids when within
+1.5 kHz. ADS-B is decoded from the raw capture when 1090 MHz is on screen. *On air
+(HackRF, 6 MS/s):* 421 MHz -- the P25 network (NAC 161) as one label over three
+channels, a DMR and an NBFM signal, 4.4 s; 466 MHz -- three DMR systems (CC 2, CC 9 and
+one voice-only) and two NBFM, 3.3 s; 100 MHz -- five stations, stereo, with their RDS
+names. Labels are anchored by their arrow (centred, a long one pointed 0.7 MHz astray)
+and read leftwards near the right edge.
+
 **P25 packet data and content (VK3RQ, 2026-10-06: "every protocol that can show text
 to show text", then "show content", "and the location on the map").** Pager text is now
 shown by default ("Show text" hides it). P25 packet data (DUID C): the header is coded

@@ -58,6 +58,9 @@ class Classification:
     #: True when an error-checked decode identified it; False for a judgement from
     #: features of the signal.
     certain: bool = False
+    #: The network a trunked channel belongs to ("P25 NAC 161", "DMR CC 12"), so a
+    #: sweep can merge a site's channels into one label; "" for anything else.
+    system: str = ""
 
     def text(self) -> str:
         detail = f" ({self.detail})" if self.detail else ""
@@ -176,7 +179,8 @@ def _decode(iq, rate, centre_hz, offset_hz) -> Classification | None:
         control = any(m.kind == "TSBK" for m in got["p25"])
         detail = ", ".join(([f"NAC {', '.join(nacs)}"] if nacs else [])
                            + (["control channel"] if control else []))
-        return Classification(freq, "P25", detail, certain=True)
+        system = f"P25 NAC {nacs[0]}" if len(nacs) == 1 else ""
+        return Classification(freq, "P25", detail, certain=True, system=system)
     if dmr.bursts >= 3:
         codes = sorted({m.colour_code for m in got["dmr"] if m.colour_code is not None})
         # A preamble CSBK only announces data; other control blocks mean a control
@@ -186,7 +190,8 @@ def _decode(iq, rate, centre_hz, offset_hz) -> Classification | None:
                       for m in got["dmr"])
         detail = ", ".join(([f"CC {', '.join(map(str, codes))}"] if codes else [])
                            + (["control channel"] if control else []))
-        return Classification(freq, "DMR", detail, certain=True)
+        system = f"DMR CC {codes[0]}" if len(codes) == 1 else ""
+        return Classification(freq, "DMR", detail, certain=True, system=system)
     batches = {f.baud: f.batches for f in pocsag._framers if f.batches}
     if batches:
         baud = max(batches, key=batches.get)

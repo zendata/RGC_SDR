@@ -559,7 +559,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Hide what only an IQ radio can do; the rest works on a transceiver as is."""
         sdr = not self.is_transceiver
         for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
-                       self._scan_button, self._decode_button, self._classify_button):
+                       self._scan_button, self._decode_button, self._classify_button,
+                       self._sweep_button):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
@@ -1217,6 +1218,65 @@ class MainWindow(QtWidgets.QMainWindow):
             "classify it...", int(CAPTURE_S * 1000) + 2000)
         QtCore.QTimer.singleShot(100, self._poll_classify)
 
+    def classify_all(self) -> None:
+        """Sweep the span the waterfall shows and label what is there (`sweep.py`), as
+        each signal is identified."""
+        from ..sweep import SweepJob
+
+        if self.is_transceiver or getattr(self, "_sweep_job", None) is not None:
+            return
+        (lo, hi), _ = self.waterfall.getViewBox().viewRange()
+        half = self.source.sample_rate / 2
+        lo = max(lo, self.source.center_freq - half)
+        hi = min(hi, self.source.center_freq + half)
+        self.waterfall.clear_label()
+        self._sweep_shown = 0
+        self._sweep_job = SweepJob(self.source, lo, hi)
+        self._sweep_button.setEnabled(False)
+        self._sweep_button.setText("Classifying\u2026")
+        self._status.showMessage(
+            f"classifying {lo / 1e6:.3f}-{hi / 1e6:.3f} MHz...", 10000)
+        QtCore.QTimer.singleShot(200, self._poll_sweep)
+
+    def _cancel_sweep(self) -> None:
+        job = getattr(self, "_sweep_job", None)
+        if job is not None:
+            job.cancel()
+
+    def _show_sweep(self, job) -> None:
+        labels = job.labels()
+        self.waterfall.clear_label()
+        for label in labels:
+            self.waterfall.add_label(label.freq_hz, label.text, label.colour)
+            for freq in label.others:
+                self.waterfall.add_label(freq, "", label.colour, marker=True)
+        self._sweep_shown = len(job.results)
+
+    def _poll_sweep(self) -> None:
+        job = getattr(self, "_sweep_job", None)
+        if job is None:
+            return
+        stale = job.cancelled or job.centre_hz != self.source.center_freq
+        if not stale and len(job.results) != getattr(self, "_sweep_shown", 0):
+            self._show_sweep(job)                     # as each one is found
+        if not job.done:
+            QtCore.QTimer.singleShot(200, self._poll_sweep)
+            return
+        self._sweep_job = None
+        self._sweep_button.setEnabled(True)
+        self._sweep_button.setText("Classify")
+        if stale:
+            return
+        self._show_sweep(job)
+        labels = job.labels()
+        if job.error:
+            self._status.showMessage(f"could not classify: {job.error}", 8000)
+        elif not labels:
+            self._status.showMessage("no strong signal on screen that could be identified",
+                                     8000)
+        else:
+            self._status.showMessage("  |  ".join(label.text for label in labels), 20000)
+
     def _cancel_classify(self) -> None:
         job = getattr(self, "_classify_job", None)
         if job is not None:
@@ -1821,6 +1881,15 @@ class MainWindow(QtWidgets.QMainWindow):
             "QPushButton:disabled { background: #776f3a; color: #333; }")
         self._classify_button.clicked.connect(self.classify_signal)
         row.addWidget(self._classify_button)
+        # Everything strong on screen, wherever the radio is tuned (VK3RQ, 2026-10-06).
+        self._sweep_button = QtWidgets.QPushButton("Classify")
+        self._sweep_button.setToolTip(
+            "Name up to five strong signals across what the waterfall shows, wherever\n"
+            "the radio is tuned. Unidentified ones are skipped; a trunked system's\n"
+            "channels share one label, its other channels marked in the same colour.")
+        self._sweep_button.setStyleSheet(self._classify_button.styleSheet())
+        self._sweep_button.clicked.connect(self.classify_all)
+        row.addWidget(self._sweep_button)
 
         row.addSpacing(8)
 
@@ -2405,6 +2474,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.waterfall.clear_history()
             self.waterfall.clear_label()          # it named what was here before
             self._cancel_classify()
+            self._cancel_sweep()
             self._cancel_calibration()
             if self.audio is not None:
                 self.audio.reset()

@@ -7,7 +7,7 @@ stays testable without Qt.
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 
 from ..dsp.waterfall import WaterfallBuffer
 
@@ -52,8 +52,9 @@ class WaterfallView(pg.PlotWidget):
         self.showGrid(x=True, y=False, alpha=0.2)
         self.setMenuEnabled(False)
         self.scene().sigMouseClicked.connect(self._on_click)
-        #: Text placed on the waterfall at a frequency (a classified signal), or None.
-        self.label: pg.TextItem | None = None
+        #: Text placed on the waterfall at frequencies (classified signals), with the
+        #: frequency span each covers, for stacking them clear of each other.
+        self.labels: list[tuple[pg.TextItem, float, float]] = []
 
     def _on_click(self, event) -> None:
         """Click-to-tune. pyqtgraph only raises this for a click without a drag, so it
@@ -67,19 +68,59 @@ class WaterfallView(pg.PlotWidget):
         event.accept()
 
 
+    @property
+    def label(self) -> pg.TextItem | None:
+        """The first label, for a single classification."""
+        return self.labels[0][0] if self.labels else None
+
     def show_label(self, freq_hz: float, text: str) -> None:
         """Put `text` at the top of the waterfall over `freq_hz`, replacing any other."""
         self.clear_label()
-        self.label = pg.TextItem(f"\u25bc {text}", color="#000000", anchor=(0.5, 0.0),
-                                 fill=pg.mkBrush(255, 228, 92, 220))
-        self.label.setPos(float(freq_hz), 0.0)
-        self.label.setZValue(10)
-        self.addItem(self.label)
+        self.add_label(freq_hz, text)
+
+    def add_label(self, freq_hz: float, text: str, colour: str = "#FFE45C",
+                  marker: bool = False) -> pg.TextItem:
+        """Another label over `freq_hz`, in `colour`; or, with `marker`, just a pointer
+        in that colour (another channel of a system labelled elsewhere). A label that
+        would overlap one already there goes a line further down."""
+        q = QtGui.QColor(colour)
+        (lo, hi), _ = self.getViewBox().viewRange()
+        hz_per_pixel = (hi - lo) / max(1.0, float(self.getViewBox().width()))
+        width = ((len(text) + 2) * 7.0 + 8.0) * hz_per_pixel if not marker else 14 * hz_per_pixel
+        nudge = 0.5 * width if marker else 6.0 * hz_per_pixel   # the arrow's own offset
+        # Anchored by the pointer, not the middle: the arrow must sit over the signal
+        # (centred, a long label's arrow pointed 0.7 MHz to its left). Near the right
+        # edge it reads leftwards from the arrow, so it is not cut off.
+        leftwards = not marker and freq_hz - nudge + width > hi
+        if marker:
+            shown, anchor, start = "\u25bc", (0.5, 0.0), freq_hz - nudge
+        elif leftwards:
+            shown, anchor, start = f"{text} \u25bc", (1.0, 0.0), freq_hz + nudge - width
+        else:
+            shown, anchor, start = f"\u25bc {text}", (0.0, 0.0), freq_hz - nudge
+        item = pg.TextItem(shown, color="#000000", anchor=anchor,
+                           fill=pg.mkBrush(q.red(), q.green(), q.blue(), 220))
+        row = 0
+        while any(r == row and not (start + width < a or start > b)
+                  for _, a, b, r in self._label_rows()):
+            row += 1
+        line = 18.0 * self._history_s / max(1.0, float(self.getViewBox().height()))
+        x = freq_hz if marker else (freq_hz + nudge if leftwards else freq_hz - nudge)
+        item.setPos(float(x), row * line)
+        item.setZValue(10)
+        item._row = row
+        self.addItem(item)
+        self.labels.append((item, start, start + width))
+        return item
+
+    def _label_rows(self):
+        return [(item, a, b, getattr(item, "_row", 0)) for item, a, b in self.labels]
 
     def clear_label(self) -> None:
-        if self.label is not None:
-            self.removeItem(self.label)
-            self.label = None
+        """Take every label off."""
+        for item, _, _ in self.labels:
+            self.removeItem(item)
+        self.labels = []
 
     def set_colormap(self, name: str) -> None:
         self._img.setColorMap(pg.colormap.get(name))
