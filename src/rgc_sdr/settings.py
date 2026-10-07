@@ -189,6 +189,45 @@ class Memory:
     snapshot: Snapshot = field(default_factory=Snapshot)
     #: Per radio type: how this station was set up on that radio.
     radios: dict[str, RadioSettings] = field(default_factory=dict)
+    #: The memory group it is filed under ("" until placed: see `default_group`).
+    group: str = ""
+
+
+#: The memory groups to start with (VK3RQ, 2026-10-07), in this order.
+DEFAULT_GROUPS = ("LW", "AM broadcast", "FM broadcast", "HF", "VHF", "UHF", "Airband",
+                  "Satellites", "Air Nav/Data", "P25", "DMR", "DAB+")
+
+
+def default_group(snapshot: Snapshot) -> str:
+    """Where a memory belongs, from its mode, decoder and frequency: the kind of signal
+    first (a P25 control channel is P25 whatever its band), then the band."""
+    f, mode, decoder = snapshot.freq_hz, snapshot.mode, snapshot.decoder
+    if mode == "dab":
+        return "DAB+"
+    if mode == "p25" or decoder == "p25":
+        return "P25"
+    if decoder == "dmr":
+        return "DMR"
+    if decoder in ("acars", "adsb"):
+        return "Air Nav/Data"
+    if f < 300e3:
+        return "LW"
+    if f < 1.7e6:
+        return "AM broadcast"
+    if f < 30e6:
+        return "HF"
+    if 87.5e6 <= f <= 108e6 and mode in ("wbfm", "off"):
+        return "FM broadcast"
+    if 108e6 <= f < 118e6:
+        return "Air Nav/Data"                 # VOR and ILS
+    if 118e6 <= f < 137e6:
+        return "Airband"
+    # Weather satellites at 137 MHz; the amateur satellite sub-bands on 2 m and 70 cm.
+    if 137e6 <= f < 138e6 or 145.8e6 <= f < 146e6 or 435e6 <= f < 438e6:
+        return "Satellites"
+    if f < 300e6:
+        return "VHF"
+    return "UHF"
 
 
 @dataclass
@@ -277,6 +316,11 @@ class Settings:
         #: Channels the scanner must skip on later passes.
         self.lockout: set[float] = set()
         self.scan = ScanSettings()
+        #: Memory groups, in display order (`DEFAULT_GROUPS` to start).
+        self.memory_groups: list[str] = list(DEFAULT_GROUPS)
+        #: Which panels the tab row had open (settings, decode, classify, memory, map,
+        #: scan).
+        self.open_panels: list[str] = ["settings"]
         #: The radio last used, by profile key.
         self.device: str | None = None
         #: The radio last chosen from the list: first choice wherever it reaches.
@@ -310,8 +354,18 @@ class Settings:
                         radios = _radios_from(entry["radios"])
                     else:
                         radios = {LEGACY_RADIO: RadioSettings.from_snapshot(snap)}
-                    settings.memories.append(Memory(str(entry["name"]).strip(), snap, radios))
+                    group = str(entry.get("group", "")).strip() or default_group(snap)
+                    settings.memories.append(Memory(str(entry["name"]).strip(), snap, radios,
+                                                    group))
             settings._sort()
+        panels = raw.get("open_panels")
+        if isinstance(panels, list):
+            settings.open_panels = [str(p) for p in panels]
+        groups = raw.get("memory_groups")
+        if isinstance(groups, list):
+            settings.memory_groups = [str(g) for g in groups if str(g).strip()]
+        for memory in settings.memories:                 # a group a memory names is kept
+            settings._ensure_group(memory.group)
 
         entries = raw.get("found")
         if isinstance(entries, list):
@@ -357,9 +411,11 @@ class Settings:
             "last": self.last.to_dict() if self.last is not None else None,
             "memories": [
                 {"name": m.name, "snapshot": m.snapshot.to_dict(),
-                 "radios": {k: r.to_dict() for k, r in m.radios.items()}}
+                 "radios": {k: r.to_dict() for k, r in m.radios.items()}, "group": m.group}
                 for m in self.memories
             ],
+            "memory_groups": list(self.memory_groups),
+            "open_panels": list(self.open_panels),
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),
@@ -420,9 +476,61 @@ class Settings:
             self._sort()
             return True
         radios = {radio_key: radio} if radio_key and radio is not None else {}
-        self.memories.append(Memory(clean, snapshot, radios))
+        group = default_group(snapshot)
+        self.memories.append(Memory(clean, snapshot, radios, group))
+        self._ensure_group(group)
         self._sort()
         return False
+
+    # -- memory groups -----------------------------------------------------
+
+    def _ensure_group(self, group: str) -> None:
+        if group and group not in self.memory_groups:
+            self.memory_groups.append(group)
+
+    def memories_in(self, group: str) -> list[Memory]:
+        return [m for m in self.memories if m.group == group]
+
+    def move_memory(self, name: str, group: str) -> bool:
+        """File memory `name` under `group` (made if new). False if no such memory."""
+        memory = self.get_memory(name)
+        if memory is None or not group.strip():
+            return False
+        memory.group = group.strip()
+        self._ensure_group(memory.group)
+        return True
+
+    def add_group(self, group: str) -> bool:
+        clean = group.strip()
+        if not clean or clean in self.memory_groups:
+            return False
+        self.memory_groups.append(clean)
+        return True
+
+    def rename_group(self, old: str, new: str) -> bool:
+        clean = new.strip()
+        if old not in self.memory_groups or not clean or clean in self.memory_groups:
+            return False
+        self.memory_groups[self.memory_groups.index(old)] = clean
+        for memory in self.memories:
+            if memory.group == old:
+                memory.group = clean
+        return True
+
+    def remove_group(self, group: str) -> bool:
+        """Drop an empty group. False if it holds memories, or does not exist."""
+        if group not in self.memory_groups or self.memories_in(group):
+            return False
+        self.memory_groups.remove(group)
+        return True
+
+    def rename_memory(self, old: str, new: str) -> bool:
+        memory, clean = self.get_memory(old), new.strip()
+        if memory is None or not clean or (self.get_memory(clean) not in (None, memory)):
+            return False
+        memory.name = clean
+        self._sort()
+        return True
 
     def remove_memory(self, name: str) -> bool:
         existing = self.get_memory(name)

@@ -1277,6 +1277,21 @@ default 4 MS/s it stayed silent, the reason only on the info line, which was off
 screen -- choosing DAB now switches to 4.096 MS/s (or 2.048) itself. Checked in the
 real window with the HackRF: the memory and the hand-made route both play.
 
+**The tab row and memory groups (VK3RQ, 2026-10-07).** A row of coloured toggle tabs
+(Settings, Decode, Classify, Memory, Map, Scan) and the frequency replace the old top
+line and the two docks; each tab shows its panel in a vertical splitter above the
+spectrum and waterfall, which always remain, and several may be open. Open tabs are
+saved (`open_panels`). The map is the same widget, embedded (`MapWindow(embedded=True)`);
+it is refreshed when its tab is open, not when "visible", which an embedded panel is only
+while the window is shown. Memories gained groups (`Memory.group`, `memory_groups`):
+DEFAULT_GROUPS to start, each existing memory placed by `default_group` -- the kind of
+signal first (DAB+, P25, DMR, ACARS/ADS-B to Air Nav/Data), then the band (LW < 300 kHz,
+AM broadcast < 1.7 MHz, HF < 30 MHz, FM broadcast 87.5-108 in WBFM, Air Nav/Data 108-118
+(VOR/ILS), Airband 118-137, Satellites 137-138 and the 2 m/70 cm satellite sub-bands,
+VHF < 300 MHz, UHF above). `ui/memory_panel.py`: a tree, groups as coloured headings;
+drops land on a group (the tree is rebuilt from the settings, Qt never moves items
+itself). The memory combo, Save and Delete left the Settings rows.
+
 **DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
 XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4
 trellis exactly** (same points, same interleave); each block's CRC-9 runs over the data

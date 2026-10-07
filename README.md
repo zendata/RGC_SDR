@@ -119,6 +119,25 @@ the Desktop (made by `./tools/make_app.sh` with the other) always opens the 705 
 WiFi, asking for the address and login if it cannot connect. Only one
 program can be connected to the radio at a time.
 
+### The tab row
+
+Across the top: coloured tabs -- **Settings**, **Decode**, **Classify**, **Memory**,
+**Map**, **Scan** -- and the frequency. Each tab shows or hides its panel above the
+spectrum and waterfall, which always stay; several can be open at once, the splitters
+between them drag, and the app remembers which were open. **Settings** holds the radio,
+tuning, display, audio and recording controls; **Classify** the **?** and **Classify**
+buttons and a list of what they found (double-click to tune there); **Map** the map
+that used to open in its own window.
+
+### Memories
+
+The **Memory** tab lists memories in groups -- LW, AM broadcast, FM broadcast, HF, VHF,
+UHF, Airband, Satellites, Air Nav/Data, P25, DMR, DAB+ to start, each memory placed by
+its mode, decoder and frequency. Drag memories onto a group (or any memory in it) to
+move them; double-click (or **Recall**) to tune; **Save current...** stores what the
+radio is doing now, in the selected group; **Rename...**, **Delete** and **New group...**
+do what they say (a group is deleted only when empty).
+
 ### Choosing the radio
 
 The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy

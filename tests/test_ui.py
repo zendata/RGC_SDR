@@ -532,24 +532,59 @@ def test_saving_the_same_name_replaces_it(qapp, tmp_path):
     win.close()
 
 
-def test_delete_memory_updates_the_combo(qapp, tmp_path):
+def _memory_names(win):
+    tree = win.memory_panel.tree
+    return [tree.topLevelItem(g).child(i).text(0) for g in range(tree.topLevelItemCount())
+            for i in range(tree.topLevelItem(g).childCount())]
+
+
+def test_delete_memory_updates_the_memory_page(qapp, tmp_path):
     win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
     win.save_memory("a")
     win.save_memory("b")
-    assert win._memory_combo.count() == 3        # placeholder + two
+    assert _memory_names(win) == ["a", "b"]
     assert win.delete_memory("a") is True
-    assert win._memory_combo.count() == 2
+    assert _memory_names(win) == ["b"]
     assert win.delete_memory("a") is False
     win.close()
 
 
 def test_memory_controls_disabled_when_there_are_none(qapp, tmp_path):
     win = MainWindow(StubSource(_caps()), fft_size=1024, settings=Settings(tmp_path / "s.json"))
-    assert not win._memory_combo.isEnabled()
-    assert not win._delete_button.isEnabled()
+    panel = win.memory_panel
+    assert not panel.recall_button.isEnabled() and not panel.delete_button.isEnabled()
     win.save_memory("one")
-    assert win._memory_combo.isEnabled()
-    assert win._delete_button.isEnabled()
+    assert panel.recall_button.isEnabled() and panel.delete_button.isEnabled()
+    win.close()
+
+
+def test_memories_sit_in_groups_and_move_between_them(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    tree = win.memory_panel.tree
+    groups = [tree.topLevelItem(i).data(0, QtCore.Qt.ItemDataRole.UserRole + 1)
+              for i in range(tree.topLevelItemCount())]
+    assert groups == ["LW", "AM broadcast", "FM broadcast", "HF", "VHF", "UHF", "Airband",
+                      "Satellites", "Air Nav/Data", "P25", "DMR", "DAB+"]
+    win.save_memory("forty")                              # 7.1 MHz: HF
+    assert settings.get_memory("forty").group == "HF"
+    win.save_memory("into UHF", "UHF")                    # saved into a chosen group
+    assert settings.get_memory("into UHF").group == "UHF"
+    win.memory_panel.move(["forty"], "Satellites")        # what a drop does
+    assert settings.get_memory("forty").group == "Satellites"
+    assert Settings.load(tmp_path / "s.json").get_memory("forty").group == "Satellites"
+    win.close()
+
+
+def test_a_drop_on_a_group_moves_the_dragged_memories(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win.save_memory("one")
+    tree = win.memory_panel.tree
+    moved = []
+    tree.dropped.connect(lambda names, group: moved.append((names, group)))
+    tree.dropped.emit(["one"], "VHF")                     # as dropEvent would
+    assert moved == [(["one"], "VHF")] and settings.get_memory("one").group == "VHF"
     win.close()
 
 
@@ -2728,17 +2763,31 @@ def test_info_line_sits_beside_peak_hold(qapp):
     win.close()
 
 
-def test_scan_button_sits_right_of_zoom_and_shows_the_scanner(qapp):
+def test_the_tab_row_toggles_its_panels(qapp):
     win = window_for(StubSource(_caps()), fft_size=1024)
-    row = win._zoom_combo.parentWidget().layout()
-    widgets = [row.itemAt(i).widget() for i in range(row.count())]
-    assert widgets.index(win._scan_button) == widgets.index(win._zoom_combo) + 1
+    labels = [win._tabs[k].text() for k, *_ in win.TABS]
+    assert labels == ["Settings", "Decode", "Classify", "Memory", "Map", "Scan"]
+    assert win._tabs["settings"].isChecked() and not win._settings_panel.isHidden()
     assert win._scanner_dock.isHidden() and not win._scan_button.isChecked()
     win._scan_button.click()
     assert not win._scanner_dock.isHidden()
-    win._scanner_dock.close()                     # the dock's own close box
-    assert not win._scan_button.isChecked()
+    win._tabs["memory"].click()                           # more than one open at once
+    assert not win.memory_panel.isHidden() and not win._scanner_dock.isHidden()
+    win._scan_button.click()
+    assert win._scanner_dock.isHidden()
+    win._tabs["settings"].click()
+    assert win._settings_panel.isHidden()                 # the waterfall stays
+    assert not win.waterfall.isHidden() and not win._freq_spin.isHidden()
     win.close()
+
+
+def test_open_tabs_are_remembered(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win._tabs["memory"].click()
+    win._tabs["settings"].click()
+    win.close()
+    assert Settings.load(tmp_path / "s.json").open_panels == ["memory"]
 
 
 def test_memory_keeps_bandwidth_snap_zoom_rate_step_and_squelch(qapp, tmp_path):
@@ -4416,7 +4465,7 @@ def test_choosing_ais_opens_the_map_and_ships_appear(qapp):
     caps = _caps(freq_ranges=(FreqRange(60e6, 260e6),))
     win = window_for(StubSource(caps, center=162e6))
     _choose_decoder(win, "ais")
-    assert win.map_window is not None and win.map_window.isVisible()
+    assert win._map_button.isChecked() and not win.map_window.isHidden()
     assert win.map_window.map.tiles.offline               # never the network in tests
     msgs = [AisMessage(1, 503000000 + i, {"position": (-37.8 - i / 100, 144.9), "sog": 1.0,
                                           "cog": 90.0, "heading": 90}, [], "A")
@@ -4451,7 +4500,7 @@ def test_map_zoom_keeps_the_point_under_the_pointer(qapp):
 def test_map_button_reopens_the_map(qapp):
     win = window_for(StubSource(_caps()))
     win.decoder_panel.map_button.click()
-    assert win.map_window.isVisible()
+    assert win._map_button.isChecked() and not win.map_window.isHidden()
     win.map_window.close()
 
 
@@ -4460,7 +4509,7 @@ def test_acars_listens_in_am_and_opens_the_map(qapp):
     win = window_for(StubSource(caps, center=131.55e6))
     _choose_decoder(win, "acars")
     assert win.decode_worker._chain.mode == "am"
-    assert win.map_window is not None and win.map_window.isVisible()
+    assert win._map_button.isChecked() and not win.map_window.isHidden()
     win._stop_decoder()
 
 
@@ -4508,17 +4557,16 @@ def test_decode_panel_runs_across_the_top(qapp):
     win.show()
     win._decode_button.setChecked(True)
     qapp.processEvents()
-    assert win.dockWidgetArea(win._decoder_dock) == QtCore.Qt.DockWidgetArea.TopDockWidgetArea
-    screen = win.screen().availableGeometry().height()
-    assert win._decoder_dock.height() >= min(140, screen // 5) - 10
+    assert win._decoder_dock.parentWidget() is win._panel_splitter     # full width, above
+    assert win._decoder_dock.height() >= 100
     status = win.decoder_panel.status
     assert status.parentWidget() is win.decoder_panel             # on the controls line
 
 
-def test_map_button_is_first_on_the_top_line(qapp):
+def test_map_is_a_tab_on_the_top_line(qapp):
     win = window_for(StubSource(_caps()))
     row = win._map_button.parentWidget().layout()
-    assert row.itemAt(0).widget() is win._map_button
+    assert win._map_button is win._tabs["map"] and row.indexOf(win._map_button) >= 0
     win._map_button.click()
-    assert win.map_window is not None and win.map_window.isVisible()
+    assert win._map_button.isChecked() and not win.map_window.isHidden()
     win.map_window.close()

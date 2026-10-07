@@ -288,7 +288,12 @@ class MainWindow(QtWidgets.QMainWindow):
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(6, 6, 6, 6)
-        layout.addWidget(self._build_controls(), 0)
+        # The tab row (VK3RQ, 2026-10-07): coloured toggles for the panels above the
+        # spectrum and waterfall, which always stay; the frequency is on it, so it can be
+        # read and set whatever is open.
+        self._make_tabs()
+        self._settings_panel = self._build_controls()
+        layout.addWidget(self._build_tab_row(), 0)
         # A transceiver's own display and function keys, rebuilt from its CI-V state.
         # Hidden for the SDRs.
         self._radio_panel = QtWidgets.QWidget()
@@ -303,12 +308,21 @@ class MainWindow(QtWidgets.QMainWindow):
         panel.addWidget(self.function_panel)
         self._radio_panel.hide()
         layout.addWidget(self._radio_panel, 0)
+        # The panels, stacked and resizable, above the spectrum and waterfall.
+        self._panel_splitter = QtWidgets.QSplitter(QtCore.Qt.Orientation.Vertical)
+        self._panel_splitter.setChildrenCollapsible(False)
+        splitter.insertWidget(0, self._panel_splitter)
+        self._main_splitter = splitter
         layout.addWidget(splitter, 1)
         self.setCentralWidget(central)
 
         self._status = self.statusBar()
         self._build_scanner_dock()
         self._build_decoder_dock()
+        self._build_classify_panel()
+        self._build_memory_panel()
+        self._build_map_panel()
+        self._install_panels()
         self._apply_device_profile()
         self._sync_playback_ui()
         saved = self.settings.radios.get(self.current_device_key())
@@ -561,8 +575,8 @@ class MainWindow(QtWidgets.QMainWindow):
         """Hide what only an IQ radio can do; the rest works on a transceiver as is."""
         sdr = not self.is_transceiver
         for widget in (self._zoom_label, self._zoom_combo, self._fft_label, self._fft_combo,
-                       self._scan_button, self._decode_button, self._classify_button,
-                       self._sweep_button):
+                       self._scan_button, self._decode_button, self._tabs["classify"],
+                       self._tabs["map"]):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
@@ -947,29 +961,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scanner_panel.saveFoundRequested.connect(self._save_found_to_memory)
         self.scanner_panel.configChanged.connect(self._on_scan_config_changed)
 
-        self._scanner_dock = QtWidgets.QDockWidget("Scanner", self)
-        self._scanner_dock.setObjectName("scannerDock")
-        self._scanner_dock.setWidget(self.scanner_panel)
-        self._scanner_dock.setAllowedAreas(
-            QtCore.Qt.DockWidgetArea.LeftDockWidgetArea
-            | QtCore.Qt.DockWidgetArea.RightDockWidgetArea
-        )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self._scanner_dock)
-        # Hidden until asked for, with the Scan button; the button and the dock's own
-        # close box stay in step either way round.
-        self._scanner_dock.hide()
-        self._scan_button.setChecked(False)
-        self._scan_button.toggled.connect(self._scanner_dock.setVisible)
-        self._scanner_dock.visibilityChanged.connect(self._on_scanner_visibility)
-
-    def _on_scanner_visibility(self, visible: bool) -> None:
-        # visibilityChanged also fires when the window is minimised or the dock is
-        # tabbed away; only a real close should untick the button.
-        shown = not self._scanner_dock.isHidden()
-        if self._scan_button.isChecked() != shown:
-            self._scan_button.blockSignals(True)
-            self._scan_button.setChecked(shown)
-            self._scan_button.blockSignals(False)
+        # The Scan tab's panel.
+        self._scanner_dock = self.scanner_panel
 
     def _scan_config(self) -> ScanConfig:
         panel = self.scanner_panel
@@ -1142,31 +1135,159 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_panel = DecoderPanel()
         self.decoder_panel.decoderChanged.connect(self._on_decoder_changed)
         self.decoder_panel.mapRequested.connect(self.show_map)
-        self._decoder_dock = QtWidgets.QDockWidget("Decode", self)
-        self._decoder_dock.setObjectName("decoderDock")
-        self._decoder_dock.setWidget(self.decoder_panel)
-        # Across the top, full width: ACARS and ADS-B lines are long, and in a window
-        # that is not maximised a side dock left them unreadable (VK3RQ, 2026-10-05).
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.TopDockWidgetArea, self._decoder_dock)
-        self._decoder_dock.hide()
-        self._decode_button.toggled.connect(self._show_decoder_dock)
-        self._decoder_dock.visibilityChanged.connect(self._on_decoder_visibility)
+        # The Decode tab's panel, full width: ACARS and ADS-B lines are long.
+        self._decoder_dock = self.decoder_panel
 
-    def _show_decoder_dock(self, show: bool) -> None:
-        """Show or hide the Decode panel; on showing, give it a fifth of the screen."""
-        was_hidden = self._decoder_dock.isHidden()
-        self._decoder_dock.setVisible(show)
-        if show and was_hidden and not self._decoder_dock.isFloating():
-            screen = self.screen() or QtWidgets.QApplication.primaryScreen()
-            height = max(140, screen.availableGeometry().height() // 5)
-            self.resizeDocks([self._decoder_dock], [height], QtCore.Qt.Orientation.Vertical)
+    # -- the tab row and its panels ---------------------------------------------------
 
-    def _on_decoder_visibility(self, visible: bool) -> None:
-        shown = not self._decoder_dock.isHidden()
-        if self._decode_button.isChecked() != shown:
-            self._decode_button.blockSignals(True)
-            self._decode_button.setChecked(shown)
-            self._decode_button.blockSignals(False)
+    #: (key, label, colour, tooltip) of each tab, left to right.
+    TABS = (
+        ("settings", "Settings", "#4fc3f7", "The radio, tuning, display and audio settings"),
+        ("decode", "Decode", "#81c784",
+         "Data decoders: POCSAG, APRS, AIS, ACARS, ADS-B, P25, DMR, DAB"),
+        ("classify", "Classify", DETECTED_COLOUR,
+         "What is this signal? -- and everything strong on screen"),
+        ("memory", "Memory", "#ce93d8", "Memories, in groups"),
+        ("map", "Map", "#ffab91", "Ships, aircraft and radios that reported where they are"),
+        ("scan", "Scan", "#f48fb1", "The band scanner"),
+    )
+
+    def _make_tabs(self) -> None:
+        """The tab buttons, made before the panels, which some of them stand for."""
+        self._tabs: dict[str, QtWidgets.QPushButton] = {}
+        for key, label, colour, tip in self.TABS:
+            button = QtWidgets.QPushButton(label)
+            button.setCheckable(True)
+            button.setToolTip(tip)
+            button.setStyleSheet(
+                f"QPushButton {{ background: #2a2f37; color: {colour}; font-weight: bold;"
+                f" border: 2px solid {colour}; border-radius: 6px; padding: 4px 14px; }}"
+                f"QPushButton:checked {{ background: {colour}; color: black; }}"
+                "QPushButton:disabled { color: #555; border-color: #444; }")
+            self._tabs[key] = button
+        # The names the rest of the window has always used for these.
+        self._decode_button = self._tabs["decode"]
+        self._scan_button = self._tabs["scan"]
+        self._map_button = self._tabs["map"]
+
+    def _build_tab_row(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 4)
+        for key, *_ in self.TABS:
+            row.addWidget(self._tabs[key])
+        row.addSpacing(12)
+        row.addWidget(self._freq_spin)
+        row.addStretch(1)
+        return box
+
+    def _build_classify_panel(self) -> None:
+        panel = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(panel)
+        outer.setContentsMargins(4, 2, 4, 2)
+        row = QtWidgets.QHBoxLayout()
+        # What is this signal? Yellow (VK3RQ, 2026-10-06); on the Classify tab since 10-07.
+        self._classify_button = QtWidgets.QPushButton("?")
+        self._classify_button.setToolTip(
+            "What is this signal? Listens to the tuned frequency for a few seconds and\n"
+            "names it -- P25, DMR, POCSAG, AIS, ACARS, ADS-B, packet, or by its\n"
+            "modulation (WBFM, NBFM, AM, USB, LSB, CW) -- on the waterfall. A name with\n"
+            "'?' is a judgement from the signal's shape; without, a decoder confirmed it.")
+        self._classify_button.setStyleSheet(
+            f"QPushButton {{ background: {DETECTED_COLOUR}; color: black; "
+            "font-weight: bold; padding: 2px 10px; }"
+            "QPushButton:disabled { background: #776f3a; color: #333; }")
+        self._classify_button.clicked.connect(self.classify_signal)
+        row.addWidget(self._classify_button)
+        # Everything strong on screen, wherever the radio is tuned (VK3RQ, 2026-10-06).
+        self._sweep_button = QtWidgets.QPushButton("Classify")
+        self._sweep_button.setToolTip(
+            "Name up to twelve strong signals across what the waterfall shows, wherever\n"
+            "the radio is tuned. Unidentified ones are skipped; a trunked system's\n"
+            "channels share one label, its other channels marked in the same colour.")
+        self._sweep_button.setStyleSheet(self._classify_button.styleSheet())
+        self._sweep_button.clicked.connect(self.classify_all)
+        row.addWidget(self._sweep_button)
+        row.addSpacing(12)
+        clear = QtWidgets.QPushButton("Clear")
+        clear.setToolTip("Clear the list and the labels on the waterfall")
+        clear.clicked.connect(self._clear_classified)
+        row.addWidget(clear)
+        row.addStretch(1)
+        outer.addLayout(row)
+        self._classify_list = QtWidgets.QListWidget()
+        self._classify_list.setToolTip("What was found; double-click one to tune there")
+        self._classify_list.itemDoubleClicked.connect(self._tune_to_classified)
+        outer.addWidget(self._classify_list, 1)
+        self._classify_panel = panel
+
+    def _note_classified(self, freq_hz: float, text: str) -> None:
+        item = QtWidgets.QListWidgetItem(f"{time.strftime('%H:%M:%S')}  {text}")
+        item.setData(QtCore.Qt.ItemDataRole.UserRole, float(freq_hz))
+        self._classify_list.insertItem(0, item)
+
+    def _clear_classified(self) -> None:
+        self._classify_list.clear()
+        self.waterfall.clear_label()
+
+    def _tune_to_classified(self, item) -> None:
+        freq = item.data(QtCore.Qt.ItemDataRole.UserRole)
+        if freq:
+            self._offset_spin.setValue(0.0)
+            self._retune(float(freq), allow_snap=False, auto_radio=True)
+
+    def _build_memory_panel(self) -> None:
+        from .memory_panel import MemoryPanel
+
+        self.memory_panel = MemoryPanel(self.settings)
+        self.memory_panel.recallRequested.connect(self.recall_memory)
+        self.memory_panel.saveRequested.connect(self.save_memory)
+        self.memory_panel.deleteRequested.connect(self.delete_memory)
+        self.memory_panel.changed.connect(self._save_state)
+
+    def _build_map_panel(self) -> None:
+        self.map_window = MapWindow(self.targets, parent=self, embedded=True)
+
+    def _install_panels(self) -> None:
+        self._panels = {"settings": self._settings_panel, "decode": self.decoder_panel,
+                        "classify": self._classify_panel, "memory": self.memory_panel,
+                        "map": self.map_window, "scan": self.scanner_panel}
+        for key, *_ in self.TABS:
+            self._panel_splitter.addWidget(self._panels[key])
+            self._panels[key].hide()
+            self._tabs[key].toggled.connect(lambda on, k=key: self._show_panel(k, on))
+        for key in self.settings.open_panels:
+            if key in self._tabs:
+                self._tabs[key].setChecked(True)
+        self._layout_panels()
+
+    def _show_panel(self, key: str, on: bool) -> None:
+        self._panels[key].setVisible(on)
+        if on and key == "map":
+            self.map_window.refresh()
+        self._layout_panels()
+        open_now = [k for k, *_ in self.TABS if self._tabs[k].isChecked()]
+        if open_now != self.settings.open_panels:
+            self.settings.open_panels = open_now
+            self._schedule_save()
+
+    #: Heights the panels ask for when opened; Settings asks for what its rows need.
+    PANEL_HEIGHTS = {"decode": 180, "classify": 150, "memory": 280, "map": 360, "scan": 240}
+
+    def _layout_panels(self) -> None:
+        """Share the height: the open panels what they ask (at most two thirds of the
+        window), the spectrum a third of the rest, the waterfall the remainder."""
+        shown = [k for k, *_ in self.TABS if self._tabs[k].isChecked()]
+        self._panel_splitter.setVisible(bool(shown))
+        want = {k: (self._settings_panel.sizeHint().height() if k == "settings"
+                    else self.PANEL_HEIGHTS[k]) for k in shown}
+        total = max(400, (self._main_splitter.height() or self.height()) - 10)
+        top = min(sum(want.values()), int(total * 2 / 3)) if shown else 0
+        rest = total - top
+        self._main_splitter.setSizes([top, rest // 3, rest - rest // 3])
+        if shown:
+            scale = top / max(1, sum(want.values()))
+            self._panel_splitter.setSizes([int(want.get(k, 0) * scale) for k, *_ in self.TABS])
 
     def _apply_decoder(self, key: str) -> None:
         """Choose decoder `key` ("" for none), as a recalled memory asks, showing the
@@ -1279,6 +1400,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._status.showMessage("no strong signal on screen that could be identified",
                                      8000)
         else:
+            for label in reversed(labels):
+                self._note_classified(label.freq_hz, label.text)
             self._status.showMessage("  |  ".join(label.text for label in labels), 20000)
 
     def _cancel_classify(self) -> None:
@@ -1306,6 +1429,7 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             text = job.result.text()
             self.waterfall.show_label(job.result.freq_hz, text)
+            self._note_classified(job.result.freq_hz, text)
             self._status.showMessage(text, 15000)
 
     # -- frequency correction ------------------------------------------------------
@@ -1398,10 +1522,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.calibrate()
 
     def show_map(self) -> None:
-        if self.map_window is None:
-            self.map_window = MapWindow(self.targets, parent=self)
-        self.map_window.show()
-        self.map_window.raise_()
+        """Open the Map tab."""
+        self._map_button.setChecked(True)
         self.map_window.refresh()
 
     def _start_decoder(self, key: str) -> None:
@@ -1449,7 +1571,7 @@ class MainWindow(QtWidgets.QMainWindow):
             messages = worker.take()
             self.decoder_panel.add(messages)
             self.targets.update(messages)
-        if self.map_window is not None and self.map_window.isVisible():
+        if self._map_button.isChecked():                 # the Map tab is open
             self.map_window.refresh()
 
     def _build_controls(self) -> QtWidgets.QWidget:
@@ -1884,37 +2006,6 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
 
-        # First on the top line, so it is never off the edge of a narrow window.
-        self._map_button = QtWidgets.QPushButton("Map")
-        self._map_button.setToolTip("Show the map of ships and aircraft (AIS, ACARS, ADS-B)")
-        self._map_button.setStyleSheet("QPushButton { font-weight: bold; padding: 2px 12px; }")
-        self._map_button.clicked.connect(self.show_map)
-        row.addWidget(self._map_button)
-        # What is this signal? Yellow, top left beside Map (VK3RQ, 2026-10-06).
-        self._classify_button = QtWidgets.QPushButton("?")
-        self._classify_button.setToolTip(
-            "What is this signal? Listens to the tuned frequency for a few seconds and\n"
-            "names it -- P25, DMR, POCSAG, AIS, ACARS, ADS-B, packet, or by its\n"
-            "modulation (WBFM, NBFM, AM, USB, LSB, CW) -- on the waterfall. A name with\n"
-            "'?' is a judgement from the signal's shape; without, a decoder confirmed it.")
-        self._classify_button.setStyleSheet(
-            f"QPushButton {{ background: {DETECTED_COLOUR}; color: black; "
-            "font-weight: bold; padding: 2px 10px; }"
-            "QPushButton:disabled { background: #776f3a; color: #333; }")
-        self._classify_button.clicked.connect(self.classify_signal)
-        row.addWidget(self._classify_button)
-        # Everything strong on screen, wherever the radio is tuned (VK3RQ, 2026-10-06).
-        self._sweep_button = QtWidgets.QPushButton("Classify")
-        self._sweep_button.setToolTip(
-            "Name up to twelve strong signals across what the waterfall shows, wherever\n"
-            "the radio is tuned. Unidentified ones are skipped; a trunked system's\n"
-            "channels share one label, its other channels marked in the same colour.")
-        self._sweep_button.setStyleSheet(self._classify_button.styleSheet())
-        self._sweep_button.clicked.connect(self.classify_all)
-        row.addWidget(self._sweep_button)
-
-        row.addSpacing(8)
-
         # No "SDR" or "Freq" labels: the radio's name and the big frequency say what they
         # are, and the row has to fit a 1280-point screen.
         self._device_combo = DeviceCombo()
@@ -1945,7 +2036,7 @@ class MainWindow(QtWidgets.QMainWindow):
             lambda mhz: self._retune(mhz * 1e6, from_spin=True, allow_snap=False,
                                      auto_radio=True)
         )
-        row.addWidget(self._freq_spin)
+        # The frequency itself sits on the tab row (`_build_tab_row`).
 
         row.addWidget(QtWidgets.QLabel("Step"))
         self._step_combo = QtWidgets.QComboBox()
@@ -1993,16 +2084,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._zoom_combo.currentIndexChanged.connect(self._on_zoom_changed)
         row.addWidget(self._zoom_combo)
 
-        self._scan_button = QtWidgets.QPushButton("Scan")
-        self._scan_button.setStyleSheet("QPushButton { padding: 2px 10px; }")
-        self._scan_button.setCheckable(True)
-        self._scan_button.setToolTip("Show or hide the scanner")
-        row.addWidget(self._scan_button)
-        self._decode_button = QtWidgets.QPushButton("Decode")
-        self._decode_button.setStyleSheet("QPushButton { padding: 2px 10px; }")
-        self._decode_button.setCheckable(True)
-        self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS, ADS-B, P25, DMR)")
-        row.addWidget(self._decode_button)
+        # Scan and Decode are tabs now (`_make_tabs`).
 
         # A transceiver's scope span, in place of Zoom: the radio's to set, from here too.
         self._span_label = QtWidgets.QLabel("Span")
@@ -2025,22 +2107,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
 
-        row.addWidget(QtWidgets.QLabel("Memory"))
-        self._memory_combo = QtWidgets.QComboBox()
-        self._memory_combo.setMinimumWidth(220)
-        self._memory_combo.activated.connect(self._on_memory_activated)
-        row.addWidget(self._memory_combo)
-
-        self._save_button = QtWidgets.QPushButton("Save\u2026")
-        self._save_button.setToolTip("Store the current settings under a name")
-        self._save_button.clicked.connect(self._on_save_memory)
-        row.addWidget(self._save_button)
-
-        self._delete_button = QtWidgets.QPushButton("Delete")
-        self._delete_button.clicked.connect(self._on_delete_memory)
-        row.addWidget(self._delete_button)
-
-        row.addSpacing(20)
+        # Memories have a page of their own (the Memory tab); recording stays here.
         self._rec_title = QtWidgets.QLabel("Record")
         row.addWidget(self._rec_title)
         self._rec_audio_button = QtWidgets.QPushButton("Audio")
@@ -2964,7 +3031,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _set_tx_lock(self, locked: bool) -> None:
         """While keyed, freeze what would move or disturb the transmission."""
         for widget in (self._freq_spin, self._rate_combo, self._device_combo,
-                       self._offset_spin, self._memory_combo, self._device_slot,
+                       self._offset_spin, self.memory_panel, self._device_slot,
                        self._bw_combo, self._scan_button, self._shift_combo,
                        self._tone_combo, self._tone_value_combo):
             widget.setEnabled(not locked)
@@ -3424,15 +3491,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.set_mode(wanted)
 
     def _refresh_memories(self) -> None:
-        self._memory_combo.blockSignals(True)
-        self._memory_combo.clear()
-        self._memory_combo.addItem("\u2014 recall \u2014", None)
-        for name in self.settings.names():
-            self._memory_combo.addItem(name, name)
-        self._memory_combo.blockSignals(False)
-        has_any = bool(self.settings.names())
-        self._memory_combo.setEnabled(has_any)
-        self._delete_button.setEnabled(has_any)
+        if hasattr(self, "memory_panel"):
+            self.memory_panel.refresh()
 
     def tune_radio_memory(self, freq_hz: float, radio_mode: str) -> None:
         """Tune to one of the transceiver's own memory channels, as its window asks."""
@@ -3452,18 +3512,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tune_radio_memory(freq_hz, radio_mode)
         self.save_memory(name)
 
-    def save_memory(self, name: str) -> bool:
-        """Store the current settings. Returns True if an existing name was replaced."""
+    def save_memory(self, name: str, group: str = "") -> bool:
+        """Store the current settings, in `group` (else the one its signal suggests).
+        Returns True if an existing name was replaced."""
         replaced = self.settings.add_memory(
             name, self.current_snapshot(), self.current_device_key(),
             self.current_radio_settings(),
         )
+        if group and not replaced:
+            self.settings.move_memory(name, group)
         self._refresh_memories()
-        index = self._memory_combo.findData(self.settings.get_memory(name).name)
-        if index >= 0:
-            self._memory_combo.blockSignals(True)
-            self._memory_combo.setCurrentIndex(index)
-            self._memory_combo.blockSignals(False)
         self._save_state()
         return replaced
 
@@ -3516,43 +3574,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_memories()
             self._save_state()
         return removed
-
-    def _on_memory_activated(self, index: int) -> None:
-        name = self._memory_combo.itemData(index)
-        if name:
-            self.recall_memory(name)
-
-    def _on_save_memory(self) -> None:
-        suggestion = self.current_snapshot().describe()
-        name, ok = QtWidgets.QInputDialog.getText(
-            self, "Save memory", "Name for this memory:",
-            QtWidgets.QLineEdit.EchoMode.Normal, suggestion,
-        )
-        if not ok or not name.strip():
-            return
-        if self.settings.get_memory(name) is not None:
-            answer = QtWidgets.QMessageBox.question(
-                self, "Replace memory?",
-                f'"{name.strip()}" already exists. Replace it?',
-                QtWidgets.QMessageBox.StandardButton.Yes
-                | QtWidgets.QMessageBox.StandardButton.No,
-            )
-            if answer != QtWidgets.QMessageBox.StandardButton.Yes:
-                return
-        self.save_memory(name)
-
-    def _on_delete_memory(self) -> None:
-        name = self._memory_combo.currentData()
-        if not name:
-            self._status.showMessage("pick a memory to delete first", 3000)
-            return
-        answer = QtWidgets.QMessageBox.question(
-            self, "Delete memory?", f'Delete "{name}"?',
-            QtWidgets.QMessageBox.StandardButton.Yes
-            | QtWidgets.QMessageBox.StandardButton.No,
-        )
-        if answer == QtWidgets.QMessageBox.StandardButton.Yes:
-            self.delete_memory(name)
 
     # -- persistence -------------------------------------------------------
 

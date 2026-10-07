@@ -337,8 +337,12 @@ class MapWindow(QtWidgets.QWidget):
     COLUMNS = ("Name", "ID", "Kind", "Speed kn", "Heard s ago")
 
     def __init__(self, store: TargetStore, tiles: TileSource | None = None,
-                 parent=None) -> None:
-        super().__init__(parent, QtCore.Qt.WindowType.Window)
+                 parent=None, embedded: bool = False) -> None:
+        # Embedded: a panel of the main window (its Map tab), not a window of its own.
+        if embedded:
+            super().__init__(parent)
+        else:
+            super().__init__(parent, QtCore.Qt.WindowType.Window)
         self.setWindowTitle("Map — ships and aircraft")
         self.store = store
         self.map = MapView(store, tiles)
