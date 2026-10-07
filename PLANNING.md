@@ -186,7 +186,9 @@ headless-testable and lets modules be swapped independently.
   full rate. P9a: the server and a remote source (section 7q) ✅ (verified 2026-10-07:
   the Pi's RTL-SDR over Tailscale at every link rate up to 960 kS/s, nothing lost, the
   Pi under 30% of a core). P9b: the radio's whole span as the waterfall, the IQ window
-  following the listening frequency.
+  following the listening frequency ✅ (verified 2026-10-07 over Tailscale: 25 lines a
+  second of the RTL-SDR's 2.048 MHz span, the 256 kS/s window with nothing lost, tuning
+  within the span leaving the radio and the waterfall where they were).
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1428,9 +1430,35 @@ settings stay apart from the same model plugged into the Mac.
   Pluto: SoapyAirspyHF and SoapyPlutoSDR are built from source into /usr/local. The DVB
   driver is blacklisted so the RTL-SDR is free. On the Mac the server is named by its Tailscale name
   (Tailscale's MagicDNS), in `servers.json` beside the settings.
+- **P9b: the whole span (VK3RQ, 2026-10-07: "do part 2").** P9a showed only the IQ it
+  sent, at most 960 kHz. Now the radio runs at a rate chosen in the Rate list (its own
+  rates, up to 10 MS/s) and the Pi sends two things:
+  - **Spectrum lines** of the radio's whole span (or, zoomed, of span/zoom around the
+    tuned frequency), computed on the Pi with the app's own `SpectrumAnalyzer` at the
+    window's FFT size and frame rate, quantised to a byte a bin against the line's own
+    floor and step (frame type 3: `centre f64, span f64, low f32, step f32, count u32`,
+    then the bytes). 4096 bins at 25 lines a second is 0.8 Mbit/s.
+  - **An IQ window** around the tuned frequency, mixed down from the radio's stream and
+    decimated by a power of two to between 200 and 400 kS/s (2.048 MS/s -> 256 kS/s) --
+    wide enough for broadcast FM, about 8 Mbit/s. This is the source's `sample_rate`,
+    so audio and the decoders are unchanged; the radio's own rate is its `span_rate`,
+    which the Rate list, memories and settings use.
+  - **Tuning** inside the span only moves the mixer, so the waterfall stays put, as on
+    a radio with a wide display. The hardware is retuned (and the waterfall starts
+    again) only when the IQ window would run within 5% of the span's edge.
+  - What still sees only the IQ window: the offset (within +/- half of it) and the
+    Classify sweep. Protocol version 2.
+  - **Measured on the Pi 5** (RTL-SDR, 2.048 MS/s): the decimator by 8 took 41% of a
+    core with `np.convolve`, which filters every input sample, keeps half and upcasts to
+    complex128. `HalvingFilter` computes only the outputs kept from the 16 distinct
+    nonzero taps (the stage filter is half-band and symmetric): 8%, the same samples to
+    float precision (pinned by a test). Whole server: 23% of a core, 48% while zoomed.
+    The pump filters outside the session lock; holding it while filtering had halved
+    the spectrum line rate.
 - **The Pi** runs Debian's Python 3.13 with apt's NumPy and SoapySDR bindings, so the
   modules the server imports (`device/source.py`, `device/profiles.py`,
-  `device/remote_protocol.py`, `dsp/decimate.py`, `netserver.py`) must stay 3.13-clean.
+  `device/remote_protocol.py`, `dsp/decimate.py`, `dsp/spectrum.py`, `netserver.py`) must
+  stay 3.13-clean.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

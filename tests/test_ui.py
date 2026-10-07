@@ -4629,3 +4629,93 @@ def test_map_is_a_tab_on_the_top_line(qapp):
     win._map_button.click()
     assert win._map_button.isChecked() and not win.map_window.isHidden()
     win.map_window.close()
+
+
+# -- a network radio (P9b): the server's lines of the whole span, an IQ window ----------
+
+
+class WideStub(StubSource):
+    """What the window sees of RemoteIQSource: a span rate, spectrum lines over it with
+    one signal, and IQ at a narrower rate."""
+
+    def __init__(self):
+        super().__init__(_caps(driver="rtlsdr@radiopi", label="RTL-SDR on radiopi",
+                               sample_rates=(2.048e6, 1.024e6),
+                               freq_ranges=(FreqRange(24e6, 1.7e9),)),
+                         rate=256e3, center=145e6, tone_hz=10e3)
+        self.span_rate = 2.048e6
+        self.radio_centre = 145e6
+        self.display_wanted = None
+        self.zoom = 1
+
+    def set_display(self, fft_size, fps, zoom):
+        self.display_wanted = (fft_size, fps, zoom)
+        self.zoom = zoom
+
+    def set_sample_rate(self, hz):
+        self.span_rate = self._caps.nearest_sample_rate(hz)
+        self._rate = self.span_rate / 8
+        return self.span_rate
+
+    def set_center_freq(self, hz, flush=True):
+        hz = super().set_center_freq(hz, flush)
+        if abs(hz - self.radio_centre) > 0.7e6:
+            self.radio_centre = hz                      # as the server would recentre
+        return hz
+
+    @property
+    def display_center_freq(self):
+        return self.radio_centre if self.zoom == 1 else self._center
+
+    @property
+    def display_span(self):
+        return self.span_rate / self.zoom
+
+    def take_spectrum_lines(self):
+        from src.rgc_sdr.device.remote import SpectrumLine
+
+        n = 1024
+        dbfs = np.full(n, -110.0, np.float32)
+        dbfs[n // 2 + 100] = -50.0
+        return [SpectrumLine(self.display_center_freq, self.display_span, dbfs)] * 2
+
+
+def test_a_network_radio_draws_the_servers_lines_of_its_whole_span(qapp):
+    src = WideStub()
+    win = window_for(src, fft_size=1024)
+    win._on_frame()
+    assert win._rows_pushed == 2                           # both lines that arrived
+    assert win.waterfall._rect.width() == pytest.approx(2.048e6)
+    assert win.waterfall._rect.center().x() == pytest.approx(145e6)
+    assert src.display_wanted == (1024, win.fps, 1)
+    assert win._rate_combo.currentData() == 2.048e6        # the span, not the IQ rate
+    assert win.current_snapshot().sample_rate == 2.048e6
+    assert win._offset_spin.maximum() == pytest.approx(128.0)   # the IQ window's half
+    win.close()
+
+
+def test_tuning_inside_a_network_radios_span_keeps_the_waterfall(qapp):
+    src = WideStub()
+    win = window_for(src, fft_size=1024)
+    win._on_frame()
+    rows = win.waterfall.buffer.image.copy()
+    win._retune(145.3e6, allow_snap=False)
+    assert src.center_freq == 145.3e6 and src.radio_centre == 145e6
+    assert np.array_equal(win.waterfall.buffer.image, rows)   # not cleared
+    win._on_frame()
+    assert win.waterfall._rect.center().x() == pytest.approx(145e6)
+    win._retune(147e6, allow_snap=False)                       # past the edge: recentred
+    win._on_frame()
+    assert win.waterfall._rect.center().x() == pytest.approx(147e6)
+    win.close()
+
+
+def test_zoom_on_a_network_radio_is_asked_of_the_server(qapp):
+    src = WideStub()
+    win = window_for(src, fft_size=1024)
+    win.set_decimation(4)
+    win._on_frame()
+    assert src.display_wanted == (1024, win.fps, 4)
+    assert win.waterfall._rect.width() == pytest.approx(512e3)
+    assert win.effective_rate == 256e3                         # the IQ is not zoomed
+    win.close()

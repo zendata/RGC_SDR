@@ -1,8 +1,9 @@
 """The network radio server's wire format, shared by the server and the app (PLANNING.md 7q).
 
 One TCP connection carries frames of `[type u8][length u32 LE][payload]`: JSON control
-both ways, and IQ from the server as block-scaled int16 pairs. Also the link-rate plan:
-which rates the server offers for a radio, and how it makes each.
+both ways; from the server, IQ as block-scaled int16 pairs and spectrum lines of the
+radio's whole span as a byte a bin. Also the rules both ends share: the IQ window's rate
+for a radio rate, and when tuning has to move the radio rather than the window.
 
 No Qt and no DSP imports (layering rule, PLANNING.md section 5), and Python 3.13-clean:
 the server runs on the Pi's Debian Python.
@@ -19,23 +20,17 @@ import numpy as np
 #: The server's TCP port, next to SoapyRemote's 55132.
 DEFAULT_PORT = 55133
 #: Bumped when the wire format changes; the server refuses a client that differs.
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 FRAME_JSON = 1
 FRAME_IQ = 2
+FRAME_SPECTRUM = 3
 
 _HEADER = struct.Struct("<BI")
 _IQ_HEADER = struct.Struct("<IfI")
+_SPECTRUM_HEADER = struct.Struct("<ddffI")
 #: Largest frame accepted: a corrupt length must not allocate gigabytes.
 MAX_FRAME = 16 << 20
-
-#: The link-rate window (PLANNING.md 7q): below this nothing useful fits, above it the
-#: measured Tailscale link (about 30 Mbit/s, 4 bytes a sample) runs out.
-MIN_LINK_RATE = 48e3
-MAX_LINK_RATE = 1.0e6
-#: Highest radio rate the Pi is asked to decimate from, as the app's own ceiling.
-MAX_RADIO_RATE = 10e6
-
 
 class ProtocolError(RuntimeError):
     """The other end sent something that is not this protocol."""
@@ -73,6 +68,53 @@ def decode_iq(payload: bytes) -> tuple[int, np.ndarray]:
     return generation, out.view(np.complex64)
 
 
+#: The IQ window (P9b): the radio's rate halved until it is at most this. Wide enough
+#: for broadcast FM's 200 kHz, about 8 Mbit/s at 256 kS/s.
+MAX_IQ_RATE = 400e3
+#: The IQ window keeps this fraction of the span away from the edge, where the radio's
+#: own filter rolls off; nearer, the radio is retuned instead.
+EDGE_MARGIN = 0.05
+#: A spectrum line's bytes: the step between levels is never finer than this.
+MIN_DB_STEP = 0.05
+
+
+def iq_rate_for(radio_rate: float) -> tuple[float, int]:
+    """(IQ window rate, decimation factor) for a radio running at `radio_rate`."""
+    factor = 1
+    while radio_rate / factor > MAX_IQ_RATE:
+        factor *= 2
+    return radio_rate / factor, factor
+
+
+def needs_recentre(radio_centre: float, radio_rate: float, iq_rate: float,
+                   tuned: float) -> bool:
+    """Whether an IQ window at `tuned` would reach past the usable span of a radio
+    centred on `radio_centre`, so the radio itself has to move."""
+    reach = radio_rate / 2 - iq_rate / 2 - radio_rate * EDGE_MARGIN
+    return abs(tuned - radio_centre) > max(0.0, reach)
+
+
+def encode_spectrum(centre_hz: float, span_hz: float, dbfs: np.ndarray) -> bytes:
+    """A spectrum line, a byte a bin between its own floor and peak."""
+    dbfs = np.asarray(dbfs, dtype=np.float32)
+    low = float(dbfs.min()) if dbfs.size else 0.0
+    step = max(MIN_DB_STEP, (float(dbfs.max()) - low) / 255.0) if dbfs.size else 1.0
+    q = np.clip(np.round((dbfs - low) / step), 0, 255).astype(np.uint8)
+    return frame(FRAME_SPECTRUM,
+                 _SPECTRUM_HEADER.pack(centre_hz, span_hz, low, step, dbfs.size) + q.tobytes())
+
+
+def decode_spectrum(payload: bytes) -> tuple[float, float, np.ndarray]:
+    """(centre Hz, span Hz, dBFS per bin) from a spectrum frame's payload."""
+    if len(payload) < _SPECTRUM_HEADER.size:
+        raise ProtocolError("short spectrum frame")
+    centre, span, low, step, count = _SPECTRUM_HEADER.unpack_from(payload)
+    body = np.frombuffer(payload, dtype=np.uint8, offset=_SPECTRUM_HEADER.size)
+    if body.size != count:
+        raise ProtocolError("spectrum frame length does not match its count")
+    return centre, span, (low + body.astype(np.float32) * np.float32(step))
+
+
 def read_exact(sock: socket.socket, n: int) -> bytes:
     """Exactly `n` bytes, or ConnectionError if the other end closes first."""
     chunks = []
@@ -87,7 +129,7 @@ def read_exact(sock: socket.socket, n: int) -> bytes:
 
 def read_frame(sock: socket.socket) -> tuple[int, bytes]:
     kind, length = _HEADER.unpack(read_exact(sock, _HEADER.size))
-    if kind not in (FRAME_JSON, FRAME_IQ) or length > MAX_FRAME:
+    if kind not in (FRAME_JSON, FRAME_IQ, FRAME_SPECTRUM) or length > MAX_FRAME:
         raise ProtocolError(f"bad frame (type {kind}, {length} bytes)")
     return kind, read_exact(sock, length)
 
@@ -100,24 +142,6 @@ def parse_json(payload: bytes) -> dict:
     if not isinstance(message, dict):
         raise ProtocolError("a control message must be an object")
     return message
-
-
-def link_plan(radio_rates, default_rate: float,
-              max_radio_rate: float = MAX_RADIO_RATE) -> dict[float, tuple[float, int]]:
-    """Link rate -> (radio rate, decimation factor): each rate between MIN_LINK_RATE and
-    MAX_LINK_RATE that some radio rate up to `max_radio_rate` reaches by halving, made
-    from the radio rate nearest `default_rate` (the profile's choice, known to work)."""
-    plan: dict[float, tuple[float, int]] = {}
-    for rate in sorted({float(r) for r in radio_rates if 0 < r <= max_radio_rate}):
-        factor = 1
-        while rate / factor >= MIN_LINK_RATE:
-            link = rate / factor
-            if link <= MAX_LINK_RATE:
-                best = plan.get(link)
-                if best is None or abs(rate - default_rate) < abs(best[0] - default_rate):
-                    plan[link] = (rate, factor)
-            factor *= 2
-    return dict(sorted(plan.items(), reverse=True))
 
 
 # -- capabilities as JSON ------------------------------------------------------------

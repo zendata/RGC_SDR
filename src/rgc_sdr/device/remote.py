@@ -1,9 +1,11 @@
-"""A radio on the network radio server (P9a, PLANNING.md 7q), as an ordinary IQ source.
+"""A radio on the network radio server (P9, PLANNING.md 7q), as an ordinary IQ source.
 
 `RemoteIQSource` connects to `rgc_sdr.netserver` on another machine (the Pi 5, over
-Tailscale), opens one of its radios, and fills a local ring with the IQ the server
-decimated to the link rate. To the rest of the app it is a radio whose sample rate is
-the link rate, so the spectrum, demodulators and decoders need nothing new.
+Tailscale) and opens one of its radios. The server sends two things: IQ for a window
+around the tuned frequency, which fills a local ring -- its rate is this source's
+`sample_rate`, so the demodulators and decoders need nothing new -- and spectrum lines of
+the radio's whole span, which the window draws instead of an FFT of its own
+(`take_spectrum_lines`). The radio's own rate is `span_rate`, chosen from the Rate list.
 
 Changes are sent without waiting for the reply, so dragging a digit over the internet
 does not stall the window: the frequency is predicted (clamped to the radio's range),
@@ -23,14 +25,16 @@ import json
 import socket
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
 
 from .remote_protocol import (
-    DEFAULT_PORT, FRAME_IQ, FRAME_JSON, PROTOCOL_VERSION, ProtocolError, caps_from_dict,
-    decode_iq, json_frame, link_plan, parse_json, read_frame,
+    DEFAULT_PORT, FRAME_IQ, FRAME_SPECTRUM, PROTOCOL_VERSION, ProtocolError,
+    caps_from_dict, decode_iq, decode_spectrum, iq_rate_for, json_frame, parse_json,
+    read_frame,
 )
 from .source import IQSource, SequentialReader, _Ring
 
@@ -42,10 +46,20 @@ REPLY_TIMEOUT_S = 8.0          # opening a radio on the Pi takes a second or two
 #: server costs one timeout now and then, not one per click.
 LIST_CACHE_S = 20.0
 LIST_TIMEOUT_S = 1.5
-#: The link rate a remote radio starts at: about 12 Mbit/s, inside the ~30 measured over
-#: Tailscale, and wide enough for broadcast FM.
-DEFAULT_LINK_RATE = 384e3
 RING_SECONDS = 2.0
+#: Spectrum lines kept for the window to draw: a second or two at 25 a second.
+SPECTRUM_QUEUE = 50
+#: The highest radio rate offered remotely: the Pi's own ceiling, as the app's.
+MAX_REMOTE_RADIO_RATE = 10e6
+
+
+@dataclass(frozen=True)
+class SpectrumLine:
+    """One line of the radio's spectrum, as the server computed it."""
+
+    centre_hz: float
+    span_hz: float
+    dbfs: np.ndarray
 
 
 class RemoteError(RuntimeError):
@@ -122,12 +136,13 @@ class _Connection:
     """One TCP connection: requests out, replies matched by id, IQ handed to `on_iq`."""
 
     def __init__(self, server: ServerAddress, on_iq=None, on_close=None,
-                 timeout: float = CONNECT_TIMEOUT_S) -> None:
+                 timeout: float = CONNECT_TIMEOUT_S, on_spectrum=None) -> None:
         self.server = server
         self._sock = socket.create_connection((server.host, server.port), timeout=timeout)
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock.settimeout(None)
         self._on_iq = on_iq
+        self._on_spectrum = on_spectrum
         self._on_close = on_close
         self._send_lock = threading.Lock()
         self._next_id = 0
@@ -180,6 +195,10 @@ class _Connection:
                 if kind == FRAME_IQ:
                     if self._on_iq is not None:
                         self._on_iq(*decode_iq(payload))
+                    continue
+                if kind == FRAME_SPECTRUM:
+                    if self._on_spectrum is not None:
+                        self._on_spectrum(*decode_spectrum(payload))
                     continue
                 reply = parse_json(payload)
                 state = reply.get("state")
@@ -247,28 +266,27 @@ def remote_key(driver: str, server: ServerAddress) -> str:
 
 
 def remote_profile(base, server: ServerAddress):
-    """The profile of model `base` on `server`: the link rates as its rates, receive
-    only, and opened over the network."""
-    rates = base.sample_rates + base.extra_rates
-    plan = link_plan(rates, base.default_rate, min(base.max_rate, 10e6))
-    links = tuple(plan) or (DEFAULT_LINK_RATE,)
-    default = min(links, key=lambda r: abs(r - DEFAULT_LINK_RATE))
+    """The profile of model `base` on `server`: its own rates as the span, receive only,
+    and opened over the network."""
+    ceiling = min(base.max_rate, MAX_REMOTE_RADIO_RATE)
+    rates = tuple(sorted({r for r in base.sample_rates + base.extra_rates if r <= ceiling},
+                         reverse=True)) or base.sample_rates[:1]
+    iq_rate, _ = iq_rate_for(base.default_rate)
     return replace(
         base,
         key=remote_key(base.driver, server),
         label=f"{base.label} on {server.name}",
         driver=remote_key(base.driver, server),
-        sample_rates=links,
-        default_rate=default,
-        max_rate=max(links),
+        sample_rates=rates,
+        max_rate=ceiling,
         extra_rates=(),
         module="network",
         install=f"the network radio server running on {server.name} (PLANNING.md 7q)",
-        notes=f"{base.label} plugged into {server.name}, over the network: IQ decimated "
-              f"there to at most {max(links) / 1e3:g} kS/s. Receive only.",
+        notes=f"{base.label} plugged into {server.name}, over the network: its whole span "
+              f"on the waterfall, and about {iq_rate / 1e3:g} kHz around the tuned "
+              f"frequency for listening and decoding. Receive only.",
         tx=None,
         lo_offset_hz=0.0,
-        default_gains=base.default_gains,
         remote=(server.host, server.port, base.driver),
     )
 
@@ -294,11 +312,15 @@ class RemoteIQSource(IQSource):
         self._stale = 0
         self._reconnects = 0
         self._last_tune_id = 0
-        self._last_rate_id = 0
-        self._wanted_rate = float(sample_rate or (profile.default_rate if profile
-                                                  else DEFAULT_LINK_RATE))
+        #: The radio's rate wanted: the span. None for the profile's default.
+        self._wanted_rate = float(sample_rate) if sample_rate else (
+            profile.default_rate if profile else 0.0)
         self._freq = float(center_freq)
         self._state: dict = {}
+        self._lines: deque[SpectrumLine] = deque(maxlen=SPECTRUM_QUEUE)
+        self._latest_line: SpectrumLine | None = None
+        #: (fft size, lines a second, zoom) asked of the server.
+        self._display = (4096, 25.0, 1)
         self._conn: _Connection | None = None
         self._open()
         self._ring = _Ring(self._ring_capacity())
@@ -306,12 +328,15 @@ class RemoteIQSource(IQSource):
     # -- connecting
 
     def _open(self) -> None:
-        conn = _Connection(self.server, on_iq=self._on_iq, on_close=self._on_closed)
+        conn = _Connection(self.server, on_iq=self._on_iq, on_close=self._on_closed,
+                           on_spectrum=self._on_spectrum)
+        fft_size, fps, zoom = self._display
         try:
             hello(conn)
             reply = conn.request("open", driver=self._driver, serial=self._serial,
-                                 link_rate=self._wanted_rate, hz=self._freq,
-                                 generation=self._generation)
+                                 radio_rate=self._wanted_rate, hz=self._freq,
+                                 generation=self._generation, fft_size=fft_size, fps=fps,
+                                 zoom=zoom)
         except Exception:
             conn.close()
             raise
@@ -375,6 +400,11 @@ class RemoteIQSource(IQSource):
         self._ring.write(iq)
         self._samples += iq.size
 
+    def _on_spectrum(self, centre: float, span: float, dbfs: np.ndarray) -> None:
+        line = SpectrumLine(centre, span, dbfs)
+        self._lines.append(line)
+        self._latest_line = line
+
     def _ring_capacity(self) -> int:
         return max(int(self.sample_rate * RING_SECONDS), 1 << 16)
 
@@ -386,7 +416,43 @@ class RemoteIQSource(IQSource):
 
     @property
     def sample_rate(self) -> float:
-        return float(self._state.get("link_rate", self._wanted_rate))
+        """The IQ window's rate: what the demodulators and decoders receive."""
+        return float(self._state.get("iq_rate", 0.0)) or iq_rate_for(self.span_rate)[0]
+
+    @property
+    def span_rate(self) -> float:
+        """The radio's own rate, which is the span the spectrum lines cover."""
+        return float(self._state.get("radio_rate", self._wanted_rate))
+
+    # -- the spectrum (P9b): drawn from the server's lines, not an FFT of the IQ
+
+    def take_spectrum_lines(self) -> list[SpectrumLine]:
+        """Every line received since the last call, oldest first."""
+        out = []
+        while self._lines:
+            try:
+                out.append(self._lines.popleft())
+            except IndexError:
+                break
+        return out
+
+    @property
+    def display_center_freq(self) -> float:
+        line = self._latest_line
+        return line.centre_hz if line is not None else float(
+            self._state.get("radio_freq", self._freq))
+
+    @property
+    def display_span(self) -> float:
+        line = self._latest_line
+        return line.span_hz if line is not None else self.span_rate / self._display[2]
+
+    def set_display(self, fft_size: int, fps: float, zoom: int) -> None:
+        """What the spectrum lines should be: bins, lines a second, and zoom."""
+        wanted = (int(fft_size), float(fps), max(1, int(zoom)))
+        if wanted != self._display:
+            self._display = wanted
+            self._send("display", fft_size=wanted[0], fps=wanted[1], zoom=wanted[2])
 
     @property
     def center_freq(self) -> float:
@@ -430,16 +496,20 @@ class RemoteIQSource(IQSource):
         return wanted
 
     def set_sample_rate(self, hz: float) -> float:
+        """Set the radio's rate -- the span -- which the Rate list, memories and settings
+        hold; the IQ window follows from it. Returns the span rate."""
         target = self._caps.nearest_sample_rate(float(hz))
-        if target == self.sample_rate:
+        if target == self.span_rate:
             return target
         self._wanted_rate = target
         with self._lock:
             self._generation += 1
-        reply = self._send("rate", wait=True, link_rate=target, generation=self._generation)
+        reply = self._send("rate", wait=True, radio_rate=target, generation=self._generation)
         self._state = dict(reply.get("state", self._state))
         self._ring = _Ring(self._ring_capacity())
-        return self.sample_rate
+        self._lines.clear()
+        self._latest_line = None
+        return self.span_rate
 
     def set_gain(self, name: str, db: float) -> None:
         self._state.setdefault("gains", {})[name] = float(db)

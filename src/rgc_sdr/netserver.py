@@ -1,9 +1,11 @@
-"""The network radio server (P9a, PLANNING.md 7q): runs on the Pi, serves its SDRs.
+"""The network radio server (P9, PLANNING.md 7q): runs on the Pi, serves its SDRs.
 
     python3 -m rgc_sdr.netserver --bind 100.x.y.z
 
-A client lists the radios attached, opens one, and receives its IQ decimated on the Pi
-to a link rate the network can carry; tuning, gains and the rest are JSON requests. The
+A client lists the radios attached and opens one. It then receives spectrum lines of the
+radio's whole span, and IQ for a window around the tuned frequency, decimated on the Pi to
+a rate the network can carry; tuning inside the span only moves the window. Tuning, gains
+and the rest are JSON requests. The
 radio is opened with the app's own `SoapyIQSource`, so every driver quirk, LO offset and
 ppm correction behaves here as it does on the Mac. Receive only. Any number of clients may
 connect and list radios; one at a time has a radio open, and opening one closes the
@@ -21,15 +23,22 @@ import threading
 import time
 
 from .device.profiles import profile_for
+import numpy as np
+
 from .device.remote_protocol import (
     DEFAULT_PORT, FRAME_JSON, PROTOCOL_VERSION, ProtocolError, caps_to_dict, encode_iq,
-    json_frame, link_plan, parse_json, read_frame,
+    encode_spectrum, iq_rate_for, json_frame, needs_recentre, parse_json, read_frame,
 )
-from .dsp.decimate import StreamDecimator
+from .device.source import _Nco
+from .dsp.decimate import Decimator, StreamDecimator
+from .dsp.spectrum import SpectrumAnalyzer
 
-#: IQ is sent in blocks of about this long: short enough for a responsive waterfall,
-#: long enough that the 12-byte headers and per-block work stay negligible.
+#: IQ is sent in blocks of about this long: short enough for responsive audio, long
+#: enough that the 12-byte headers and per-block work stay negligible.
 BLOCK_S = 0.02
+#: Of the radio's samples, at most this many seconds' worth go into one spectrum line,
+#: as in the app (ui/main_window.py).
+FRAME_INPUT_BUDGET = 0.6
 
 
 def list_radios() -> list[dict]:
@@ -56,12 +65,13 @@ def list_radios() -> list[dict]:
 
 
 class RadioSession:
-    """One open radio and the pump that sends its decimated IQ."""
+    """One open radio: an IQ window around the tuned frequency, and spectrum lines of the
+    radio's whole span, each sent by a thread of its own (PLANNING.md 7q, P9b)."""
 
     #: Sessions with a radio open, for `list_radios`.
     open_sessions: set["RadioSession"] = set()
 
-    def __init__(self, send, driver: str, serial: str | None, link_rate: float,
+    def __init__(self, send, driver: str, serial: str | None, radio_rate: float,
                  centre_hz: float, generation: int, source_factory=None) -> None:
         from .device.source import SoapyIQSource
 
@@ -72,19 +82,20 @@ class RadioSession:
         self._send = send
         self.driver, self.serial = driver, serial or ""
         self.source = factory(driver=driver, serial=serial or None, center_freq=centre_hz)
-        self.plan = link_plan(self.source.caps.sample_rates, profile.default_rate)
-        if not self.plan:
-            self.source.close()
-            raise ValueError(f"{profile.label}: no link rate fits")
         self._lock = threading.Lock()
         self.generation = int(generation)
-        self.link_rate = 0.0
-        self.factor = 1
-        self._decimator = StreamDecimator(1)
+        #: The tuned frequency: the IQ window's centre, which need not be the radio's.
+        self.tuned = float(self.source.center_freq)
+        self.iq_rate, self.factor = iq_rate_for(self.source.sample_rate)
+        self._decimator = StreamDecimator(self.factor)
+        self._nco = _Nco(0.0, self.source.sample_rate)
         self._reader = None
-        self._apply_rate(link_rate)
+        self.fft_size, self.fps, self.zoom = 4096, 25.0, 1
+        self._analyzer = SpectrumAnalyzer(self.fft_size)
+        if radio_rate:
+            self._apply_rate(radio_rate)
         self._running = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
         RadioSession.open_sessions.add(self)
 
     # -- the radio's state, as sent to the client
@@ -94,43 +105,66 @@ class RadioSession:
         gains = {g.name: src.get_gain(g.name) for g in caps.gain_elements}
         settings = {s.key: src.read_setting(s.key) for s in caps.settings}
         return {
-            "freq": src.center_freq, "link_rate": self.link_rate,
-            "radio_rate": src.sample_rate, "factor": self.factor, "gains": gains,
+            "freq": self.tuned, "radio_freq": src.center_freq, "radio_rate": src.sample_rate,
+            "iq_rate": self.iq_rate, "factor": self.factor, "gains": gains,
             "agc": src.get_agc(), "bandwidth": getattr(src, "bandwidth", 0.0),
             "settings": settings, "ppm": getattr(src, "ppm", 0.0),
-            "dc_spike_offset": src.dc_spike_offset_hz, "generation": self.generation,
-            "lost": getattr(self._reader, "lost", 0),
+            # Where the radio's spike is, from the tuned frequency.
+            "dc_spike_offset": src.center_freq + src.dc_spike_offset_hz - self.tuned,
+            "generation": self.generation, "lost": getattr(self._reader, "lost", 0),
+            "fft_size": self.fft_size, "zoom": self.zoom,
         }
 
     def caps(self) -> dict:
-        """The radio's capabilities, with the link rates as its sample rates."""
-        out = caps_to_dict(self.source.caps)
-        out["sample_rates"] = list(self.plan)
-        return out
+        return caps_to_dict(self.source.caps)
 
     # -- changes
 
-    def _apply_rate(self, link_rate: float) -> None:
-        link = min(self.plan, key=lambda r: abs(r - float(link_rate)))
-        radio_rate, factor = self.plan[link]
-        self.source.set_sample_rate(radio_rate)
-        self.link_rate, self.factor = link, factor
-        self._decimator = StreamDecimator(factor)
+    def _set_mixer(self) -> None:
+        """Shift the tuned frequency to the IQ window's centre."""
+        self._nco = _Nco(self.source.center_freq - self.tuned, self.source.sample_rate)
+
+    def _apply_rate(self, radio_rate: float) -> None:
+        self.source.set_sample_rate(float(radio_rate))
+        self.iq_rate, self.factor = iq_rate_for(self.source.sample_rate)
+        self._decimator = StreamDecimator(self.factor)
         # A rate change rebuilds the source's ring: read from the new one.
         self._reader = self.source.sequential_reader()
+        if needs_recentre(self.source.center_freq, self.source.sample_rate, self.iq_rate,
+                          self.tuned):
+            self.source.set_center_freq(self.tuned)
+        self._set_mixer()
 
-    def set_rate(self, link_rate: float, generation: int) -> None:
+    def set_rate(self, radio_rate: float, generation: int) -> None:
         with self._lock:
-            self._apply_rate(link_rate)
+            self._apply_rate(radio_rate)
             self.generation = int(generation)
 
     def tune(self, hz: float, flush: bool, generation: int) -> None:
+        """Move the IQ window; the radio only when the window would leave its span."""
         with self._lock:
-            self.source.set_center_freq(float(hz), flush=flush)
+            caps = self.source.caps
+            self.tuned = caps.clamp_freq(float(hz))
+            if needs_recentre(self.source.center_freq, self.source.sample_rate,
+                              self.iq_rate, self.tuned):
+                self.source.set_center_freq(self.tuned, flush=True)
+                flush = True
+            self._set_mixer()
             if flush:
-                self._decimator.reset()
+                # Replaced, not reset: the pump may be using the old one outside the lock.
+                self._decimator = StreamDecimator(self.factor)
                 self._reader.skip_to_latest()
                 self.generation = int(generation)
+
+    def set_display(self, fft_size: int | None, fps: float | None, zoom: int | None) -> None:
+        with self._lock:
+            if fft_size and int(fft_size) != self.fft_size:
+                self.fft_size = int(fft_size)
+                self._analyzer = SpectrumAnalyzer(self.fft_size)
+            if fps:
+                self.fps = min(50.0, max(1.0, float(fps)))
+            if zoom:
+                self.zoom = max(1, int(zoom))
 
     def apply(self, op: str, message: dict) -> None:
         """The simple setters: gain, AGC, IF bandwidth, a driver switch, ppm."""
@@ -151,21 +185,23 @@ class RadioSession:
     # -- streaming
 
     def start(self) -> None:
-        if self._thread is not None:
+        if self._threads:
             return
         self.source.start()
         with self._lock:
             self._reader = self.source.sequential_reader()
             self._decimator.reset()
         self._running.set()
-        self._thread = threading.Thread(target=self._pump, name="iq-pump", daemon=True)
-        self._thread.start()
+        for target, name in ((self._iq_pump, "iq-pump"), (self._spectrum_pump, "spectrum")):
+            thread = threading.Thread(target=target, name=name, daemon=True)
+            thread.start()
+            self._threads.append(thread)
 
     def stop(self) -> None:
         self._running.clear()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-            self._thread = None
+        for thread in self._threads:
+            thread.join(timeout=2.0)
+        self._threads = []
         self.source.stop()
 
     def close(self) -> None:
@@ -173,25 +209,72 @@ class RadioSession:
         self.stop()
         self.source.close()
 
-    def _pump(self) -> None:
+    def _sendable(self, data: bytes) -> bool:
+        try:
+            self._send(data)
+            return True
+        except OSError:
+            self._running.clear()            # the client has gone
+            return False
+
+    def _iq_pump(self) -> None:
         while self._running.is_set():
+            # Only the read is locked: the filtering, most of the work, runs outside it,
+            # so tuning and the spectrum thread never wait for it. A change made
+            # meanwhile swaps in a new mixer and filter and a new generation, so this
+            # block is filtered by the objects it was read for and tagged as stale.
             with self._lock:
-                reader, decimator = self._reader, self._decimator
+                reader = self._reader
                 block = int(self.source.sample_rate * BLOCK_S) // self.factor * self.factor
                 if reader.available() < block:
-                    out = None
+                    iq = None
                 else:
-                    generation = self.generation
-                    out = decimator.process(reader.read(block))
-            if out is None:
+                    generation, nco, decimator = self.generation, self._nco, self._decimator
+                    iq = reader.read(block)
+            if iq is None:
                 time.sleep(BLOCK_S / 4)
                 continue
-            if out.size:
-                try:
-                    self._send(encode_iq(out, generation))
-                except OSError:
-                    self._running.clear()            # the client has gone
-                    return
+            nco.process(iq)
+            out = decimator.process(iq)
+            if out.size and not self._sendable(encode_iq(out, generation)):
+                return
+
+    def spectrum_line(self) -> bytes | None:
+        """The newest spectrum line: the radio's whole span, or zoomed, span/zoom around
+        the tuned frequency. None until there are samples enough."""
+        with self._lock:
+            analyzer, zoom = self._analyzer, self.zoom
+            rate, radio_centre, tuned = (self.source.sample_rate, self.source.center_freq,
+                                         self.tuned)
+        decimator = Decimator(zoom)
+        budget = int(FRAME_INPUT_BUDGET * rate)
+        wanted = min(analyzer.samples_wanted(), max(analyzer.fft_size, budget // zoom))
+        iq = self.source.read_latest(decimator.input_for_output(wanted))
+        if iq.size < decimator.input_for_output(analyzer.fft_size):
+            return None
+        centre = radio_centre
+        if zoom > 1:
+            # Centred on the tuned frequency, as the app's own zoom is.
+            n = np.arange(iq.size)
+            iq = iq * np.exp(-2j * np.pi * (tuned - radio_centre) / rate * n).astype(np.complex64)
+            iq = decimator.process(iq)
+            centre = tuned
+        if iq.size < analyzer.fft_size:
+            return None
+        return encode_spectrum(centre, rate / zoom, analyzer.psd_dbfs(iq))
+
+    def _spectrum_pump(self) -> None:
+        next_at = time.monotonic()
+        while self._running.is_set():
+            line = self.spectrum_line()
+            if line is not None and not self._sendable(line):
+                return
+            next_at += 1.0 / self.fps
+            delay = next_at - time.monotonic()
+            if delay > 0:
+                time.sleep(delay)
+            else:
+                next_at = time.monotonic()          # fell behind: do not try to catch up
 
 
 class ClientHandler:
@@ -246,8 +329,10 @@ class ClientHandler:
                 self._claim(self)
             self.session = RadioSession(
                 self.send, str(request["driver"]), request.get("serial"),
-                float(request.get("link_rate", 0)), float(request.get("hz", 100e6)),
+                float(request.get("radio_rate", 0)), float(request.get("hz", 100e6)),
                 int(request.get("generation", 0)), self._source_factory)
+            self.session.set_display(request.get("fft_size"), request.get("fps"),
+                                     request.get("zoom"))
             self.reply(request, caps=self.session.caps(), state=self.session.state())
             return
         session = self.session
@@ -265,8 +350,11 @@ class ClientHandler:
             session.tune(float(request["hz"]), bool(request.get("flush", True)),
                          int(request.get("generation", session.generation)))
         elif op == "rate":
-            session.set_rate(float(request["link_rate"]),
+            session.set_rate(float(request["radio_rate"]),
                              int(request.get("generation", session.generation)))
+        elif op == "display":
+            session.set_display(request.get("fft_size"), request.get("fps"),
+                                request.get("zoom"))
         elif op != "state":
             session.apply(op, request)
         self.reply(request, state=session.state())

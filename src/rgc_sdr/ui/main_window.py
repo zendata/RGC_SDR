@@ -537,7 +537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for rate in rates:
             label = f"{rate / 1e3:g} kS/s" if rate < 1e6 else f"{rate / 1e6:g} MS/s"
             combo.addItem(label, rate)
-        index = combo.findData(self.source.sample_rate)
+        index = combo.findData(self._rate_setting())
         if index >= 0:
             combo.setCurrentIndex(index)
         combo.blockSignals(False)
@@ -898,7 +898,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         explicit = self._levels_explicit
         return RadioSettings(
-            sample_rate=self.source.sample_rate,
+            sample_rate=self._rate_setting(),
             decimation=self.decimator.factor,
             gains=gains,
             agc=self._agc_check.isChecked() if self._agc_check is not None else None,
@@ -958,7 +958,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def apply_radio_settings(self, radio: RadioSettings) -> None:
         """Everything saved for this radio: rate, zoom and colour levels as well."""
         index = self._rate_combo.findData(radio.sample_rate) if radio.sample_rate else -1
-        if index >= 0 and radio.sample_rate != self.source.sample_rate:
+        if index >= 0 and radio.sample_rate != self._rate_setting():
             self._rate_combo.setCurrentIndex(index)       # restarts the stream
         factor = radio.decimation if radio.decimation in ZOOM_FACTORS else 1
         if factor != self.decimator.factor:
@@ -979,7 +979,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         base = self.settings.radios.get(self.current_device_key()) or RadioSettings()
         rates = self.source.caps.sample_rates
-        rate = base.sample_rate if base.sample_rate in rates else self.source.sample_rate
+        rate = base.sample_rate if base.sample_rate in rates else self._rate_setting()
         span = snap.sample_rate / max(1, snap.decimation)
         factor = min(ZOOM_FACTORS, key=lambda f: abs(np.log((rate / f) / span)))
         return dataclasses.replace(base, sample_rate=rate, decimation=factor)
@@ -1050,7 +1050,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.scanner = None
             self.scanner_panel.set_running(False)
             return False
-        step = self.scanner.start(self.effective_rate)
+        step = self.scanner.start(self.display_span)
         self._apply_scan_step(step)
         self.scanner_panel.set_running(True)
         if config.stop_on_signal and self.audio is None:
@@ -2525,8 +2525,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     @property
     def effective_rate(self) -> float:
-        """Sample rate after decimation: the span actually on screen."""
+        """The IQ's rate after decimation: the span actually on screen -- except for a
+        network radio, whose IQ is a window inside the span its lines show (`_wide`)."""
+        if self._wide:
+            return self.source.sample_rate
         return self.decimator.effective_rate(self.source.sample_rate)
+
+    @property
+    def _wide(self) -> bool:
+        """A network radio (P9b): its spectrum comes as lines of the radio's whole span,
+        and its IQ is a narrower window around the tuned frequency."""
+        return hasattr(self.source, "take_spectrum_lines")
+
+    @property
+    def display_span(self) -> float:
+        """The span the spectrum and waterfall show."""
+        return self.source.display_span if self._wide else self.effective_rate
+
+    def _rate_setting(self) -> float:
+        """The rate the Rate list shows: the radio's own (a network radio's span)."""
+        return getattr(self.source, "span_rate", None) or self.source.sample_rate
 
     def _apply_geometry(self, preserve_span: bool = False) -> None:
         """Re-place the display on the axes.
@@ -2540,7 +2558,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # A transceiver's scope has its own centre: in fixed mode, not the dial.
         centre = getattr(self.source, "display_center_freq", None) or self.source.center_freq
         self.waterfall.set_geometry(
-            centre, self.effective_rate, history_s,
+            centre, self.display_span, history_s,
             preserve_span=preserve_span,
         )
 
@@ -2567,7 +2585,7 @@ class MainWindow(QtWidgets.QMainWindow):
         pixel, so its history is still honest; it is also small against any channel
         filter, so the demodulator's state remains valid.
         """
-        return self.effective_rate / max(1, self.waterfall.buffer.cols)
+        return self.display_span / max(1, self.waterfall.buffer.cols)
 
     def _retune(
         self,
@@ -2624,9 +2642,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.stop_iq_recording("frequency changed")
             self._rec_iq_button.setChecked(False)
 
-        if not fine:
+        if not fine and not self._wide:
+            # (A network radio's lines say when the picture moved: `_wide_frame`.)
             self.spectrum.reset()
             self.waterfall.clear_history()
+        if not fine:
             self.waterfall.clear_label()          # it named what was here before
             self._cancel_classify()
             self._cancel_sweep()
@@ -2810,6 +2830,10 @@ class MainWindow(QtWidgets.QMainWindow):
         off the side of the screen."""
         from ..dsp.dab import RATE as DAB_RATE
 
+        if self._wide:
+            self._status.showMessage(
+                "DAB needs 2.048 MS/s of IQ: more than a network radio sends", 8000)
+            return
         rate = self.source.sample_rate
         ratio = rate / DAB_RATE
         if abs(ratio - round(ratio)) < 1e-6 and round(ratio) in (1, 2, 4):
@@ -3431,7 +3455,7 @@ class MainWindow(QtWidgets.QMainWindow):
         explicit = self._levels_explicit
         return Snapshot(
             freq_hz=self.source.center_freq,
-            sample_rate=self.source.sample_rate,
+            sample_rate=self._rate_setting(),
             decimation=self.decimator.factor,
             fft_size=self.analyzer.fft_size,
             colormap=self._cmap_combo.currentText(),
@@ -3462,10 +3486,10 @@ class MainWindow(QtWidgets.QMainWindow):
         Rate first: changing it restarts the stream, which would otherwise undo the
         frequency and zoom set afterwards.
         """
-        if self._rate_combo.count() > 1 and snap.sample_rate != self.source.sample_rate:
+        if self._rate_combo.count() > 1 and snap.sample_rate != self._rate_setting():
             self.source.set_sample_rate(snap.sample_rate)
             self._rate_combo.blockSignals(True)
-            index = self._rate_combo.findData(self.source.sample_rate)
+            index = self._rate_combo.findData(self._rate_setting())
             if index >= 0:
                 self._rate_combo.setCurrentIndex(index)
             self._rate_combo.blockSignals(False)
@@ -3624,7 +3648,7 @@ class MainWindow(QtWidgets.QMainWindow):
             note = " -- first time on this radio, using its own settings"
         snap = dataclasses.replace(
             memory.snapshot,
-            sample_rate=radio.sample_rate or self.source.sample_rate,
+            sample_rate=radio.sample_rate or self._rate_setting(),
             decimation=radio.decimation,
             min_db=radio.min_db,
             max_db=radio.max_db,
@@ -3738,6 +3762,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.is_transceiver:
             self._scope_frame()
             return
+        if self._wide:
+            self._wide_frame()
+            return
         iq = self.source.read_latest(self._frame_request())
         if iq.size < self.decimator.input_for_output(self.analyzer.fft_size):
             # A half-duplex radio receives nothing while it transmits.
@@ -3754,12 +3781,44 @@ class MainWindow(QtWidgets.QMainWindow):
         freqs = self.analyzer.freq_axis(self.source.center_freq, self.effective_rate)
         self.spectrum.update_spectrum(freqs, dbfs)
         self.waterfall.push(dbfs)
+        self._after_spectrum(freqs, dbfs)
+
+    def _wide_frame(self) -> None:
+        """A network radio's display: the spectrum lines its server computed over the
+        radio's whole span (or span/zoom around the tuned frequency), every one that
+        arrived since the last frame onto the waterfall."""
+        src = self.source
+        src.set_display(self.analyzer.fft_size, self.fps, self.decimator.factor)
+        lines = src.take_spectrum_lines()
+        if not lines:
+            if self._rows_pushed == 0:
+                self._status.showMessage("waiting for the network radio...")
+            return
+        for line in lines:
+            n = line.dbfs.size
+            geometry = (line.centre_hz, line.span_hz, n)
+            if geometry != self._scope_geometry:
+                # The radio moved, or the zoom or FFT size changed: a new picture.
+                span_changed = (self._scope_geometry is None
+                                or line.span_hz != self._scope_geometry[1])
+                self._scope_geometry = geometry
+                self.waterfall.clear_history()
+                self.spectrum.reset()
+                self._apply_geometry(preserve_span=not span_changed)
+                self._update_passband()
+            self.waterfall.push(line.dbfs)
+        freqs = line.centre_hz + (np.arange(n) - n // 2) * (line.span_hz / n)
+        self.spectrum.update_spectrum(freqs, line.dbfs)
+        self._after_spectrum(freqs, line.dbfs, rows=len(lines))
+
+    def _after_spectrum(self, freqs, dbfs, rows: int = 1) -> None:
+        """What follows a new spectrum, wherever it came from."""
         self._update_smeter(dbfs, freqs)
         self._update_info_line()
         self._update_tone_state()
         self._collect_decoded()
         self._scan_frame(freqs, dbfs)
-        self._rows_pushed += 1
+        self._rows_pushed += rows
 
         # One-shot auto-range once there is enough history to be representative.
         if self._auto_pending and self._rows_pushed >= 20:
@@ -3831,10 +3890,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._status_free():
             return
         stats = getattr(self.source, "stats", {})
-        span = self.effective_rate
+        span = self.display_span
+        rates = (f"{self._rate_setting() / 1e3:.0f} kS/s, listening "
+                 f"{self.source.sample_rate / 1e3:.0f} kS/s over the network"
+                 if self._wide else f"{self.source.sample_rate / 1e3:.0f} kS/s")
         self._frame_status = (
             f"{self.source.center_freq / 1e6:.4f} MHz  |  "
-            f"{self.source.sample_rate / 1e3:.0f} kS/s  |  "
+            f"{rates}  |  "
             f"zoom {self.decimator.factor}x  |  "
             f"span {span / 1e3:.1f} kHz  |  "
             f"{span / self.analyzer.fft_size:.1f} Hz/bin  |  "

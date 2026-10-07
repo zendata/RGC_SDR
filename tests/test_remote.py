@@ -1,4 +1,4 @@
-"""The network radio server and its client (P9a, PLANNING.md 7q).
+"""The network radio server and its client (P9, PLANNING.md 7q).
 
 The server is run on localhost with a stand-in radio injected through its source factory
 (tests only, as the UI tests inject stub sources): what is tested is the wire, the
@@ -18,8 +18,8 @@ from src.rgc_sdr.device.remote import (
     remote_profile, save_servers,
 )
 from src.rgc_sdr.device.remote_protocol import (
-    MAX_LINK_RATE, MIN_LINK_RATE, caps_from_dict, caps_to_dict, decode_iq, encode_iq,
-    link_plan,
+    MAX_IQ_RATE, caps_from_dict, caps_to_dict, decode_iq, decode_spectrum, encode_iq,
+    encode_spectrum, iq_rate_for, needs_recentre,
 )
 from src.rgc_sdr.device.source import (
     DeviceCaps, FreqRange, GainElement, SequentialReader, SettingInfo, _Ring,
@@ -57,15 +57,29 @@ def test_caps_round_trip_without_the_transmitter():
     assert back == caps and back.tx is None
 
 
-def test_link_plan_halves_from_the_rate_nearest_the_default():
-    plan = link_plan((912e3, 768e3, 456e3, 384e3, 256e3, 192e3), 768e3)
-    assert plan[384e3] == (768e3, 2) and plan[768e3] == (768e3, 1)
-    assert plan[456e3] == (912e3, 2)
-    hackrf = link_plan((2e6, 4e6, 8e6, 10e6, 20e6), 4e6)
-    assert hackrf[1e6] == (4e6, 4) and hackrf[500e3] == (4e6, 8)
-    assert hackrf[625e3] == (10e6, 16)
-    assert all(MIN_LINK_RATE <= r <= MAX_LINK_RATE for p in (plan, hackrf) for r in p)
-    assert link_plan((20e6,), 20e6) == {}                # above what the Pi is asked to do
+def test_the_iq_window_is_the_radio_rate_halved_to_at_most_400k():
+    assert iq_rate_for(2.048e6) == (256e3, 8)
+    assert iq_rate_for(768e3) == (384e3, 2)
+    assert iq_rate_for(4e6) == (250e3, 16)
+    assert iq_rate_for(192e3) == (192e3, 1)
+    assert all(iq_rate_for(r)[0] <= MAX_IQ_RATE for r in (912e3, 2.4e6, 6e6, 10e6))
+
+
+def test_tuning_moves_the_radio_only_near_the_edge_of_its_span():
+    # 2.048 MS/s, 256 kS/s window: reach is 1.024M - 128k - 102.4k = 793.6 kHz.
+    assert not needs_recentre(100e6, 2.048e6, 256e3, 100.7e6)
+    assert needs_recentre(100e6, 2.048e6, 256e3, 100.8e6)
+    assert needs_recentre(100e6, 2.048e6, 256e3, 99.1e6)
+    assert needs_recentre(7e6, 256e3, 256e3, 7.001e6)      # window = span: always
+
+
+def test_a_spectrum_line_round_trips_within_its_step():
+    dbfs = np.linspace(-130, -40, 4096).astype(np.float32)
+    centre, span, back = decode_spectrum(encode_spectrum(145e6, 2.048e6, dbfs)[5:])
+    assert (centre, span) == (145e6, 2.048e6) and back.size == 4096
+    assert np.abs(back - dbfs).max() <= 90 / 255 / 2 + 1e-3
+    flat = np.full(16, -100.0, np.float32)
+    assert np.allclose(decode_spectrum(encode_spectrum(1e6, 1e6, flat)[5:])[2], -100.0)
 
 
 # -- servers and remote profiles ----------------------------------------------------------
@@ -85,7 +99,9 @@ def test_a_remote_profile_is_its_own_radio():
     profile = remote_profile(profile_for("rtlsdr"), ServerAddress("radiopi"))
     assert profile.key == "rtlsdr@radiopi" == remote_key("rtlsdr", ServerAddress("radiopi"))
     assert profile.remote == ("radiopi", 55133, "rtlsdr") and profile.tx is None
-    assert max(profile.sample_rates) <= MAX_LINK_RATE
+    assert 2.048e6 in profile.sample_rates and profile.default_rate == 2.048e6
+    hackrf = remote_profile(profile_for("hackrf"), ServerAddress("radiopi"))
+    assert max(hackrf.sample_rates) <= 10e6
     assert profile.covers(144e6) and "radiopi" in profile.label
     assert profile_for("rtlsdr@radiopi").remote is not None     # resolvable from its key
     assert profile_for("nonsense@radiopi") is None
@@ -120,6 +136,7 @@ class StandInRadio:
         self._thread = None
         self._n = 0
         self.closed = False
+        self.retunes = 0
         StandInRadio.instances.append(self)
 
     def set_sample_rate(self, hz):
@@ -128,10 +145,14 @@ class StandInRadio:
         return self.sample_rate
 
     def set_center_freq(self, hz, flush=True):
-        self.center_freq = float(hz)
+        self.center_freq = self.caps.clamp_freq(float(hz))
+        self.retunes += 1
         if flush:
             self._ring.clear()
         return self.center_freq
+
+    def read_latest(self, n):
+        return self._ring.read_latest(n)
 
     def sequential_reader(self):
         return SequentialReader(self._ring)
@@ -205,36 +226,88 @@ def _tone_hz(iq, rate):
     return np.fft.fftfreq(iq.size, 1 / rate)[np.argmax(spectrum)]
 
 
-def test_a_remote_radio_streams_decimated_iq(server):
+def _lines(src, timeout=5.0):
+    """Spectrum lines, waiting until some arrive."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        lines = src.take_spectrum_lines()
+        if lines:
+            return lines
+        time.sleep(0.02)
+    return []
+
+
+def _peak_hz(line):
+    n = line.dbfs.size
+    return line.centre_hz + (int(np.argmax(line.dbfs)) - n // 2) * line.span_hz / n
+
+
+def test_a_remote_radio_sends_its_whole_span_and_an_iq_window(server):
     profile = remote_profile(profile_for("rtlsdr"), server)
-    src = RemoteIQSource(server, "rtlsdr", sample_rate=250e3, center_freq=145e6,
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6,
                          profile=profile)
     try:
-        assert src.sample_rate == 250e3 and src.center_freq == 145e6
+        assert src.span_rate == 2e6 and src.sample_rate == 250e3     # 2 MS/s by 8
+        assert src.center_freq == 145e6
         assert src.caps.driver == profile.key and src.caps.tx is None
-        assert set(src.caps.sample_rates) == {1e6, 500e3, 250e3, 125e3, 62.5e3}
+        assert set(src.caps.sample_rates) == {2e6, 1e6}
+        src.set_display(1024, 25, 1)
         src.start()
+        line = _lines(src)[-1]
+        assert (line.centre_hz, line.span_hz, line.dbfs.size) == (145e6, 2e6, 1024)
+        assert _peak_hz(line) == pytest.approx(145.02e6, abs=2e6 / 1024)
         assert _wait(lambda: len(src.read_latest(16384)) == 16384)
         assert _tone_hz(src.read_latest(16384), src.sample_rate) == pytest.approx(20e3, abs=50)
-        radio = StandInRadio.instances[-1]
-        assert radio.sample_rate == 2e6                    # served from 2 MS/s by 8
     finally:
         src.close()
     assert _wait(lambda: StandInRadio.instances[-1].closed)
 
 
-def test_a_flushing_retune_drops_what_came_before(server):
-    src = RemoteIQSource(server, "rtlsdr", sample_rate=250e3, center_freq=145e6)
+def test_tuning_inside_the_span_moves_only_the_window(server):
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6)
     try:
         src.start()
-        assert _wait(lambda: src.stats["samples"] > 50_000)
-        reader = src.sequential_reader()
-        assert src.set_center_freq(146e6) == 146e6          # predicted at once
-        assert src.set_center_freq(5e9) == 1.7e9            # clamped to the radio
         radio = StandInRadio.instances[-1]
+        retunes = radio.retunes
+        reader = src.sequential_reader()
+        assert src.set_center_freq(145.02e6) == 145.02e6       # onto the tone
+        assert _wait(lambda: src._state.get("freq") == 145.02e6)
+        assert radio.center_freq == 145e6 and radio.retunes == retunes
+        reader.skip_to_latest()
+        assert _wait(lambda: reader.available() >= 16384)
+        iq = reader.read(16384)
+        assert abs(_tone_hz(iq, src.sample_rate)) < 50              # the tone at the centre
+        line = _lines(src)[-1]
+        assert line.centre_hz == 145e6                              # the picture stays
+    finally:
+        src.close()
+
+
+def test_tuning_past_the_edge_moves_the_radio(server):
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6)
+    try:
+        src.start()
+        radio = StandInRadio.instances[-1]
+        src.set_center_freq(146.5e6)
+        assert _wait(lambda: radio.center_freq == 146.5e6)
+        assert _wait(lambda: any(l.centre_hz == 146.5e6 for l in src.take_spectrum_lines()))
+        assert src.set_center_freq(5e9) == 1.7e9                    # clamped to the radio
         assert _wait(lambda: radio.center_freq == 1.7e9)
-        assert _wait(lambda: reader.available() > 10_000)
-        assert src.center_freq == 1.7e9
+    finally:
+        src.close()
+
+
+def test_zoom_centres_the_lines_on_the_tuned_frequency(server):
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6)
+    try:
+        src.start()
+        src.set_center_freq(145.1e6)
+        src.set_display(1024, 25, 4)
+        assert _wait(lambda: any(l.span_hz == 500e3 and l.centre_hz == 145.1e6
+                                 for l in src.take_spectrum_lines()))
+        line = _lines(src)[-1]
+        assert _peak_hz(line) == pytest.approx(145.02e6, abs=500e3 / 1024 * 2)
+        assert src.display_span == 500e3
     finally:
         src.close()
 
@@ -253,13 +326,15 @@ def test_gains_and_agc_reach_the_radio(server):
         src.close()
 
 
-def test_a_rate_change_is_served_and_the_ring_rebuilt(server):
-    src = RemoteIQSource(server, "rtlsdr", sample_rate=250e3, center_freq=145e6)
+def test_a_rate_change_moves_the_span_and_the_window(server):
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6)
     try:
         src.start()
         assert src.set_sample_rate(1e6) == 1e6
+        assert src.span_rate == 1e6 and src.sample_rate == 250e3    # 1 MS/s by 4
         assert _wait(lambda: len(src.read_latest(32768)) == 32768)
-        assert _tone_hz(src.read_latest(32768), 1e6) == pytest.approx(20e3, abs=100)
+        assert _tone_hz(src.read_latest(32768), 250e3) == pytest.approx(20e3, abs=100)
+        assert _wait(lambda: any(l.span_hz == 1e6 for l in src.take_spectrum_lines()))
     finally:
         src.close()
 

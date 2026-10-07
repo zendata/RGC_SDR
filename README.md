@@ -153,12 +153,16 @@ frequency error is its own, not the station's, so memories never carry it.
 
 Any SDR plugged into another machine -- a Raspberry Pi at home, say -- can be used from
 the Mac, over Tailscale, from anywhere. The Pi runs `python3 -m rgc_sdr.netserver --bind
-<its Tailscale address>`, which opens the radio at its own rate and decimates it there to
-a *link rate* the network can carry (up to about 1 MS/s; 384 kS/s is about 12 Mbit/s).
-Choose **Network radio servers...** at the end of the radio list and name the machine
-("radiopi"); its radios then appear in the list as "RTL-SDR on radiopi" and so on, and behave like
-any other radio, with their own memories and settings. The **Rate** list holds the link
-rates. Receive only. See PLANNING.md section 7q for the design and the Pi's setup.
+<its Tailscale address>`. Choose **Network radio servers...** at the end of the radio list
+and name the machine ("radiopi"); its radios then appear in the list as "RTL-SDR on
+radiopi" and so on, with their own memories and settings.
+
+The radio runs at the rate chosen in the **Rate** list, and the waterfall shows its whole
+span: the Pi computes the spectrum and sends it as lines (under 1 Mbit/s). For listening
+and decoding it also sends IQ for a window of 200-400 kHz around the tuned frequency
+(about 8 Mbit/s). Tuning anywhere in the span only moves that window, so the waterfall
+stays put; near the edge the radio itself retunes. Zoom works as usual. Receive only, and
+no DAB (it needs 2.048 MS/s of IQ). See PLANNING.md section 7q.
 
 ### Choosing the radio
 
