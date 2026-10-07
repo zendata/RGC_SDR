@@ -631,6 +631,15 @@ class DemodChain:
             self._p25.reset()
             self._p25_up.reset()
             self._pacer.reset()
+        if self._dab is not None:
+            # A retune is another ensemble: a fresh receiver, or the last one's stations
+            # stay in the list and the new ones are added to them (VK3RQ, 2026-10-07).
+            from .dab import DabReceiver
+
+            self._dab = DabReceiver(self.sample_rate)
+            self._dab_up = None
+            self._pacer.reset()
+            self.dab_messages = []
         if self._stereo is not None:
             mono = self._stereo.force_mono
             self._stereo.reset()

@@ -149,3 +149,15 @@ def test_overload_is_measured():
     rx = D.DabReceiver(D.RATE)
     rx.process(np.full(10000, 1.0 + 1.0j, dtype=np.complex64))
     assert rx.clipped > 0.1
+
+
+def test_a_retune_starts_a_fresh_ensemble():
+    from src.rgc_sdr.dsp.demod import DemodChain
+
+    chain = DemodChain(D.RATE, "dab")
+    x = ensemble_iq()
+    for i in range(0, x.size, 50000):
+        chain.process(x[i:i + 50000])
+    assert chain.dab.ensemble.services
+    chain.reset()                                    # what a retune does
+    assert chain.dab.ensemble.services == {} and chain.dab.ensemble.label == ""
