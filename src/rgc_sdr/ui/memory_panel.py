@@ -3,7 +3,8 @@
 Groups are headings (LW, AM broadcast, FM broadcast, HF, VHF, UHF, Airband, Satellites,
 Air Nav/Data, P25, DMR, DAB+ to start), each memory under its own with its frequency
 and mode. Drag one or more memories onto a group, or onto any memory in it, to move
-them. Double-click recalls. The panel edits the settings' groups itself and says so
+them. Double-click recalls; the memory in use (the last recalled) is shown in bold, and
+Update saves the radio's settings now over it (VK3RQ, 2026-10-07). The panel edits the settings' groups itself and says so
 (`changed`); recalling, saving and deleting go to the window, which knows the radio.
 """
 
@@ -66,6 +67,8 @@ class MemoryPanel(QtWidgets.QWidget):
     recallRequested = QtCore.pyqtSignal(str)
     #: Save the radio's current settings: (name, group or "" for the automatic one).
     saveRequested = QtCore.pyqtSignal(str, str)
+    #: Save the radio's current settings over the memory in use, by name.
+    updateRequested = QtCore.pyqtSignal(str)
     deleteRequested = QtCore.pyqtSignal(str)
     #: The settings' groups or names changed here: save them.
     changed = QtCore.pyqtSignal()
@@ -79,6 +82,9 @@ class MemoryPanel(QtWidgets.QWidget):
         buttons = QtWidgets.QHBoxLayout()
         self.recall_button = self._button(buttons, "Recall", self._recall,
                                           "Tune to the selected memory (or double-click it)")
+        self.update_button = self._button(buttons, "Update", self._update,
+                                          "Save the radio's settings now over the memory in "
+                                          "use (in bold), for this radio")
         self.save_button = self._button(buttons, "Save current…", self._save,
                                         "Store the radio's settings now, in the selected group")
         self.rename_button = self._button(buttons, "Rename…", self._rename,
@@ -98,6 +104,8 @@ class MemoryPanel(QtWidgets.QWidget):
         self.tree.dropped.connect(self._on_dropped)
         outer.addWidget(self.tree, 1)
         self._expanded: set[str] | None = None
+        #: The memory last recalled, which Update saves over ("" for none).
+        self.in_use = ""
         self.refresh()
 
     @staticmethod
@@ -139,6 +147,10 @@ class MemoryPanel(QtWidgets.QWidget):
                     [memory.name, f"{snap.freq_hz / 1e6:.4f} MHz", what])
                 item.setData(0, NAME_ROLE, memory.name)
                 item.setData(0, GROUP_ROLE, group)
+                if memory.name == self.in_use:
+                    for col in range(3):
+                        item.setFont(col, font)
+                    item.setToolTip(0, "In use: Update saves over this one")
                 item.setFlags(item.flags() & ~QtCore.Qt.ItemFlag.ItemIsDropEnabled)
                 head.addChild(item)
                 if memory.name in selected:
@@ -151,6 +163,16 @@ class MemoryPanel(QtWidgets.QWidget):
         has = bool(self.settings.memories)
         for button in (self.recall_button, self.rename_button, self.delete_button):
             button.setEnabled(has)
+        self.update_button.setEnabled(self.settings.get_memory(self.in_use) is not None)
+        self.update_button.setToolTip(
+            f"Save the radio's settings now over \u201c{self.in_use}\u201d, for this radio"
+            if self.update_button.isEnabled() else "Recall a memory first: Update saves over it")
+
+    def set_in_use(self, name: str) -> None:
+        """Mark `name` as the memory in use ("" for none)."""
+        memory = self.settings.get_memory(name)
+        self.in_use = memory.name if memory is not None else ""
+        self.refresh()
 
     def selected_names(self) -> list[str]:
         return [i.data(0, NAME_ROLE) for i in self.tree.selectedItems() if i.data(0, NAME_ROLE)]
@@ -180,6 +202,10 @@ class MemoryPanel(QtWidgets.QWidget):
         if names:
             self.recallRequested.emit(names[0])
 
+    def _update(self) -> None:
+        if self.settings.get_memory(self.in_use) is not None:
+            self.updateRequested.emit(self.in_use)
+
     def _save(self) -> None:
         name, ok = QtWidgets.QInputDialog.getText(self, "Save memory", "Name for this memory:")
         if ok and name.strip():
@@ -196,6 +222,8 @@ class MemoryPanel(QtWidgets.QWidget):
             return
         done = (self.settings.rename_memory(name, new) if name
                 else self.settings.rename_group(group, new))
+        if done and name and name == self.in_use:
+            self.in_use = new.strip()
         if done:
             self.refresh()
             self.changed.emit()

@@ -580,6 +580,10 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
+        if hasattr(self, "_panels"):
+            for key in ("classify", "map"):
+                self._panels[key].setVisible(self._panel_open(key))
+            self._layout_panels()
         # The radio has its own S meter on the display panel; the SDR one is not needed.
         # Nor are the listening offset and recording: both work on the app's own IQ and
         # demodulated audio, which a transceiver does not give it.
@@ -1242,6 +1246,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.memory_panel = MemoryPanel(self.settings)
         self.memory_panel.recallRequested.connect(self.recall_memory)
         self.memory_panel.saveRequested.connect(self.save_memory)
+        self.memory_panel.updateRequested.connect(self.update_memory)
         self.memory_panel.deleteRequested.connect(self.delete_memory)
         self.memory_panel.changed.connect(self._save_state)
 
@@ -1261,7 +1266,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._tabs[key].setChecked(True)
         self._layout_panels()
 
+    def _panel_open(self, key: str) -> bool:
+        """Tab checked and not hidden: the IC-705 hides Classify and Map, whose panels
+        stay closed while it is in use and come back with an SDR."""
+        tab = self._tabs[key]
+        return tab.isChecked() and not tab.isHidden()
+
     def _show_panel(self, key: str, on: bool) -> None:
+        on = on and self._panel_open(key)
         self._panels[key].setVisible(on)
         if on and key == "map":
             self.map_window.refresh()
@@ -1277,7 +1289,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _layout_panels(self) -> None:
         """Share the height: the open panels what they ask (at most two thirds of the
         window), the spectrum a third of the rest, the waterfall the remainder."""
-        shown = [k for k, *_ in self.TABS if self._tabs[k].isChecked()]
+        shown = [k for k, *_ in self.TABS if self._panel_open(k)]
         self._panel_splitter.setVisible(bool(shown))
         want = {k: (self._settings_panel.sizeHint().height() if k == "settings"
                     else self.PANEL_HEIGHTS[k]) for k in shown}
@@ -3517,13 +3529,35 @@ class MainWindow(QtWidgets.QMainWindow):
         Returns True if an existing name was replaced."""
         replaced = self.settings.add_memory(
             name, self.current_snapshot(), self.current_device_key(),
-            self.current_radio_settings(),
+            self._memory_radio_settings(),
         )
         if group and not replaced:
             self.settings.move_memory(name, group)
-        self._refresh_memories()
+        self._set_memory_in_use(name)
         self._save_state()
         return replaced
+
+    def update_memory(self, name: str) -> bool:
+        """Save the current settings over memory `name` (the Update button): the station
+        and this radio's setup, keeping its name, group and every other radio's setup."""
+        if self.settings.get_memory(name) is None:
+            return False
+        self.save_memory(name)
+        self._status.showMessage(f"updated {name} for the {self._radio_label()}", 5000)
+        return True
+
+    def _radio_label(self) -> str:
+        profile = profile_for(self.current_device_key())
+        return profile.label if profile is not None else self.current_device_key()
+
+    def _memory_radio_settings(self) -> RadioSettings:
+        # The frequency error belongs to the radio, not the station: a memory holding it
+        # would undo a later calibration on every recall.
+        return dataclasses.replace(self.current_radio_settings(), ppm=None)
+
+    def _set_memory_in_use(self, name: str) -> None:
+        if hasattr(self, "memory_panel"):
+            self.memory_panel.set_in_use(name)
 
     def recall_memory(self, name: str) -> bool:
         memory = self.settings.get_memory(name)
@@ -3555,8 +3589,9 @@ class MainWindow(QtWidgets.QMainWindow):
             agc=bool(radio.agc) if radio.agc is not None else memory.snapshot.agc,
         )
         self.apply_snapshot(snap)
-        self.apply_radio_hardware(radio)
+        self.apply_radio_hardware(dataclasses.replace(radio, ppm=None))   # see above
         self._apply_decoder(memory.snapshot.decoder)
+        self._set_memory_in_use(memory.name)
         if not self.source.caps.covers(memory.snapshot.freq_hz):
             note = (f" -- {memory.snapshot.freq_hz / 1e6:.4f} MHz is outside this "
                     f"radio's range ({self.source.caps.describe_ranges()})")

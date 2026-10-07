@@ -576,6 +576,54 @@ def test_memories_sit_in_groups_and_move_between_them(qapp, tmp_path):
     win.close()
 
 
+def test_update_saves_over_the_memory_in_use(qapp, tmp_path):
+    from src.rgc_sdr.settings import RadioSettings
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    panel = win.memory_panel
+    assert not panel.update_button.isEnabled()            # nothing recalled yet
+    win._freq_spin.setValue(7.1)
+    win.save_memory("forty")
+    win.settings.move_memory("forty", "Satellites")
+    settings.get_memory("forty").radios["hackrf"] = RadioSettings(gains={"LNA": 24.0})
+    assert win.recall_memory("forty")
+    assert panel.in_use == "forty" and panel.update_button.isEnabled()
+    win._freq_spin.setValue(7.15)
+    updates = []
+    panel.updateRequested.connect(updates.append)
+    panel.update_button.click()
+    assert updates == ["forty"]
+    memory = settings.get_memory("forty")
+    assert memory.snapshot.freq_hz == pytest.approx(7.15e6)
+    assert memory.group == "Satellites"                   # name and group kept
+    assert memory.radios["hackrf"].gains == {"LNA": 24.0}  # another radio's setup kept
+    assert win.current_device_key() in memory.radios
+    win.close()
+
+
+def test_a_memory_never_carries_the_radios_frequency_error(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win._ppm_measured = 4.7
+    win.save_memory("spot")
+    assert settings.get_memory("spot").radios[win.current_device_key()].ppm is None
+    win.close()
+
+
+def test_the_memory_in_use_follows_a_rename(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win.save_memory("old")
+    assert win.memory_panel.in_use == "old"
+    settings.rename_memory("old", "new")
+    win.memory_panel.in_use = "new"
+    win.memory_panel.refresh()
+    assert win.memory_panel.update_button.isEnabled()
+    win.delete_memory("new")
+    assert not win.memory_panel.update_button.isEnabled()
+    win.close()
+
+
 def test_a_drop_on_a_group_moves_the_dragged_memories(qapp, tmp_path):
     settings = Settings(tmp_path / "s.json")
     win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
@@ -3469,6 +3517,16 @@ def test_transceiver_hides_what_needs_iq(qapp):
     assert not win._rec_iq_button.isEnabled() and not win._rec_audio_button.isEnabled()
     assert not win._squelch_check.isEnabled() and not win._offset_spin.isEnabled()
     assert win.spectrum.getAxis("left").labelText == "scope level"
+    win.close()
+
+
+def test_classify_and_map_stay_closed_on_the_transceiver(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    settings.open_panels = ["settings", "classify", "map"]
+    win = window_for(FakeTransceiver(), fft_size=1024, settings=settings)
+    assert win._classify_panel.isHidden() and win.map_window.isHidden()
+    assert win._classify_button.isHidden() or not win._classify_panel.isVisibleTo(win)
+    assert settings.open_panels == ["settings", "classify", "map"]   # back with an SDR
     win.close()
 
 

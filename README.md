@@ -127,7 +127,11 @@ spectrum and waterfall, which always stay; several can be open at once, the spli
 between them drag, and the app remembers which were open. **Settings** holds the radio,
 tuning, display, audio and recording controls; **Classify** the **?** and **Classify**
 buttons and a list of what they found (double-click to tune there); **Map** the map
-that used to open in its own window.
+that used to open in its own window. On the IC-705, which gives the app no IQ, Classify
+and Map are hidden.
+
+Drag a digit of the frequency up or down, or swipe two fingers over it, to step that
+digit by one at a time, whatever the tuning step.
 
 ### Memories
 
@@ -136,7 +140,14 @@ UHF, Airband, Satellites, Air Nav/Data, P25, DMR, DAB+ to start, each memory pla
 its mode, decoder and frequency. Drag memories onto a group (or any memory in it) to
 move them; double-click (or **Recall**) to tune; **Save current...** stores what the
 radio is doing now, in the selected group; **Rename...**, **Delete** and **New group...**
-do what they say (a group is deleted only when empty).
+do what they say (a group is deleted only when empty). The memory in use -- the last
+recalled -- is in bold, and **Update** saves the radio's settings now over it.
+
+A memory keeps the station (frequency, mode, bandwidth, squelch, decoder and the like)
+once, and each radio's own setup for it (sample rate, gains, AGC, IF bandwidth, colour
+range) separately: saving 621 kHz on the HackRF leaves how it was set up on the Airspy
+HF+ alone, and recalling it on either radio brings back that radio's setup. A radio's
+frequency error is its own, not the station's, so memories never carry it.
 
 ### Choosing the radio
 
