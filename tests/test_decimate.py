@@ -210,3 +210,25 @@ def test_stream_also_decimates_real_signals():
     out = sd.process(x)
     assert out.size == pytest.approx(8192 / 4, abs=20)
     assert np.isrealobj(out)
+
+
+def test_the_halving_filter_is_convolve_then_every_other_sample():
+    """HalvingFilter skips the work np.convolve throws away; it must not change a sample."""
+    from src.rgc_sdr.dsp.decimate import HalvingFilter
+
+    rng = np.random.default_rng(0)
+    for taps in (lowpass_taps(0.25), lowpass_taps(0.25, 31), lowpass_taps(0.1, 20),
+                 rng.standard_normal(9)):
+        halve = HalvingFilter(taps)
+        for n in (taps.size, taps.size + 1, 100, 101):
+            for start in (0, 1):
+                x = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+                expected = np.convolve(x, taps, "valid")[start::2]
+                assert np.allclose(halve(x, start), expected)
+
+
+def test_the_halving_filter_keeps_single_precision():
+    from src.rgc_sdr.dsp.decimate import HalvingFilter
+
+    x = np.ones(200, dtype=np.complex64)
+    assert HalvingFilter(lowpass_taps(0.25))(x).dtype == np.complex64

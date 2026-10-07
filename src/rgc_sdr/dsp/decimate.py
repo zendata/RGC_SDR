@@ -32,6 +32,54 @@ def lowpass_taps(cutoff: float, num_taps: int = STAGE_TAPS) -> np.ndarray:
     return (h / h.sum()).astype(np.float64)
 
 
+class HalvingFilter:
+    """`np.convolve(x, taps, "valid")[start::2]`, computed without the work thrown away.
+
+    The plain form filters every input sample and then discards half the outputs, and
+    upcasts complex64 to complex128 on the way. This computes only the outputs kept, as a
+    sum of strided slices -- one per *distinct, nonzero* tap. The stages' windowed sinc
+    at a quarter of the rate is a half-band filter, so nearly half its taps are exactly
+    zero, and it is symmetric, so mirror-image taps share one multiply. Measured on the
+    Pi 5 (2026-10-07, 2.048 MS/s decimated by 8): 41% of a core with np.convolve.
+
+    The loop is over taps (about 17), never over samples.
+    """
+
+    def __init__(self, taps: np.ndarray) -> None:
+        taps = np.asarray(taps, dtype=np.float64)
+        self.size = taps.size
+        # (tap value, offsets) -- offsets into the reversed-index view, see __call__.
+        terms: list[tuple[float, tuple[int, ...]]] = []
+        n = taps.size
+        symmetric = np.allclose(taps, taps[::-1])
+        for k in range(n):
+            if taps[k] == 0.0 or abs(taps[k]) < 1e-12 * np.abs(taps).max():
+                continue
+            mirror = n - 1 - k
+            if symmetric and mirror < k:
+                continue                     # added with its twin
+            pair = (k, mirror) if symmetric and mirror != k else (k,)
+            terms.append((float(taps[k]), pair))
+        self._terms = terms
+
+    def __call__(self, x: np.ndarray, start: int = 0) -> np.ndarray:
+        n_valid = x.size - self.size + 1
+        if n_valid <= start:
+            return x[:0]
+        count = (n_valid - start + 1) // 2
+        out = np.zeros(count, dtype=x.dtype)
+        last = self.size - 1
+        for value, pair in self._terms:
+            # Output j uses x[start + 2j + last - k] for tap k.
+            first = start + last - pair[0]
+            acc = x[first:first + 2 * count - 1:2]
+            if len(pair) == 2:
+                other = start + last - pair[1]
+                acc = acc + x[other:other + 2 * count - 1:2]
+            out += value * acc              # a Python float keeps x's precision
+        return out
+
+
 class Decimator:
     """Decimate complex IQ by a power-of-two factor.
 
@@ -49,6 +97,7 @@ class Decimator:
         # rate: the anti-alias cutoff is 0.25 normalised to that stage's input.
         stages = int(self._factor).bit_length() - 1
         self._taps = [lowpass_taps(0.25, self._taps_per_stage) for _ in range(stages)]
+        self._halvers = [HalvingFilter(t) for t in self._taps]
 
     @property
     def factor(self) -> int:
@@ -73,10 +122,10 @@ class Decimator:
         if self._factor == 1:
             return iq
         out = iq
-        for taps in self._taps:
-            if out.size < taps.size:
+        for halve in self._halvers:
+            if out.size < halve.size:
                 return out[:0]
-            out = np.convolve(out, taps, mode="valid")[::2]
+            out = halve(out)
         return out
 
 
@@ -99,6 +148,7 @@ class StreamDecimator:
         self._factor = int(factor)
         stages = int(self._factor).bit_length() - 1
         self._taps = [lowpass_taps(0.25, taps_per_stage) for _ in range(stages)]
+        self._halvers = [HalvingFilter(t) for t in self._taps]
         self._history: list[np.ndarray | None] = []
         self._phase: list[int] = []
         self.reset()
@@ -135,11 +185,11 @@ class StreamDecimator:
             if padded.size < taps.size:
                 self._history[i] = padded
                 return out[:0]
-            filtered = np.convolve(padded, taps, mode="valid")
+            n_filtered = padded.size - taps.size + 1
             start = self._phase[i]
-            decimated = filtered[start::2]
+            decimated = self._halvers[i](padded, start)
             # Where the next block should start sampling, to keep the rate exact.
-            consumed = filtered.size - start
+            consumed = n_filtered - start
             self._phase[i] = (2 - (consumed % 2)) % 2
             self._history[i] = padded[-(taps.size - 1) :]
             out = decimated
