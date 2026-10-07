@@ -91,3 +91,50 @@ def test_a_click_without_drag_tunes_nothing(qapp):
     display.digitDragged.connect(seen.append)
     _drag(display, 6, 0)
     assert seen == [] and display.value() == pytest.approx(144.775)
+
+
+def _wheel(display, index, dy, inverted=False):
+    """A wheel (or two-finger swipe) event over character `index`: `dy` angle units."""
+    edit = display.lineEdit()
+    metrics = QtGui.QFontMetricsF(edit.font())
+    text = edit.text()
+    left = edit.contentsRect().left() + edit.textMargins().left() + 2
+    x = left + (metrics.horizontalAdvance(text[:index]) + metrics.horizontalAdvance(text[: index + 1])) / 2
+    pos = QtCore.QPointF(edit.mapTo(display, QtCore.QPoint(int(x), edit.height() // 2)))
+    event = QtGui.QWheelEvent(pos, display.mapToGlobal(pos), QtCore.QPoint(0, 0),
+                              QtCore.QPoint(0, int(dy)), QtCore.Qt.MouseButton.NoButton,
+                              QtCore.Qt.KeyboardModifier.NoModifier,
+                              QtCore.Qt.ScrollPhase.NoScrollPhase, inverted)
+    QtWidgets.QApplication.sendEvent(display, event)
+
+
+def test_a_swipe_steps_the_digit_under_the_pointer_by_one(qapp):
+    display = _display()
+    display.setSingleStep(0.025)                      # a 25 kHz tuning step: not used
+    tuned = []
+    display.digitDragged.connect(tuned.append)
+    _wheel(display, 6, 120)                           # one notch up over the kHz digit
+    assert display.value() == pytest.approx(144.776)
+    _wheel(display, 2, -120)                          # one down over the MHz digit
+    assert display.value() == pytest.approx(143.776)
+    assert tuned == [pytest.approx(144.776), pytest.approx(143.776)]
+    display.close()
+
+
+def test_small_swipe_deltas_add_up_to_one_step(qapp):
+    display = _display()
+    for _ in range(3):
+        _wheel(display, 6, 30)                        # a trackpad's small deltas
+    assert display.value() == pytest.approx(144.775)
+    _wheel(display, 6, 30)
+    assert display.value() == pytest.approx(144.776)
+    display.close()
+
+
+def test_natural_scrolling_is_undone_and_a_swipe_off_the_digits_does_nothing(qapp):
+    display = _display()
+    _wheel(display, 6, -120, inverted=True)           # fingers up, natural scrolling
+    assert display.value() == pytest.approx(144.776)
+    _wheel(display, 11, 120)                          # over "MHz"
+    assert display.value() == pytest.approx(144.776)
+    display.close()

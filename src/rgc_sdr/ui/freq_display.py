@@ -1,13 +1,16 @@
 """The SDR's frequency readout: a large spin box whose digits tune by dragging.
 
 Press on any digit and drag up or down to step that digit, as on a radio's VFO knob
-with a selectable step. Typing a frequency still works; a click without a drag puts the
-text cursor there.
+with a selectable step. A two-finger swipe (or the mouse wheel) over a digit steps that
+digit by one at a time too (VK3RQ, 2026-10-07), not the tuning step. Typing a frequency
+still works; a click without a drag puts the text cursor there.
 """
 
 from __future__ import annotations
 
 from PyQt6 import QtCore, QtGui, QtWidgets
+
+from .gestures import SwipeAccumulator, horizontal_dominates, wheel_deltas
 
 #: Vertical pixels of drag per step of the grabbed digit.
 PIXELS_PER_STEP = 8
@@ -57,10 +60,12 @@ class FrequencyDisplay(QtWidgets.QDoubleSpinBox):
         self.setFont(font)
         self.setStyleSheet(f"QDoubleSpinBox {{ color: {COLOUR}; background: #0b0f14; }}")
         self.setButtonSymbols(QtWidgets.QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.setToolTip("Drag a digit up or down to tune it; or type a frequency")
+        self.setToolTip("Drag or swipe up or down over a digit to tune it; or type a frequency")
         self._drag: tuple[float, float, float] | None = None  # (place, start value, start y)
         self._dragged = False
         self._press_index = 0
+        self._wheel = SwipeAccumulator()
+        self._wheel_place: float | None = None
         self.lineEdit().installEventFilter(self)
         self.lineEdit().setMouseTracking(True)
 
@@ -120,6 +125,30 @@ class FrequencyDisplay(QtWidgets.QDoubleSpinBox):
                 self.lineEdit().setCursorPosition(self._press_index)
             return True
         return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event) -> None:  # noqa: N802  (Qt naming)
+        """Step the digit under the pointer by one per notch (or swipe's worth).
+
+        Replaces the spin box's own wheel, which stepped by the tuning step wherever the
+        pointer was. Away from a digit a swipe does nothing, rather than surprise.
+        """
+        event.accept()
+        dx, dy = wheel_deltas(event)
+        if horizontal_dominates(dx, dy):
+            return
+        point = self.lineEdit().mapFrom(self, event.position().toPoint())
+        place = self._place_at(point.x())
+        if place is None:
+            self._wheel.reset()
+            return
+        if place != self._wheel_place:      # a new digit starts its own count
+            self._wheel.reset()
+            self._wheel_place = place
+        # As the spin box did: up is more, after macOS's "natural scrolling" is undone.
+        units = -dy if event.inverted() else dy
+        steps = self._wheel.add(units)
+        if steps:
+            self._set_dragged(self.value() + steps * place)
 
     def _set_dragged(self, mhz: float) -> None:
         # Rounded to the displayed precision, so float error never leaves a stray 1 Hz.
