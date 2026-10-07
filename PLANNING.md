@@ -1267,6 +1267,16 @@ a DAB frame takes about 50 ms in one go. *Measured live, HackRF on 9C:* before, 
 (3 dB over the channel's level now) and R (-100 dBFS); Classify up to 12 labels; the
 window opens maximised.
 
+**Fitting a 1280-point screen (2026-10-07).** Maximised on VK3RQ's MacBook Air (2560 x 1664
+Retina, 1280 points wide) the window ran off the right: it needed 1404 points, 1563 in
+DAB, whose Station list had joined the audio row. Now about 1250 in every mode (a test
+holds it under 1260): no "SDR", "Freq" or "Audio" labels (the controls say what they
+are), compact Scan/Decode/Zero beat/Mute/TX, a narrower S-meter (220, its bar a third),
+the DAB Station list beside the info line. And no DAB from the user: chosen at the
+default 4 MS/s it stayed silent, the reason only on the info line, which was off the
+screen -- choosing DAB now switches to 4.096 MS/s (or 2.048) itself. Checked in the
+real window with the HackRF: the memory and the hand-made route both play.
+
 **DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
 XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4
 trellis exactly** (same points, same interleave); each block's CRC-9 runs over the data

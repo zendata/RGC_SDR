@@ -2172,7 +2172,8 @@ def test_switching_offers_the_new_radios_rates(qapp):
     win, _, _ = switching_window()
     win.switch_device("hackrf")
     rates = [win._rate_combo.itemData(i) for i in range(win._rate_combo.count())]
-    assert set(rates) == set(profile_for("hackrf").sample_rates)
+    hackrf = profile_for("hackrf")
+    assert set(rates) == set(hackrf.sample_rates) | set(hackrf.extra_rates)   # DAB's too
     assert not win._rate_combo.isHidden()
     assert any("MS/s" in win._rate_combo.itemText(i) for i in range(win._rate_combo.count()))
     win.close()
@@ -2440,6 +2441,31 @@ def test_squelch_a_sets_just_above_the_channel_and_r_resets(qapp):
     win.close()
 
 
+def test_choosing_dab_picks_a_rate_it_can_use(qapp):
+    win, _, _ = switching_window(start="hackrf")
+    assert win.source.sample_rate == 4e6
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("dab"))
+    assert win.source.sample_rate == 4.096e6
+    win.close()
+
+
+def test_the_window_fits_a_1280_point_screen_in_every_mode(qapp):
+    """VK3RQ's MacBook Air is 1280 points wide; a maximised window wider than that ran off
+    the right-hand side, the DAB rate message with it (2026-10-07)."""
+    for radio in ("hackrf", "airspyhf"):
+        win, _, _ = switching_window(start=radio)
+        win.show()
+        for mode in ("nbfm", "wbfm", "cw", "usb", "dab", "p25"):
+            win._mode_combo.setCurrentIndex(win._mode_combo.findData(mode))
+            QtWidgets.QApplication.processEvents()
+            spare = 0
+            for label in win.findChildren(QtWidgets.QLabel):
+                if label.text() == "no audio device" and label.isVisible():
+                    spare = label.minimumSizeHint().width()     # tests only: no device
+            assert win.minimumSizeHint().width() - spare <= 1260, (radio, mode)
+        win.close()
+
+
 def test_back_to_the_first_choice_when_it_reaches_again(qapp):
     win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
     win._freq_spin.setValue(1090.0)
@@ -2696,7 +2722,9 @@ def test_info_line_sits_beside_peak_hold(qapp):
     row = win._peak_check.parentWidget().layout()
     widgets = [row.itemAt(i).widget() for i in range(row.count())]
     widgets = [w for w in widgets if w is not None]          # drop spacers
-    assert widgets.index(win._info_label) == widgets.index(win._peak_check) + 1
+    # Peak hold, then the DAB station list (hidden but for DAB), then the info line.
+    assert widgets.index(win._dab_combo) == widgets.index(win._peak_check) + 1
+    assert widgets.index(win._info_label) == widgets.index(win._dab_combo) + 1
     win.close()
 
 

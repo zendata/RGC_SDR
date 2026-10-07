@@ -32,9 +32,10 @@ class SMeter(QtWidgets.QWidget):
         #: A calibrated radio's own reading (IC-705: 0-255 and "S8"), shown instead
         #: of dBFS. None for the SDRs, which have no calibration to offer.
         self._s_reading: tuple[float, str] | None = None
-        # Wide enough for the full readout: "-100.0 dBFS   S/N 12.3 dB" was being
-        # clipped mid-word at the old width.
-        self.setMinimumWidth(360)
+        # Wide enough for the full readout ("-100.0 dBFS   S/N 12.3 dB" was clipped
+        # mid-word once), no wider: at 360 the audio row pushed the window past a
+        # 1280-point screen (VK3RQ's MacBook Air, 2026-10-07).
+        self.setMinimumWidth(220)
         self.setFixedHeight(26)
         self.setToolTip("In-channel power (dBFS) and signal-to-noise estimate")
 
@@ -93,7 +94,8 @@ class SMeter(QtWidgets.QWidget):
         painter = QtGui.QPainter(self)
         painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing)
 
-        track = QtCore.QRectF(0, 7, self.width() * 0.45, 12)
+        # A third for the bar, the rest for the readout, so the text fits at 220 points.
+        track = QtCore.QRectF(0, 7, self.width() * 0.32, 12)
         radius = 3.0
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor("#1b1b21"))
@@ -128,7 +130,7 @@ class SMeter(QtWidgets.QWidget):
         else:
             text = f"{self._level:6.1f} dBFS"
             if self._snr is not None:
-                text += f"   S/N {self._snr:4.1f} dB"
+                text += f"  S/N {self._snr:.1f} dB"
         painter.drawText(
             QtCore.QRectF(track.right() + 8, 0, self.width() - track.right() - 8, self.height()),
             int(QtCore.Qt.AlignmentFlag.AlignVCenter | QtCore.Qt.AlignmentFlag.AlignLeft),

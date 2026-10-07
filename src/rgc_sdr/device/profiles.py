@@ -356,7 +356,8 @@ def caps_from_profile(profile: SdrProfile, serial: str = "") -> DeviceCaps:
         driver=profile.driver,
         label=profile.label,
         serial=serial,
-        sample_rates=tuple(r for r in profile.sample_rates if r <= profile.max_rate),
+        sample_rates=tuple(sorted({r for r in profile.sample_rates + profile.extra_rates
+                                   if r <= profile.max_rate}, reverse=True)),
         freq_ranges=profile.freq_ranges,
         gain_elements=profile.gain_elements,
         has_agc=profile.has_agc,

@@ -1748,7 +1748,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row = QtWidgets.QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
 
-        row.addWidget(QtWidgets.QLabel("Audio"))
+        # No "Audio" label: the mode list says what it is (the row must fit 1280 points).
         self._mode_combo = QtWidgets.QComboBox()
         self._mode_combo.addItem("Off", "off")
         for name in MODES:
@@ -1784,32 +1784,29 @@ class MainWindow(QtWidgets.QMainWindow):
             "Untick for mono, which is quieter on a weak station."
         )
         self._stereo_check.toggled.connect(self._on_stereo_toggled)
-        # DAB: which of the ensemble's stations to hear, filled as the FIC names them.
-        self._dab_combo = QtWidgets.QComboBox()
-        self._dab_combo.setMinimumWidth(160)
-        self._dab_combo.setToolTip("The DAB+ station to listen to, from the ensemble's list")
-        self._dab_combo.activated.connect(self._on_dab_station)
+
         row.addWidget(self._stereo_check)
-        row.addWidget(self._dab_combo)
 
         row.addWidget(QtWidgets.QLabel("Vol"))
         self._volume_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
         self._volume_slider.setRange(0, 100)
         self._volume_slider.setValue(int(self._initial_volume * 100))
-        self._volume_slider.setFixedWidth(110)
+        self._volume_slider.setFixedWidth(90)
         self._volume_slider.valueChanged.connect(self._on_volume_changed)
         row.addWidget(self._volume_slider)
 
         self._mute_button = QtWidgets.QPushButton("Mute")
+        self._mute_button.setMinimumWidth(0)
         self._mute_button.setCheckable(True)
-        self._mute_button.setFixedWidth(60)
+        self._mute_button.setFixedWidth(50)
         self._mute_button.setToolTip("Silence the output without losing the volume setting")
         self._mute_button.toggled.connect(self._on_mute_toggled)
         row.addWidget(self._mute_button)
 
         self._tx_button = QtWidgets.QPushButton("TX")
+        self._tx_button.setMinimumWidth(0)
         self._tx_button.setCheckable(True)
-        self._tx_button.setFixedWidth(60)
+        self._tx_button.setFixedWidth(50)
         self._tx_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         self._tx_button.setStyleSheet(
             "QPushButton { color: #ff4d4d; border: 2px solid #d62828; border-radius: 6px;"
@@ -1823,6 +1820,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._offset_label = QtWidgets.QLabel("Offset")
         row.addWidget(self._offset_label)
         self._offset_spin = QtWidgets.QDoubleSpinBox()
+        self._offset_spin.setMaximumWidth(96)
         self._offset_spin.setDecimals(2)
         self._offset_spin.setSuffix(" kHz")
         self._offset_spin.setSingleStep(1.0)
@@ -1917,14 +1915,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
         row.addSpacing(8)
 
-        row.addWidget(QtWidgets.QLabel("SDR"))
+        # No "SDR" or "Freq" labels: the radio's name and the big frequency say what they
+        # are, and the row has to fit a 1280-point screen.
         self._device_combo = DeviceCombo()
+        self._device_combo.setToolTip("The radio (SDR or transceiver); detected ones are yellow")
         # Sized to the radio names, not to "ADALM-Pluto -- driver not installed": the
         # status text is for the open list, and would otherwise widen the whole row.
         self._device_combo.setSizeAdjustPolicy(
             QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
-        self._device_combo.setMinimumContentsLength(16)
+        self._device_combo.setMinimumContentsLength(12)
         self._device_combo.view().setMinimumWidth(320)
         # The macOS style's own popup ignores item colours; a plain delegate draws the
         # yellow of detected radios.
@@ -1933,7 +1933,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._device_combo.activated.connect(self._on_device_chosen)
         row.addWidget(self._device_combo)
 
-        row.addWidget(QtWidgets.QLabel("Freq"))
         self._freq_spin = FrequencyDisplay()
         self._freq_spin.setDecimals(6)
         self._freq_spin.setSuffix(" MHz")
@@ -1995,10 +1994,12 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._zoom_combo)
 
         self._scan_button = QtWidgets.QPushButton("Scan")
+        self._scan_button.setStyleSheet("QPushButton { padding: 2px 10px; }")
         self._scan_button.setCheckable(True)
         self._scan_button.setToolTip("Show or hide the scanner")
         row.addWidget(self._scan_button)
         self._decode_button = QtWidgets.QPushButton("Decode")
+        self._decode_button.setStyleSheet("QPushButton { padding: 2px 10px; }")
         self._decode_button.setCheckable(True)
         self._decode_button.setToolTip("Show or hide the data decoders (POCSAG, APRS, AIS, ACARS, ADS-B, P25, DMR)")
         row.addWidget(self._decode_button)
@@ -2123,12 +2124,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # Beside Peak hold, where the row has room to spare. Right-aligned, so decoded CW
         # sits against the edge and grows leftwards like a ticker.
         row.addSpacing(12)
+        # DAB: which of the ensemble's stations to hear, filled as the FIC names them --
+        # here beside the info line, which says what is playing (the audio row is full).
+        self._dab_combo = QtWidgets.QComboBox()
+        self._dab_combo.setMinimumWidth(150)
+        self._dab_combo.setToolTip("The DAB+ station to listen to, from the ensemble's list")
+        self._dab_combo.activated.connect(self._on_dab_station)
+        self._dab_combo.setVisible(False)
+        row.addWidget(self._dab_combo)
         self._info_label = QtWidgets.QLabel("")
         mono = QtGui.QFont("Menlo")
         mono.setStyleHint(QtGui.QFont.StyleHint.Monospace)
         mono.setPointSizeF(max(10.0, self._info_label.font().pointSizeF()))
         self._info_label.setFont(mono)
-        self._info_label.setMinimumWidth(430)
+        self._info_label.setMinimumWidth(400)
         self._info_label.setMaximumWidth(620)
         self._info_label.setAlignment(
             QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
@@ -2138,6 +2147,7 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._info_label)
 
         self._zerobeat_button = QtWidgets.QPushButton("Zero beat")
+        self._zerobeat_button.setStyleSheet("QPushButton { padding: 2px 10px; }")
         self._zerobeat_button.setToolTip(
             "Hold to tune a nearby CW carrier onto the selected beat-note pitch.\n"
             f"Searches {ZEROBEAT_SEARCH_HZ:.0f} Hz either side. CW mode only."
@@ -2667,8 +2677,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
+        if self.mode == "dab":
+            self._rate_for_dab()
         self.set_mode(self.mode)
         self._schedule_save()
+
+    def _rate_for_dab(self) -> None:
+        """DAB needs 2.048 MS/s or a power-of-two multiple: switch to one (4.096 if the
+        radio offers it, which also keeps the next ensemble from folding in). *Measured:*
+        chosen at 4 MS/s it stayed silent, the reason only on the info line -- which was
+        off the side of the screen."""
+        from ..dsp.dab import RATE as DAB_RATE
+
+        rate = self.source.sample_rate
+        ratio = rate / DAB_RATE
+        if abs(ratio - round(ratio)) < 1e-6 and round(ratio) in (1, 2, 4):
+            return
+        for wanted in (2 * DAB_RATE, DAB_RATE, 4 * DAB_RATE):
+            index = self._rate_combo.findData(wanted)
+            if index >= 0:
+                self._rate_combo.setCurrentIndex(index)
+                self._status.showMessage(
+                    f"DAB needs {wanted / 1e6:g} MS/s: rate changed", 6000)
+                return
+        self._status.showMessage("this radio has no rate DAB can use (2.048 or 4.096 MS/s)",
+                                 8000)
 
     @property
     def pitch_hz(self) -> float:

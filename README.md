@@ -406,9 +406,8 @@ whatever the audio is doing, including with audio off.
   repeats itself many times a second, so a message identical to one in the last 30 s is
   not shown again.
 
-**DAB+ digital radio.** Choose **DAB** in the mode list, set the Rate to **4.096 MS/s**
-(Pluto or HackRF; 2.048 works only where the radio's own filter is narrow enough) and
-tune to an ensemble's centre -- in Melbourne 9A 202.928, 9B 204.640 and 9C 206.352 MHz.
+**DAB+ digital radio.** Choose **DAB** in the mode list -- it sets the Rate to
+**4.096 MS/s** itself (Pluto or HackRF) -- and tune to an ensemble's centre -- in Melbourne 9A 202.928, 9B 204.640 and 9C 206.352 MHz.
 The first DAB+ station plays within a second or so; the **Station** list beside the
 mode holds the rest, named from the ensemble. The info line shows the ensemble, the
 station and its bit rate, and warns **OVERLOAD** when the radio clips (the HackRF's
