@@ -62,6 +62,9 @@ class SdrProfile:
     #: How far to tune the hardware from the wanted frequency, shifting the stream back
     #: in software. None means LO_OFFSET_HZ for a radio with a DC spike, else none.
     lo_offset_hz: float | None = None
+    #: A radio on a network radio server (device/remote.py): (host, port, its driver
+    #: there). None for a radio attached to this machine.
+    remote: tuple[str, int, str] | None = None
 
     @property
     def lo_offset(self) -> float:
@@ -255,8 +258,32 @@ _BY_DRIVER = {p.driver: p for p in PROFILES}
 _BY_KEY = {p.key: p for p in PROFILES}
 
 
+#: Profiles of radios found on network radio servers, by key ("rtlsdr@radiopi"): made as
+#: they are found, and kept, so a memory or setting naming one still resolves.
+_REMOTE: dict[str, SdrProfile] = {}
+
+
 def profile_for(driver_or_key: str) -> SdrProfile | None:
-    return _BY_DRIVER.get(driver_or_key) or _BY_KEY.get(driver_or_key)
+    return (_BY_DRIVER.get(driver_or_key) or _BY_KEY.get(driver_or_key)
+            or _REMOTE.get(driver_or_key) or _remote_from_key(driver_or_key))
+
+
+def register_remote(profile: SdrProfile) -> SdrProfile:
+    _REMOTE[profile.key] = profile
+    return profile
+
+
+def _remote_from_key(key: str) -> SdrProfile | None:
+    """A remote radio's profile from its key alone ("rtlsdr@radiopi" -> the RTL-SDR on the
+    server named radiopi), for a key remembered from before its server was asked."""
+    driver, at, host = key.partition("@")
+    base = _BY_DRIVER.get(driver)
+    if not at or not host or base is None or base.kind != "sdr":
+        return None
+    from .remote import ServerAddress, load_servers, remote_profile
+
+    server = next((s for s in load_servers() if s.name == host), ServerAddress(host))
+    return register_remote(remote_profile(base, server))
 
 
 def installed_modules() -> set[str]:
@@ -294,15 +321,22 @@ class Availability:
 
 
 def availability(
-    devices: list[dict[str, str]] | None = None, modules: set[str] | None = None
+    devices: list[dict[str, str]] | None = None, modules: set[str] | None = None,
+    servers: list | None = None,
 ) -> list[Availability]:
-    """Every profile, with whether its driver is installed and a radio attached."""
+    """Every profile, with whether its driver is installed and a radio attached; then
+    the radios on network radio servers (`servers`, by default those set up when the
+    devices are probed for real)."""
     if modules is None:
         modules = installed_modules()
     if devices is None:
         from .source import enumerate_devices
 
         devices = enumerate_devices()
+        if servers is None:
+            from .remote import load_servers
+
+            servers = load_servers()
     found = {}
     for device in devices:
         found.setdefault(device.get("driver", ""), device.get("serial", ""))
@@ -330,6 +364,23 @@ def availability(
         connected = profile.driver in found
         out.append(Availability(profile, installed or connected, connected,
                                 found.get(profile.driver, "")))
+    return out + remote_availability(servers or [])
+
+
+def remote_availability(servers) -> list[Availability]:
+    """The SDRs attached to each server that answers, as remote profiles."""
+    from .remote import list_radios, remote_profile
+
+    out = []
+    for server in servers:
+        seen = set()
+        for radio in list_radios(server):
+            base = _BY_DRIVER.get(str(radio.get("driver")))
+            if base is None or base.kind != "sdr" or base.driver in seen:
+                continue
+            seen.add(base.driver)
+            profile = register_remote(remote_profile(base, server))
+            out.append(Availability(profile, True, True, str(radio.get("serial", ""))))
     return out
 
 
