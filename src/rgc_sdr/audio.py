@@ -110,6 +110,12 @@ class AudioFifo:
         return out
 
 
+#: Modes whose audio comes from a frame-at-a-time decoder, and the FIFO they get
+#: (blocks of `blocksize`: 20 x 1024 frames is about 0.4 s at 48 kHz).
+BURSTY_MODES = ("dab", "p25")
+BURSTY_BUFFER_BLOCKS = 20
+
+
 class AudioSink:
     """Demodulate an `IQSource` and play the result."""
 
@@ -347,9 +353,13 @@ class AudioSink:
                 self._sampler = self._decoder = None
         self._cw_text = ""
         self._reader = self.source.sequential_reader()
-        self._fifo = AudioFifo(self.blocksize * self.buffer_blocks)
-
-        self._fifo = AudioFifo(self.blocksize * self.buffer_blocks, self.channels)
+        blocks = self.buffer_blocks
+        if self._mode in BURSTY_MODES:
+            # Their decoders work a frame at a time (DAB: about 50 ms of CPU per 96 ms
+            # frame): a 107 ms FIFO kept half full ran dry now and then (measured: 0.5 s
+            # of underruns in 15 s of DAB+). A deeper one rides over it.
+            blocks = max(blocks, BURSTY_BUFFER_BLOCKS)
+        self._fifo = AudioFifo(self.blocksize * blocks, self.channels)
         self._stream = self._sd.OutputStream(
             samplerate=self._chain.audio_rate,
             channels=self.channels,

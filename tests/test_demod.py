@@ -639,3 +639,25 @@ def test_ssb_ignores_a_pitch_change():
     chain = DemodChain(768e3, "usb", pitch_hz=500.0)
     chain.set_pitch(700.0)
     assert chain.pitch_hz == 0.0
+
+
+def test_the_pacer_turns_bursts_into_steady_audio():
+    from src.rgc_sdr.dsp.demod import AudioPacer
+
+    pacer = AudioPacer(2, prebuffer=14400)              # 0.3 s at 48 kHz
+    out, burst = [], np.ones((5760, 2), np.float32)     # a DAB+ superframe: 120 ms
+    for call in range(200):                              # 20 ms calls, 4 s
+        if call % 6 == 0:
+            pacer.push(burst)
+        out.append(pacer.pull(960.0))
+    sizes = {o.shape[0] for o in out}
+    assert sizes == {960}                                # exactly what each call is due
+    audio = np.concatenate(out)
+    first = np.flatnonzero(audio[:, 0])[0]
+    assert first == 12 * 960     # waited until the third burst made its 0.3 s cushion
+    assert audio[first:].all() and pacer.underruns == 0  # then never ran dry
+
+
+def test_bursty_modes_get_a_deeper_output_buffer():
+    from src.rgc_sdr.audio import BURSTY_BUFFER_BLOCKS, BURSTY_MODES
+    assert set(BURSTY_MODES) == {"dab", "p25"} and BURSTY_BUFFER_BLOCKS * 1024 > 0.3 * 48000

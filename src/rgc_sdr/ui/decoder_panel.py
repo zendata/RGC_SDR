@@ -54,6 +54,8 @@ class DecoderPanel(QtWidgets.QWidget):
         # panel is short, and every line goes to the messages.
         self.status = QtWidgets.QLabel("")
         top.insertWidget(top.indexOf(self.show_text) + 1, self.status, 1)
+        # Room between "Show text" and the status (VK3RQ, 2026-10-07).
+        top.insertSpacing(top.indexOf(self.status), 24)
         self.log = QtWidgets.QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(KEEP_MESSAGES)

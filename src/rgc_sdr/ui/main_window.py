@@ -64,6 +64,8 @@ ZOOM_FACTORS = (1, 2, 4, 8, 16, 32)
 APP_TITLE = "VK3RQ Super SDR"
 #: Background of radios detected now, in the radio list (VK3RQ, 2026-10-06).
 DETECTED_COLOUR = "#FFE45C"
+#: The A button's squelch: this far above the channel's level when pressed.
+SQUELCH_MARGIN_DB = 3.0
 #: Seconds a status notice without its own timeout stays before the frame line returns.
 NOTICE_HOLD_S = 8.0
 
@@ -590,8 +592,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # squelch is the radio's own (SQL, Radio row) -- hidden here rather than greyed
         # out, so there is one squelch control, not a dead one beside it.
         self._offset_spin.setEnabled(sdr)
-        self._squelch_check.setVisible(sdr)
-        self._squelch_spin.setVisible(sdr)
+        for widget in (self._squelch_check, self._squelch_spin, self._squelch_auto,
+                       self._squelch_reset):
+            widget.setVisible(sdr)
         if sdr:
             self._sync_squelch_enabled()
         if sdr:
@@ -1836,6 +1839,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._squelch_check.setChecked(self._initial_squelch is not None)
         self._squelch_check.toggled.connect(self._on_squelch_changed)
         row.addWidget(self._squelch_check)
+        # A: set the squelch just above what is in the channel now; R: back to -100 dBFS
+        # (VK3RQ, 2026-10-07).
+        self._squelch_auto = QtWidgets.QPushButton("A")
+        self._squelch_auto.setToolTip(
+            "Set the squelch just above the level in the channel now, so it goes quiet.\n"
+            "Press it while only noise is there.")
+        self._squelch_auto.setFixedWidth(30)
+        self._squelch_auto.clicked.connect(self.auto_squelch)
+        row.addWidget(self._squelch_auto)
+        self._squelch_reset = QtWidgets.QPushButton("R")
+        self._squelch_reset.setToolTip("Reset the squelch level to -100 dBFS")
+        self._squelch_reset.setFixedWidth(30)
+        self._squelch_reset.clicked.connect(self.reset_squelch)
+        row.addWidget(self._squelch_reset)
 
         self._squelch_spin = QtWidgets.QDoubleSpinBox()
         self._squelch_spin.setRange(-160.0, 0.0)
@@ -1891,7 +1908,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Everything strong on screen, wherever the radio is tuned (VK3RQ, 2026-10-06).
         self._sweep_button = QtWidgets.QPushButton("Classify")
         self._sweep_button.setToolTip(
-            "Name up to five strong signals across what the waterfall shows, wherever\n"
+            "Name up to twelve strong signals across what the waterfall shows, wherever\n"
             "the radio is tuned. Unidentified ones are skipped; a trunked system's\n"
             "channels share one label, its other channels marked in the same colour.")
         self._sweep_button.setStyleSheet(self._classify_button.styleSheet())
@@ -2559,6 +2576,8 @@ class MainWindow(QtWidgets.QMainWindow):
         capable = mode in MODE_SPECS and MODE_SPECS[mode].squelch_capable
         self._squelch_check.setEnabled(capable)
         self._squelch_spin.setEnabled(capable and self._squelch_check.isChecked())
+        self._squelch_auto.setEnabled(capable)
+        self._squelch_reset.setEnabled(capable)
 
     def _squelch_value(self) -> float | None:
         if not self._squelch_check.isChecked():
@@ -2985,6 +3004,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_decoder_status()
         self._update_passband()
         self._schedule_save()
+
+    def auto_squelch(self) -> None:
+        """Squelch on, just above the in-channel level now: what is heard goes quiet."""
+        level = self.audio.channel_dbfs if self.audio is not None else None
+        if level is None or level < -190:
+            self._status.showMessage("choose a mode first: the squelch needs a channel level",
+                                     5000)
+            return
+        self._squelch_spin.setValue(float(np.ceil(level + SQUELCH_MARGIN_DB)))
+        self._squelch_check.setChecked(True)
+
+    def reset_squelch(self) -> None:
+        self._squelch_spin.setValue(-100.0)
 
     def _on_squelch_changed(self, *_args) -> None:
         self._sync_squelch_enabled()
@@ -3785,8 +3817,8 @@ def run(source: IQSource, debug_gestures: bool = False, **kwargs) -> int:
     source.start()
     kwargs.setdefault("auto_calibrate", True)
     window = MainWindow(source, **kwargs)
-    window.resize(1280, 800)
-    window.show()
+    window.resize(1280, 800)                 # the size it returns to when un-maximised
+    window.showMaximized()                   # VK3RQ, 2026-10-07: open filling the screen
     try:
         return app.exec()
     finally:

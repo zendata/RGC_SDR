@@ -1,7 +1,7 @@
 """Classify everything strong on the screen at once: the "Classify" button.
 
 Asked for by VK3RQ (2026-10-06): sweep the span the waterfall shows, wherever the radio
-is tuned, and label up to five strong, clean signals; skip what cannot be identified;
+is tuned, and label up to five (twelve since 2026-10-07) strong, clean signals; skip what cannot be identified;
 merge a trunked system's channels into one label, colour-coded.
 
 1. **One capture** of the whole span (`classify.CAPTURE_S`, capped at MAX_SAMPLES).
@@ -38,9 +38,9 @@ from .dsp.adsb import AdsbDecoder
 from .dsp.demod import Mixer
 
 #: Labels shown at most, after merging.
-MAX_LABELS = 5
+MAX_LABELS = 12
 #: Candidates classified at most, strongest first, to fill those labels.
-MAX_CANDIDATES = 10
+MAX_CANDIDATES = 24
 CANDIDATE_SNR_DB = 20.0
 #: Fraction of the span at each edge left out: the radio's own filter rolls off there.
 EDGE_FRACTION = 0.05

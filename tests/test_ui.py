@@ -2424,6 +2424,22 @@ def test_the_question_button_says_when_nothing_is_there(qapp):
     win.close()
 
 
+def test_squelch_a_sets_just_above_the_channel_and_r_resets(qapp):
+    from types import SimpleNamespace
+    win, _, _ = switching_window()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    levels = []
+    win.audio = SimpleNamespace(channel_dbfs=-87.4, set_squelch=levels.append)
+    assert win._squelch_auto.isEnabled() and win._squelch_reset.isEnabled()
+    win._squelch_auto.click()
+    assert win._squelch_check.isChecked() and win._squelch_spin.value() == -84.0
+    assert levels[-1] == -84.0
+    win._squelch_reset.click()
+    assert win._squelch_spin.value() == -100.0
+    win.audio = None
+    win.close()
+
+
 def test_back_to_the_first_choice_when_it_reaches_again(qapp):
     win, _, _ = switching_window(connected=("airspyhf", "plutosdr"))
     win._freq_spin.setValue(1090.0)

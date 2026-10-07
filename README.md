@@ -427,7 +427,7 @@ decode), NBFM, FSK data, AM, USB, LSB, CW or a plain carrier -- marked with a **
 Nothing decoded is shown, pager text least of all.
 
 **Classify** (beside **?**) does the same for everything strong on screen, wherever the
-radio is tuned: it names up to five signals across the span the waterfall shows, skips
+radio is tuned: it names up to twelve signals across the span the waterfall shows, skips
 any it cannot identify, and gives a trunked system's channels one label (P25 by NAC,
 DMR by colour code), its other channels marked in the same colour. Labels snap to the
 channel grid; each appears as soon as it is found.

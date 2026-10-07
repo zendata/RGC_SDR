@@ -318,6 +318,64 @@ class AudioAgc:
         return audio * ramp
 
 
+class AudioPacer:
+    """Even audio from a decoder that delivers it in bursts (P25: 180 ms per frame; DAB+:
+    120 ms superframes, half a second late). Each call returns exactly the audio its IQ
+    stands for, so the IQ is read steadily in real time; playback waits until
+    PACER_PREBUFFER_S is queued, and silence fills only when the queue runs dry.
+
+    *Measured 2026-10-07:* without it DAB played for a moment and went silent -- a burst
+    overfilled the audio FIFO, the worker stopped reading IQ while the FIFO was full, the
+    radio's ring overran and skipped, and DAB lost its frames."""
+
+    def __init__(self, channels: int, prebuffer: int) -> None:
+        self.channels, self.prebuffer = channels, int(prebuffer)
+        self._queue: list[np.ndarray] = []
+        self._queued = 0
+        self._owed = 0.0
+        self.playing = False
+        self.underruns = 0
+
+    def reset(self) -> None:
+        self._queue, self._queued, self._owed, self.playing = [], 0, 0.0, False
+
+    def push(self, audio: np.ndarray) -> None:
+        if audio.shape[0]:
+            self._queue.append(audio)
+            self._queued += audio.shape[0]
+
+    def pull(self, frames: float) -> np.ndarray:
+        """`frames` more frames are due (fractional, carried over)."""
+        self._owed += frames
+        n = int(self._owed)
+        self._owed -= n
+        shape = (n, self.channels) if self.channels > 1 else (n,)
+        out = np.zeros(shape, dtype=np.float32)
+        if not self.playing and self._queued >= self.prebuffer:
+            self.playing = True
+        if not self.playing or n == 0:
+            return out
+        got = 0
+        while got < n and self._queue:
+            head = self._queue[0]
+            take = min(n - got, head.shape[0])
+            out[got:got + take] = head[:take]
+            got += take
+            if take == head.shape[0]:
+                self._queue.pop(0)
+            else:
+                self._queue[0] = head[take:]
+        self._queued -= got
+        if got < n:                                  # ran dry: wait for a cushion again
+            self.playing = False
+            self.underruns += 1
+        return out
+
+
+#: Audio queued before a bursty decoder (P25, DAB+) starts to play.
+PACER_PREBUFFER_S = 0.3
+
+
 class DemodChain:
     """Mixer -> decimate -> channel filter -> detect -> audio shaping -> gain.
 
@@ -422,7 +480,7 @@ class DemodChain:
             except ValueError as exc:
                 self.dab_problem = str(exc)
             self.audio_rate = 48000.0
-            self._dab_owed = 0.0
+            self._pacer = AudioPacer(2, PACER_PREBUFFER_S * self.audio_rate)
             self._dab_up = None
             self.dab_messages: list = []
         #: P25's voice decoder, which makes its own 8 kHz audio from the discriminator.
@@ -435,10 +493,8 @@ class DemodChain:
             # mbelib speaks at 8 kHz; six times that is a rate every output device takes.
             self._p25_up = Interpolator(6)
             self.audio_rate = 6 * AUDIO_RATE
-            #: 8 kHz samples the stream is owed: voice arrives in 180 ms bursts, and
-            #: between calls there is none, so silence fills the gap and the audio runs
-            #: at its rate whatever is on the air.
-            self._p25_owed = 0.0
+            # Voice arrives in 180 ms bursts and not at all between calls: paced.
+            self._pacer = AudioPacer(1, PACER_PREBUFFER_S * self.audio_rate)
         if mode == "wbfm":
             self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
 
@@ -574,7 +630,7 @@ class DemodChain:
         if self._p25 is not None:
             self._p25.reset()
             self._p25_up.reset()
-            self._p25_owed = 0.0
+            self._pacer.reset()
         if self._stereo is not None:
             mono = self._stereo.force_mono
             self._stereo.reset()
@@ -628,17 +684,12 @@ class DemodChain:
         if self._p25 is not None:
             self.last_detected = self._detector.process(channel)
             voice = self._p25.process(self.last_detected)
-            self._p25_owed += channel.size / self.if_rate * 8000.0 - voice.size
-            if self._p25_owed > 0 and voice.size == 0:
-                fill = int(self._p25_owed)
-                voice = np.zeros(fill, dtype=np.float32)
-                self._p25_owed -= fill
-            self._p25_owed = max(self._p25_owed, -8000.0)      # a second's lead at most
-            if voice.size == 0:
-                return np.zeros(0, dtype=np.float32)
-            audio = self._p25_up.process(voice.astype(np.float64))
-            if self._agc is not None and not self._p25.encrypted:
-                audio = self._agc.process(audio)
+            if voice.size:
+                audio = self._p25_up.process(voice.astype(np.float64))
+                if self._agc is not None and not self._p25.encrypted:
+                    audio = self._agc.process(audio)
+                self._pacer.push(audio.astype(np.float32))
+            audio = self._pacer.pull(channel.size / self.if_rate * self.audio_rate)
             return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
 
         if self._detector is not None:
@@ -679,7 +730,6 @@ class DemodChain:
     def _dab_audio(self, iq: np.ndarray) -> np.ndarray:
         """The ensemble to the receiver; its station's audio out at 48 kHz stereo, silence
         filling the gaps (decoding runs half a second behind, and in 120 ms bursts)."""
-        self._dab_owed += iq.size / self.sample_rate * self.audio_rate
         pcm = np.zeros((0, 2), dtype=np.float32)
         if self._dab is not None:
             self.dab_messages += self._dab.process(iq)
@@ -698,11 +748,9 @@ class DemodChain:
                 pcm = np.column_stack([
                     dec.process(up.process(pcm[:, c].astype(np.float64)))
                     for c, (up, dec) in enumerate(self._dab_up)])
-        if pcm.shape[0] == 0 and self._dab_owed > 0:
-            fill = int(self._dab_owed)
-            pcm = np.zeros((fill, 2), dtype=np.float32)
-        self._dab_owed = max(self._dab_owed - pcm.shape[0], -48000.0)
-        return np.clip(pcm * self.volume, -1.0, 1.0).astype(np.float32)
+        self._pacer.push(pcm.astype(np.float32))
+        out = self._pacer.pull(iq.size / self.sample_rate * self.audio_rate)
+        return np.clip(out * self.volume, -1.0, 1.0).astype(np.float32)
 
     @property
     def dab(self):

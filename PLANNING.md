@@ -1255,6 +1255,18 @@ alignment). FAAD2's float output is already normalised; scaled again it gave sil
 so its 16-bit output is used. The "dab" mode plays the first DAB+ station in about a
 second, 57 % of a core at 4.096 MS/s; the Station list picks another.
 
+**Bursty audio (2026-10-07).** DAB played for a moment, then went silent, in the app (not
+in tests, which drove the chain directly). The audio worker keeps a 107 ms FIFO half full
+and reads IQ only when there is room; DAB+ audio arrives in 120 ms superframes half a
+second late, so a burst overfilled the FIFO, the worker stopped reading, the radio's ring
+overran and skipped, and DAB lost its frames. Now `AudioPacer` in the chain queues the
+bursts and returns exactly the audio each call's IQ stands for (0.3 s cushion before it
+plays), for DAB and P25 voice alike; and those modes get a 0.4 s FIFO, because decoding
+a DAB frame takes about 50 ms in one go. *Measured live, HackRF on 9C:* before, sound in
+0-89 % of each second; after, 15 s continuous, no underruns, no drops. Also: squelch A
+(3 dB over the channel's level now) and R (-100 dBFS); Classify up to 12 labels; the
+window opens maximised.
+
 **DMR packet data (VK3RQ, 2026-10-07).** Headers (data type 6, BPTC): CRC-CCITT inverted,
 XOR 0xCCCC -- every header on air. Confirmed rate 3/4 blocks use **P25's rate 3/4
 trellis exactly** (same points, same interleave); each block's CRC-9 runs over the data
