@@ -17,13 +17,13 @@ TRAIL_POINTS = 200
 #: report every few seconds to every few minutes; marks and shore stations are fixed;
 #: an aircraft's ACARS position reports can be ten minutes or more apart.
 EXPIRY_S = {"ship": 30 * 60, "aid": 60 * 60, "base": 60 * 60, "aircraft": 20 * 60,
-            "radio": 30 * 60}
+            "radio": 30 * 60, "station": 60 * 60}
 
 
 @dataclass
 class Target:
     key: str                       # "ais:503020660", later "adsb:7c6b2d"
-    kind: str                      # "ship", "aid", "base", "aircraft" or "radio"
+    kind: str                      # "ship", "aid", "base", "aircraft", "radio", "station"
     ident: str                     # MMSI or ICAO address, as text
     name: str = ""
     lat: float | None = None
@@ -86,6 +86,8 @@ class TargetStore:
                 changed += self._from_p25(message)
             elif hasattr(message, "colour_code"):
                 changed += self._from_dmr(message)
+            elif hasattr(message, "object_name"):
+                changed += self._from_aprs(message)
         if changed:
             self.version += 1
         return changed
@@ -192,6 +194,25 @@ class TargetStore:
         t.messages += 1
         t.details["network"] = f"DMR CC {m.colour_code}"
         t.details["position"] = "location reported by the radio (LRRP)"
+        t.lat, t.lon = m.position
+        if not t.trail or t.trail[-1] != m.position:
+            t.trail.append(m.position)
+        return 1
+
+    def _from_aprs(self, m) -> int:
+        """An APRS station by callsign, or an object or item by its name; placed only
+        with a position."""
+        if m.position is None or not m.source:
+            return 0
+        name = m.object_name
+        t = self._get(f"aprs:{name or m.source}", "station", name or m.source)
+        t.last_seen = m.received
+        t.messages += 1
+        if name:
+            t.details["sent by"] = m.source
+        t.details["via"] = ",".join(m.path) or "direct"
+        t.details["last"] = m.text[:80]
+        t.course, t.speed_kn = m.course, m.speed_kn
         t.lat, t.lon = m.position
         if not t.trail or t.trail[-1] != m.position:
             t.trail.append(m.position)

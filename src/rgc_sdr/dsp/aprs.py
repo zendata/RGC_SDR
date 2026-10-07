@@ -228,6 +228,12 @@ class AprsPacket:
     info: bytes
     position: tuple[float, float] | None = None
     received: float = field(default_factory=time.time)
+    #: An object's or item's own name (";" and ")" packets): what is placed on the map
+    #: is the thing named -- a repeater, a net, an event -- not the station sending it.
+    object_name: str | None = None
+    #: Degrees true and knots, when the position report carries them.
+    course: float | None = None
+    speed_kn: float | None = None
 
     @property
     def text(self) -> str:
@@ -266,7 +272,68 @@ def parse_ax25(frame: bytes) -> AprsPacket | None:
     path = [c + ("*" if rep else "") for c, rep in addresses[2:]]
     packet = AprsPacket(source, dest, path, info)
     packet.position = aprs_position(dest, info)
+    packet.object_name = aprs_object_name(info)
+    if packet.position is not None:
+        packet.course, packet.speed_kn = aprs_motion(dest, info)
     return packet
+
+
+def aprs_object_name(info: bytes) -> str | None:
+    """The name of an object (";NAME     *...") or item (")NAME!..."), else None."""
+    text = info.decode("ascii", "replace")
+    if text[:1] == ";" and len(text) >= 11 and text[10] in "*_":
+        return text[1:10].strip() or None
+    if text[:1] == ")":
+        m = _ITEM.match(text)
+        if m:
+            return m[1].strip() or None
+    return None
+
+
+_ITEM = re.compile(r"^\)([^!_]{3,9})[!_]")
+#: Course and speed after an uncompressed position: "...E>088/036".
+_MOTION = re.compile(r"^(\d{3})/(\d{3})")
+
+
+def _position_body(info: bytes) -> tuple[str, str] | None:
+    """(kind, the text where the position starts) for the uncompressed-family reports."""
+    text = info.decode("ascii", "replace")
+    kind = text[:1]
+    if kind in "!=":
+        return kind, text[1:]
+    if kind in "/@":
+        return kind, text[8:]                          # after the timestamp
+    if kind == ";" and len(text) >= 11 and text[10] in "*_":
+        return kind, text[18:]                         # name, live flag, timestamp
+    if kind == ")":
+        m = _ITEM.match(text)
+        if m:
+            return kind, text[m.end():]
+    return None
+
+
+def aprs_motion(dest: str, info: bytes) -> tuple[float | None, float | None]:
+    """(course degrees, speed knots) if the report gives them, else Nones."""
+    try:
+        if info[:1] in (b"`", b"'"):
+            if len(info) < 7:
+                return None, None
+            sp, dc, se = info[4] - 28, info[5] - 28, info[6] - 28
+            speed = sp * 10 + dc // 10
+            course = (dc % 10) * 100 + se
+            speed -= 800 if speed >= 800 else 0
+            course -= 400 if course >= 400 else 0
+            return (float(course) if 0 < course <= 360 else None), float(speed)
+        found = _position_body(info)
+        if found is None or not _PLAIN.match(found[1]):
+            return None, None
+        m = _MOTION.match(found[1][19:])
+        if not m:
+            return None, None
+        course, speed = int(m[1]), int(m[2])
+        return (float(course) if 0 < course <= 360 else None), float(speed)
+    except (ValueError, IndexError):
+        return None, None
 
 
 def aprs_position(dest: str, info: bytes) -> tuple[float, float] | None:
@@ -276,13 +343,10 @@ def aprs_position(dest: str, info: bytes) -> tuple[float, float] | None:
     try:
         if kind in "`'":
             return mic_e_position(dest, info)
-        text = info.decode("ascii", "replace")
-        if kind in "!=":
-            body = text[1:]
-        elif kind in "/@":
-            body = text[8:]
-        else:
+        found = _position_body(info)
+        if found is None:
             return None
+        body = found[1]
         return plain_position(body) or compressed_position(body)
     except (ValueError, IndexError):
         return None

@@ -33,7 +33,7 @@ HOME_ZOOM = 10
 
 COLOURS = {"ship": QtGui.QColor("#e53935"), "aid": QtGui.QColor("#fdd835"),
            "base": QtGui.QColor("#1e88e5"), "aircraft": QtGui.QColor("#8e24aa"),
-           "radio": QtGui.QColor("#43a047")}
+           "radio": QtGui.QColor("#43a047"), "station": QtGui.QColor("#fb8c00")}
 
 
 # -- Web Mercator ------------------------------------------------------------------
@@ -266,7 +266,7 @@ class MapView(QtWidgets.QWidget):
             painter.translate(p)
             painter.setPen(QtGui.QPen(QtGui.QColor("black"), 1))
             painter.setBrush(colour)
-            if t.kind in ("ship", "aircraft") and t.bearing is not None:
+            if t.kind in ("ship", "aircraft", "station") and t.bearing is not None:
                 painter.rotate(t.bearing)
                 painter.drawPolygon(QtGui.QPolygonF([
                     QtCore.QPointF(0, -9), QtCore.QPointF(5, 6), QtCore.QPointF(0, 3),

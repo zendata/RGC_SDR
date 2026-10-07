@@ -89,3 +89,20 @@ def test_adsb_aircraft_by_icao_address():
     t = store.targets["adsb:7C6B2D"]
     assert (t.kind, t.altitude_ft, t.speed_kn, t.bearing) == ("aircraft", 12000, 250.0, 160.0)
     assert (t.lat, t.lon) == (-37.7, 144.8) and t.details["climb"] == "-1000 ft/min"
+
+
+def test_aprs_stations_and_objects_go_on_the_map():
+    from src.rgc_sdr.dsp.aprs import AprsPacket, parse_ax25  # noqa: F401
+    store = TargetStore()
+    station = AprsPacket("VK3XYZ-9", "APRS", ["WIDE1-1*"], b"!3749.10S/14458.00E>088/036",
+                         position=(-37.8183, 144.9667), course=88.0, speed_kn=36.0)
+    obj = AprsPacket("VK3ABC", "APRS", [], b";VK3RMM   *...", position=(-37.6667, 145.0),
+                     object_name="VK3RMM")
+    no_position = AprsPacket("VK3QQQ", "APRS", [], b">status only")
+    assert store.update([station, obj, no_position]) == 2
+    t = store.targets["aprs:VK3XYZ-9"]
+    assert t.kind == "station" and (t.lat, t.lon) == (-37.8183, 144.9667)
+    assert t.course == 88.0 and t.speed_kn == 36.0 and t.details["via"] == "WIDE1-1*"
+    o = store.targets["aprs:VK3RMM"]
+    assert o.label == "VK3RMM" and o.details["sent by"] == "VK3ABC"
+    assert "aprs:VK3QQQ" not in store.targets

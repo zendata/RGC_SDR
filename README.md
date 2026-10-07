@@ -4,7 +4,7 @@ An incremental, learning-focused SDR receiver for macOS (Apple silicon), built o
 Airspy HF+ over SoapySDR. Live spectrum, scrolling waterfall, click-to-tune, zoom,
 named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal meter,
 recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers,
-APRS, AIS, ACARS, ADS-B, and P25 and DMR metadata), with ships and aircraft on a map.
+APRS, AIS, ACARS, ADS-B, and P25 and DMR metadata), with ships, aircraft, APRS stations and objects on a map.
 
 See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
 

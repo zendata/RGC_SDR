@@ -161,3 +161,31 @@ def test_noise_alone_decodes_nothing():
 
 def test_parse_rejects_a_truncated_address_field():
     assert parse_ax25(b"\x82" * 10) is None
+
+
+def _packet(info, source="VK3XYZ-9", path=("WIDE1-1",), dest="APRS"):
+    """Parsed as the decoder does: the frame without its CRC."""
+    return parse_ax25(ax25(source, dest, list(path), info)[:-2])
+
+
+def test_a_position_report_with_course_and_speed():
+    p = _packet(b"!3749.10S/14458.00E>088/036 mobile")
+    assert p.position == pytest.approx((-(37 + 49.10 / 60), 144 + 58.0 / 60))
+    assert (p.course, p.speed_kn) == (88.0, 36.0)
+    assert p.object_name is None
+
+
+def test_an_object_and_an_item_are_placed_under_their_own_names():
+    obj = _packet(b";VK3RMM   *111111z3740.00S/14500.00Er146.700MHz")
+    assert obj.object_name == "VK3RMM"
+    assert obj.position == pytest.approx((-(37 + 40 / 60), 145.0))
+    item = _packet(b")NET!3800.00S/14500.00E/weekly net")
+    assert item.object_name == "NET" and item.position == pytest.approx((-38.0, 145.0))
+
+
+def test_mic_e_speed_and_course():
+    # 20 knots at 251 degrees: SP = 2, DC = 0*10 + 2, SE = 51.
+    info = bytes([0x60, 44 + 28, 58 + 28, 0 + 28, 2 + 28, 2 + 28, 51 + 28]) + b">/"
+    p = _packet(info, dest="3749Q0")
+    assert p.position is not None
+    assert (p.course, p.speed_kn) == (251.0, 20.0)
