@@ -181,6 +181,12 @@ headless-testable and lets modules be swapped independently.
     ensemble and service names, the multiplex layout; 2) a station's audio, DAB+'s
     HE-AAC through FAAD2 (Homebrew), as mbelib serves P25. DRM after it, only if a
     signal can be heard here (shortwave: the HF+), its codec also from outside.
+- **P9 — Network radio server (VK3RQ, 2026-10-07: option 2 of section 7q).** Any SDR
+  plugged into the Pi 5 at home, used from the Mac anywhere over Tailscale, at the radio's
+  full rate. P9a: the server and a remote source (section 7q) ✅ (verified 2026-10-07:
+  the Pi's RTL-SDR over Tailscale at every link rate up to 960 kS/s, nothing lost, the
+  Pi under 30% of a core). P9b: the radio's whole span as the waterfall, the IQ window
+  following the listening frequency.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1381,6 +1387,50 @@ sign is mark or space whatever the transmitter's pre-emphasis did to the tone le
 NRZI, HDLC flags (0x7E) and bit unstuffing, LSB-first bytes and the CRC-16/X.25 frame check
 (checked against the standard value 0x906E for "123456789"). AX.25 addresses give
 `SRC>DEST,PATH:info`; APRS positions in the plain uncompressed format are parsed.
+
+## 7q. Network radio server (P9)
+
+**Why not SoapyRemote alone.** SoapyRemote (installed on the Pi 5, Tailscale address only)
+serves any SoapySDR radio, but as raw IQ. Measured 2026-10-07: Tailscale carried about
+30 Mbit/s between the Mac and the Pi (the LAN about 340), so an RTL-SDR at 2.048 MS/s
+arrived at 1.1 MS/s with overflows in every wire format (CS16, CS8, UDP, TCP), while the
+Pi read it at the full rate locally. Away from home the house's upload is the limit anyway,
+and a HackRF at 4 MS/s needs about 64 Mbit/s. So the Pi must do the reducing.
+
+**P9a design.** A server on the Pi (`python -m rgc_sdr.netserver`) opens a radio with the
+same `SoapyIQSource` the app uses -- every driver quirk, LO offset and ppm correction
+included -- at a rate of its own, and decimates by a power of two (`StreamDecimator`) to a
+*link rate* of at most 1 MS/s, chosen from the app's rate list. The app's
+`RemoteIQSource` is an ordinary `IQSource` whose `sample_rate` is the link rate, so the
+spectrum, demodulators, decoders, classifier and recorders work unchanged; the span shown
+is the link rate. A remote radio has its own key ("rtlsdr@radiopi"), so its memories and
+settings stay apart from the same model plugged into the Mac.
+
+- **Wire.** One TCP connection; frames of `[type u8][length u32 LE][payload]`. Type 1 is
+  JSON control, both ways (a request id, an op, a reply with the radio's state). Type 2
+  is IQ: `generation u32, scale f32, count u32`, then `count` int16 I/Q pairs scaled by
+  `scale` -- block floating point, so a quiet band keeps its floor (16 bits fixed against
+  full scale would bury the HF+'s -134 dBFS floor). 4 bytes a sample: 384 kS/s is about
+  12 Mbit/s.
+- **Retuning.** The client numbers each flushing change (`generation`); the server tags
+  IQ with the generation it was made under, and the client drops stale blocks. No round
+  trip is waited for, so dragging a digit over the internet does not stall the window.
+- **Rates.** For each radio rate up to 10 MS/s (the profile's), link rates are that rate
+  over 1, 2, 4 ... between 48 kS/s and 1 MS/s; each link rate is served from the radio
+  rate nearest the profile's default. DAB's 2.048 MS/s is out of reach remotely.
+- **Receive only.** No transmit over the network in P9 (the HackRF's TX stays local).
+- **Security.** Bound to the Pi's Tailscale address only, as SoapyRemote is; Tailscale is
+  the authentication. One client at a time; a new connection replaces the old (a dropped
+  link otherwise holds the radio until TCP gives up).
+- **Deployed on the Pi 5** (2026-10-07): the modules above copied to `/opt/rgc-sdr`, run
+  by `rgc-sdr-server.service` as the unprivileged `soapyremote` user (group plugdev) on
+  the Tailscale address, port 55133. Debian has no Soapy modules for the Airspy HF+ or the
+  Pluto: SoapyAirspyHF and SoapyPlutoSDR are built from source into /usr/local. The DVB
+  driver is blacklisted so the RTL-SDR is free. On the Mac the server is named by its Tailscale name
+  (Tailscale's MagicDNS), in `servers.json` beside the settings.
+- **The Pi** runs Debian's Python 3.13 with apt's NumPy and SoapySDR bindings, so the
+  modules the server imports (`device/source.py`, `device/profiles.py`,
+  `device/remote_protocol.py`, `dsp/decimate.py`, `netserver.py`) must stay 3.13-clean.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

@@ -106,6 +106,10 @@ class DeviceCombo(QtWidgets.QComboBox):
         super().showPopup()
 
 
+#: The radio list's last entry, which asks for the network radio servers.
+SERVERS_ITEM = "__servers__"
+
+
 def _open_soapy(driver: str, centre_hz: float) -> IQSource:
     from ..device.profiles import profile_for
 
@@ -114,6 +118,12 @@ def _open_soapy(driver: str, centre_hz: float) -> IQSource:
         from ..device.icom import open_ic705
 
         return open_ic705(driver)     # opens wherever the radio's own dial is
+    if profile is not None and profile.remote is not None:
+        from ..device.remote import RemoteIQSource, ServerAddress
+
+        host, port, model = profile.remote
+        return RemoteIQSource(ServerAddress(host, port), model, center_freq=centre_hz,
+                              profile=profile)
     from ..device.source import SoapyIQSource
 
     return SoapyIQSource(driver=driver, center_freq=centre_hz)
@@ -467,9 +477,37 @@ class MainWindow(QtWidgets.QMainWindow):
                                   QtCore.Qt.ItemDataRole.ForegroundRole)
             combo.setItemData(combo.count() - 1, "\n".join(tip),
                               QtCore.Qt.ItemDataRole.ToolTipRole)
+        combo.addItem("Network radio servers\u2026", SERVERS_ITEM)
+        combo.setItemData(combo.count() - 1,
+                          "Name the machines running the network radio server (the Pi),\n"
+                          "whose radios then appear in this list",
+                          QtCore.Qt.ItemDataRole.ToolTipRole)
         index = combo.findData(current)
         combo.setCurrentIndex(index if index >= 0 else 0)
         combo.blockSignals(False)
+
+    def _ask_servers(self) -> None:
+        """Which machines run the network radio server (PLANNING.md 7q)."""
+        from ..device.remote import list_radios, load_servers, parse_servers, save_servers
+
+        current = ", ".join(s.text() for s in load_servers())
+        text, ok = QtWidgets.QInputDialog.getText(
+            self, "Network radio servers",
+            "Machines running the network radio server, by Tailscale name\n"
+            "(\"radiopi\"), separated by commas. Leave empty for none:", text=current)
+        if not ok:
+            return
+        try:
+            servers = parse_servers(text)
+        except ValueError:
+            self._status.showMessage("a server is a name, or name:port", 6000)
+            return
+        save_servers(servers)
+        found = {s.name: len(list_radios(s, use_cache=False)) for s in servers}
+        self._status.showMessage(
+            "; ".join(f"{name}: {n} radio{'s' if n != 1 else ''}" if n else
+                      f"{name}: no answer, or no radios" for name, n in found.items())
+            or "no network radio servers", 10000)
 
     def _refresh_freq_range(self) -> None:
         """The frequency box takes anything a radio that is there can tune: going beyond
@@ -633,6 +671,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_device_chosen(self, index: int) -> None:
         key = self._device_combo.itemData(index)
+        if key == SERVERS_ITEM:
+            self._ask_servers()
+            self._refresh_device_list()
+            return
         if key and key != PLAYBACK_DRIVER:
             # Choosing a radio makes it first choice wherever it reaches.
             self.settings.preferred_device = key

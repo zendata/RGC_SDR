@@ -149,6 +149,17 @@ range) separately: saving 621 kHz on the HackRF leaves how it was set up on the 
 HF+ alone, and recalling it on either radio brings back that radio's setup. A radio's
 frequency error is its own, not the station's, so memories never carry it.
 
+### Radios on another machine (network radio server)
+
+Any SDR plugged into another machine -- a Raspberry Pi at home, say -- can be used from
+the Mac, over Tailscale, from anywhere. The Pi runs `python3 -m rgc_sdr.netserver --bind
+<its Tailscale address>`, which opens the radio at its own rate and decimates it there to
+a *link rate* the network can carry (up to about 1 MS/s; 384 kS/s is about 12 Mbit/s).
+Choose **Network radio servers...** at the end of the radio list and name the machine
+("radiopi"); its radios then appear in the list as "RTL-SDR on radiopi" and so on, and behave like
+any other radio, with their own memories and settings. The **Rate** list holds the link
+rates. Receive only. See PLANNING.md section 7q for the design and the Pi's setup.
+
 ### Choosing the radio
 
 The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy

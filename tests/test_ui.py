@@ -2189,7 +2189,8 @@ def switching_window(connected=("airspyhf", "hackrf", "rtlsdr", "plutosdr", "air
 def test_sdr_selector_lists_every_supported_radio(qapp):
     win, _, _ = switching_window()
     keys = [win._device_combo.itemData(i) for i in range(win._device_combo.count())]
-    assert set(keys) == {p.key for p in PROFILES}
+    assert keys[-1] == "__servers__"                      # then the network servers entry
+    assert set(keys[:-1]) == {p.key for p in PROFILES}
     assert win._device_combo.currentData() == "airspyhf"
     win.close()
 
