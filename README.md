@@ -166,6 +166,14 @@ and decoding it also sends IQ for a window of 200-400 kHz around the tuned frequ
 stays put; near the edge the radio itself retunes. Zoom works as usual. Receive only, and
 no DAB (it needs 2.048 MS/s of IQ). See PLANNING.md section 7q.
 
+### Working with other programs
+
+Tick **CAT** (Settings, Record row) and choose hamlib's **NET rigctl** radio at
+`127.0.0.1:4532` in WSJT-X, fldigi or a logger: they then read and set the frequency and
+mode. To give them the audio, install a virtual cable (`brew install blackhole-2ch`) and
+choose it in **Also to**, then choose BlackHole as their input. FT8 and WSPR then decode
+from any of the radios. Receive only: set the program's PTT to none.
+
 ### Choosing the radio
 
 The **SDR** selector at the top left lists every supported radio — Airspy HF+, Airspy

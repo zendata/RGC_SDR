@@ -359,6 +359,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._on_overlays_changed()
         self._replaying = False
         self._keep_history()
+        self._second_output = None
+        self._cat = None
+        self._fill_second_outputs()
+        self._cat_timer = QtCore.QTimer(self)
+        self._cat_timer.setInterval(50)
+        self._cat_timer.timeout.connect(self._service_cat)
+        self._cat_timer.start()
+        if self.settings.cat_enabled and self._persist:
+            self._cat_check.setChecked(True)
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
@@ -899,6 +908,106 @@ class MainWindow(QtWidgets.QMainWindow):
                 f"keeping {kept:.0f} s: the replay buffer is limited to 512 MB at "
                 f"{self.source.sample_rate / 1e6:g} MS/s", 8000)
         self._schedule_save()
+
+    # -- P13: second output and CAT ------------------------------------------------
+
+    def _fill_second_outputs(self) -> None:
+        from ..audio import output_devices
+
+        combo = self._second_combo
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Off", "")
+        for name in (output_devices() if self._audio_ok else []):
+            combo.addItem(name, name)
+        wanted = self.settings.second_output
+        index = combo.findData(wanted)
+        if index < 0 and wanted:
+            combo.addItem(f"{wanted} (not there)", wanted)
+            index = combo.count() - 1
+        combo.setCurrentIndex(max(0, index))
+        combo.blockSignals(False)
+
+    def _on_second_output_chosen(self) -> None:
+        self.settings.second_output = self._second_combo.currentData() or ""
+        self._sync_second_output()
+        self._schedule_save()
+
+    def _sync_second_output(self) -> None:
+        """(Re)open the second output to match the audio now playing: its rate and
+        channels change with the mode."""
+        from ..audio import SecondOutput
+
+        old, self._second_output = getattr(self, "_second_output", None), None
+        if old is not None:
+            old.stop()
+            taps = getattr(self.audio, "taps", None)
+            if taps is not None and old.push in taps:
+                taps.remove(old.push)
+        device = self.settings.second_output
+        if not device or self.audio is None or not hasattr(self.audio, "taps"):
+            return
+        try:
+            out = SecondOutput(device, self.audio.audio_rate, self.audio.channels)
+            out.start()
+        except Exception as exc:
+            self._status.showMessage(f"could not open {device}: {exc}", 8000)
+            return
+        self.audio.taps.append(out.push)
+        self._second_output = out
+
+    def _on_cat_toggled(self, on: bool) -> None:
+        from ..cat import RigctlServer
+
+        self.settings.cat_enabled = bool(on)
+        self._schedule_save()
+        cat, self._cat = getattr(self, "_cat", None), None
+        if cat is not None:
+            cat.close()
+        if not on:
+            return
+        try:
+            self._cat = RigctlServer(port=self.settings.cat_port)
+        except OSError as exc:
+            self._status.showMessage(
+                f"CAT: port {self.settings.cat_port} is in use ({exc}); is rigctld running?",
+                10000)
+            self._cat_check.blockSignals(True)
+            self._cat_check.setChecked(False)
+            self._cat_check.blockSignals(False)
+            return
+        self._status.showMessage(
+            f"CAT on 127.0.0.1:{self.settings.cat_port} (hamlib NET rigctl)", 6000)
+
+    def _service_cat(self) -> None:
+        """Apply what CAT clients asked for, and tell them what the radio is doing."""
+        cat = getattr(self, "_cat", None)
+        if cat is None:
+            return
+        offset = self._offset_spin.value() * 1e3
+        for command in cat.take_commands():
+            if command[0] == "freq":
+                # The listening frequency: the centre moves, the offset stays.
+                self._retune(command[1] - offset, allow_snap=False, auto_radio=True)
+            elif command[0] == "mode":
+                self._cat_mode(command[1], command[2])
+        mode = getattr(self.source, "mode", None) if self.is_transceiver else self.mode
+        ranges = self.source.caps.freq_ranges
+        cat.publish(self.source.center_freq + offset, mode or "usb",
+                    self._channel_bandwidth(),
+                    min((r.min_hz for r in ranges), default=0.0),
+                    max((r.max_hz for r in ranges), default=6e9))
+
+    def _cat_mode(self, mode: str, passband: float | None) -> None:
+        wanted = _TO_RADIO_MODE.get(mode, mode) if self.is_transceiver else mode
+        if self.is_transceiver and wanted == "sam":
+            wanted = "am"
+        index = self._mode_combo.findData(wanted)
+        if index >= 0 and self._mode_combo.currentIndex() != index:
+            self._mode_combo.setCurrentIndex(index)
+        if passband and not self.is_transceiver and self.mode in MODE_SPECS:
+            self._select_bandwidth(float(passband))
+            self._on_audio_bandwidth_changed()
 
     def _keep_history(self) -> None:
         """Size the source's replay buffer from the setting (not for a recording or a
@@ -2586,6 +2695,24 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rec_label.setMinimumWidth(260)
         row.addWidget(self._rec_label)
 
+        # P13: the audio to a second device, and CAT control for other programs.
+        row.addWidget(QtWidgets.QLabel("Also to"))
+        self._second_combo = QtWidgets.QComboBox()
+        self._second_combo.setToolTip(
+            "Send the demodulated audio to a second sound device as well -- a virtual\n"
+            "cable such as BlackHole, so WSJT-X or fldigi can decode it. It carries on\n"
+            "while the speaker is muted.")
+        self._second_combo.setMaximumWidth(160)
+        self._second_combo.activated.connect(self._on_second_output_chosen)
+        row.addWidget(self._second_combo)
+        self._cat_check = QtWidgets.QCheckBox("CAT")
+        self._cat_check.setToolTip(
+            "Let other programs (WSJT-X, fldigi, loggers) read and set the frequency and\n"
+            "mode: choose hamlib's \"NET rigctl\" radio there, at 127.0.0.1:4532.\n"
+            "Receive only: they cannot key the transmitter.")
+        self._cat_check.toggled.connect(self._on_cat_toggled)
+        row.addWidget(self._cat_check)
+
         row.addSpacing(20)
         self._play_button = QtWidgets.QPushButton("Play\u2026")
         self._play_button.setToolTip("Play an IQ recording in place of the radio")
@@ -3117,6 +3244,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.audio is not None:
             # The chain's decimation and audio rate both derive from the sample rate.
             self.audio.restart()
+            self._sync_second_output()
         if self.decode_worker is not None:
             self._start_decoder(self.decode_worker.name)
         self._update_passband()
@@ -3245,6 +3373,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if self._audio_problem:
             self._status.showMessage(self._audio_problem, 4000)   # and kept in the line
+        if hasattr(self, "_second_combo"):
+            self._sync_second_output()
         self._sync_squelch_enabled()
         self._refresh_bandwidths()
         self._sync_zerobeat_enabled()
@@ -4424,6 +4554,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802  (Qt naming)
         self._tx_button.setChecked(False)
+        if getattr(self, "_cat", None) is not None:
+            self._cat.close()
+            self._cat = None
+        if getattr(self, "_second_output", None) is not None:
+            self._second_output.stop()
+            self._second_output = None
         self._stop_radio_audio()
         QtWidgets.QApplication.instance().removeEventFilter(self._space_filter)
         self._timer.stop()

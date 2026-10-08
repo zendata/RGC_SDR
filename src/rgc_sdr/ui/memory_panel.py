@@ -64,6 +64,10 @@ class MemoryTree(QtWidgets.QTreeWidget):
 
 
 class MemoryPanel(QtWidgets.QWidget):
+    HINT = "Drag memories onto a group to move them"
+    OWN_FILTER = "RGC_SDR memories (*.csv)"
+    CHIRP_FILTER = "CHIRP (*.csv)"
+
     recallRequested = QtCore.pyqtSignal(str)
     #: Save the radio's current settings: (name, group or "" for the automatic one).
     saveRequested = QtCore.pyqtSignal(str, str)
@@ -94,10 +98,19 @@ class MemoryPanel(QtWidgets.QWidget):
         buttons.addSpacing(20)
         self.group_button = self._button(buttons, "New group…", self._new_group,
                                          "Add a memory group")
+        buttons.addSpacing(20)
+        self.import_button = self._button(
+            buttons, "Import…", self._import,
+            "Add memories from a CSV file: this app's own, or CHIRP's (for radios CHIRP\n"
+            "programs). A memory with a name already used is replaced.")
+        self.export_button = self._button(
+            buttons, "Export…", self._export,
+            "Save the selected memories (all, if none is selected) as CSV: this app's own,\n"
+            "which keeps everything, or CHIRP's, for programming a radio")
         buttons.addStretch(1)
-        hint = QtWidgets.QLabel("Drag memories onto a group to move them")
-        hint.setStyleSheet("color: #888;")
-        buttons.addWidget(hint)
+        self.hint = QtWidgets.QLabel(self.HINT)
+        self.hint.setStyleSheet("color: #888;")
+        buttons.addWidget(self.hint)
         outer.addLayout(buttons)
         self.tree = MemoryTree()
         self.tree.itemDoubleClicked.connect(self._on_double_click)
@@ -241,6 +254,54 @@ class MemoryPanel(QtWidgets.QWidget):
         if group and self.settings.remove_group(group):
             self.refresh()
             self.changed.emit()
+
+    def _say(self, text: str) -> None:
+        """A note in place of the hint, for a few seconds."""
+        self.hint.setText(text)
+        QtCore.QTimer.singleShot(8000, lambda: self.hint.setText(self.HINT))
+
+    def _import(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import memories", "", "CSV (*.csv);;All files (*)")
+        if path:
+            self.import_from(path)
+
+    def import_from(self, path) -> int:
+        from ..memory_io import import_any, is_chirp, merge
+
+        try:
+            memories = import_any(path, self.settings.memory_groups)
+            chirp = is_chirp(path)
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            self._say(f"could not import: {exc}")
+            return 0
+        count = merge(self.settings, memories)
+        self.refresh()
+        self.changed.emit()
+        self._say(f"imported {count} memories{' from CHIRP' if chirp else ''}")
+        return count
+
+    def _export(self) -> None:
+        path, chosen = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export memories", "memories.csv",
+            f"{self.OWN_FILTER};;{self.CHIRP_FILTER}")
+        if path:
+            self.export_to(path, chirp=chosen == self.CHIRP_FILTER)
+
+    def export_to(self, path, chirp: bool = False) -> int:
+        from ..memory_io import export_any
+
+        names = set(self.selected_names())
+        memories = [m for m in self.settings.memories if not names or m.name in names]
+        try:
+            count = export_any(memories, path, chirp=chirp)
+        except OSError as exc:
+            self._say(f"could not export: {exc}")
+            return 0
+        skipped = len(memories) - count
+        self._say(f"exported {count} memories" +
+                  (f" ({skipped} digital ones CHIRP cannot hold left out)" if skipped else ""))
+        return count
 
     def _new_group(self) -> None:
         name, ok = QtWidgets.QInputDialog.getText(self, "New group", "Name for the group:")

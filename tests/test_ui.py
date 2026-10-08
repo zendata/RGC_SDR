@@ -4919,3 +4919,85 @@ def test_playback_controls_seek_speed_loop_and_overview(qapp, tmp_path):
     win.stop_playback()
     assert not win._seek_slider.isVisibleTo(win)
     win.source.close()
+
+
+# -- CAT, second output, memory import/export (P13) -------------------------------------
+
+
+def test_cat_sets_and_reports_the_listening_frequency_and_mode(qapp, tmp_path):
+    import socket as _socket
+
+    settings = Settings(tmp_path / "s.json")
+    settings.cat_port = 0                                   # any free port, for the test
+    win = MainWindow(StubSource(_caps(), center=7.1e6), fft_size=1024, settings=settings)
+    win._cat_check.setChecked(True)
+    assert win._cat is not None and settings.cat_enabled
+    win._offset_spin.setValue(1.0)                          # listening 1 kHz up
+    win._service_cat()
+    assert win._cat.handle("f") == "7101000\n"
+    win._cat.handle("F 7074000")
+    win._cat.handle("M LSB 2400")
+    win._service_cat()
+    assert win.source.center_freq + win._offset_spin.value() * 1e3 == pytest.approx(7.074e6)
+    assert win.mode == "lsb" and win.bandwidth_hz() == 2400.0
+    host, port = win._cat.address
+    with _socket.create_connection((host, port), timeout=2) as conn:
+        conn.sendall(b"m\n")
+        assert conn.recv(100).startswith(b"LSB\n2400")
+    win._cat_check.setChecked(False)
+    assert win._cat is None
+    win.close()
+
+
+def test_the_second_output_follows_the_audio(qapp, monkeypatch):
+    from src.rgc_sdr import audio as audio_module
+
+    opened = []
+
+    class FakeOutput:
+        def __init__(self, device, rate, channels):
+            self.device, self.rate, self.channels, self.stopped = device, rate, channels, False
+            opened.append(self)
+
+        def start(self):
+            pass
+
+        def stop(self):
+            self.stopped = True
+
+        def push(self, audio):
+            pass
+
+    class FakeSink:
+        audio_rate, channels = 48000.0, 2
+
+        def __init__(self):
+            self.taps = []
+
+    monkeypatch.setattr(audio_module, "SecondOutput", FakeOutput)
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win.audio = FakeSink()
+    win.settings.second_output = "BlackHole 2ch"
+    win._sync_second_output()
+    assert opened[-1].device == "BlackHole 2ch" and opened[-1].channels == 2
+    assert win.audio.taps == [opened[-1].push]
+    win.settings.second_output = ""
+    win._sync_second_output()
+    assert opened[-1].stopped and win.audio.taps == []
+    win.audio = None
+    win.close()
+
+
+def test_memories_import_and_export_from_the_panel(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win._freq_spin.setValue(7.1)
+    win.save_memory("forty")
+    panel = win.memory_panel
+    assert panel.export_to(tmp_path / "out.csv") == 1
+    win.delete_memory("forty")
+    assert panel.import_from(tmp_path / "out.csv") == 1
+    assert settings.get_memory("forty") is not None
+    assert "imported 1" in panel.hint.text()
+    assert panel.export_to(tmp_path / "chirp.csv", chirp=True) == 0   # mode Off: none
+    win.close()

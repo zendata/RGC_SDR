@@ -150,6 +150,8 @@ Shown in NBFM mode.
 | **IQ** | Record raw IQ as SigMF (`.sigmf-data` + `.sigmf-meta`). About 6 MB/s at 768 kS/s; stops at 2 GiB, or on a real retune. |
 | **Replay** | Go back over the last 10, 30 or 60 seconds received, or all that is kept. They play as a recording, then the radio comes back by itself. The menu also sets how much is kept: none, 30 s (the default), 1, 2 or 5 minutes, within 512 MB (about 16 s at 4 MS/s, 87 s at 768 kS/s). A real retune empties it. |
 | **Play…** | Play an IQ recording in place of the radio: SigMF (from this app, SDR++, GNU Radio and others; complex float32, int16, int8 or uint8), or this app's older `.cf32`. Choosing any radio from the list also ends playback. |
+| **Also to** | Send the demodulated audio to a second sound device as well, such as a virtual cable (BlackHole) for WSJT-X or fldigi. It carries on while the speaker is muted. Remembered. |
+| **CAT** | Let other programs read and set the frequency and mode: in WSJT-X, fldigi or a logger choose hamlib's **NET rigctl** radio at `127.0.0.1:4532`. Receive only: they cannot key the transmitter, so set their PTT to none or VOX. Remembered. |
 | **Pause**, **Stop** | While playing: pause, or go back to the radio. |
 | (seek bar) | While playing: where it is; drag to go elsewhere. |
 | (speed) | While playing: 0.5× to 8×. Audio is right only at 1×. |
@@ -243,6 +245,8 @@ decoder and frequency.
 | **Rename…** | Rename the selected memory or group. |
 | **Delete** | Delete the selected memories, or an empty group. |
 | **New group…** | Add a group. |
+| **Import…** | Add memories from a CSV file: this app's own, or CHIRP's. A memory with a name already used is replaced, keeping the setups of radios the file does not mention. CHIRP's comment column names the group if it matches one. |
+| **Export…** | Save the selected memories (all, if none is selected) as this app's CSV, which keeps everything (readable columns, plus the whole memory as JSON), or as CHIRP's CSV for programming a radio (analogue modes only, with shift, CTCSS and DCS). |
 | Drag and drop | Drag memories onto a group, or onto any memory in it, to move them. |
 
 **What a memory holds.** The station once: frequency, mode, channel width, squelch,

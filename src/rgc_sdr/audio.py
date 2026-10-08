@@ -116,6 +116,65 @@ BURSTY_MODES = ("dab", "p25")
 BURSTY_BUFFER_BLOCKS = 20
 
 
+def output_devices(sd=None) -> list[str]:
+    """Names of the sound devices that can play (for the second output)."""
+    try:
+        sd = sd or _import_sounddevice()
+        return [d["name"] for d in sd.query_devices() if d.get("max_output_channels", 0) > 0]
+    except Exception:
+        return []
+
+
+class SecondOutput:
+    """The demodulated audio, also to another sound device (P13): a virtual cable such
+    as BlackHole, so WSJT-X, fldigi and the like can decode what the app receives.
+
+    Fed from an `AudioSink` tap -- before the mute, so muting the speaker does not
+    silence the decoder -- through a FIFO of its own, so a device that stalls cannot hold
+    up the speaker.
+    """
+
+    def __init__(self, device: str, rate: float, channels: int = 1, sd=None,
+                 blocksize: int = 1024, buffer_blocks: int = 8) -> None:
+        self._sd = sd or _import_sounddevice()
+        self.device = device
+        self.rate = float(rate)
+        self.channels = int(channels)
+        self.blocksize = int(blocksize)
+        self._fifo = AudioFifo(self.blocksize * buffer_blocks, self.channels)
+        self._stream = None
+
+    def push(self, audio: np.ndarray) -> None:
+        """A tap: called on the audio worker's thread."""
+        self._fifo.push(np.asarray(audio, dtype=np.float32))
+
+    def _callback(self, outdata, frames, time_info, status) -> None:
+        block = self._fifo.pull(frames)
+        if block.ndim == 1:
+            outdata[:, 0] = block
+        else:
+            outdata[:] = block
+
+    def start(self) -> None:
+        self._stream = self._sd.OutputStream(
+            samplerate=self.rate, channels=self.channels, dtype="float32",
+            blocksize=self.blocksize, device=self.device, callback=self._callback)
+        self._stream.start()
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception:
+                pass
+
+    @property
+    def underruns(self) -> int:
+        return self._fifo.underrun_samples
+
+
 class AudioSink:
     """Demodulate an `IQSource` and play the result."""
 
@@ -168,6 +227,8 @@ class AudioSink:
         #: Optional tap, called on the worker thread with every produced audio block.
         #: Used for recording; must not block, or it becomes a dropout.
         self.on_audio = None
+        #: More taps of the same kind: the second output (P13).
+        self.taps: list = []
 
     # -- configuration -----------------------------------------------------
 
@@ -467,12 +528,12 @@ class AudioSink:
 
             # The recorder is fed before muting: muting is a choice about the room,
             # not about the recording, and a silent file would be a nasty surprise.
-            tap = self.on_audio
-            if tap is not None and audio.size:
-                try:
-                    tap(audio)
-                except Exception:
-                    self._chain_errors += 1
+            for tap in (self.on_audio, *self.taps):
+                if tap is not None and audio.size:
+                    try:
+                        tap(audio)
+                    except Exception:
+                        self._chain_errors += 1
             if self._muted:
                 # Pushed as silence rather than skipped, so the stream stays fed and the
                 # callback never reports an underrun for something deliberate.

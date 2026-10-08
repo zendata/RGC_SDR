@@ -343,6 +343,11 @@ class Settings:
         self.show_memory_names = False
         #: Seconds of IQ kept for Replay (P12); 0 keeps none.
         self.replay_seconds = 30.0
+        #: P13: the rigctld-protocol CAT server (localhost), and a second audio output
+        #: by device name ("" for none).
+        self.cat_enabled = False
+        self.cat_port = 4532
+        self.second_output = ""
         #: The radio last used, by profile key.
         self.device: str | None = None
         #: The radio last chosen from the list: first choice wherever it reaches.
@@ -383,6 +388,13 @@ class Settings:
         for key in ("show_band_plan", "show_memory_names"):
             if isinstance(raw.get(key), bool):
                 setattr(settings, key, raw[key])
+        if isinstance(raw.get("cat_enabled"), bool):
+            settings.cat_enabled = raw["cat_enabled"]
+        port = raw.get("cat_port")
+        if isinstance(port, int) and not isinstance(port, bool) and 0 < port < 65536:
+            settings.cat_port = port
+        if isinstance(raw.get("second_output"), str):
+            settings.second_output = raw["second_output"]
         replay = raw.get("replay_seconds")
         if isinstance(replay, (int, float)) and not isinstance(replay, bool) and replay >= 0:
             settings.replay_seconds = float(replay)
@@ -447,6 +459,9 @@ class Settings:
             "show_band_plan": self.show_band_plan,
             "show_memory_names": self.show_memory_names,
             "replay_seconds": self.replay_seconds,
+            "cat_enabled": self.cat_enabled,
+            "cat_port": self.cat_port,
+            "second_output": self.second_output,
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),

@@ -176,7 +176,7 @@ The biggest difference on HF, and good DSP to learn from.
 11. **Playback controls**: seek, speed, loop, and an overview waterfall of the whole
     file.
 
-### P13: Working with other software (S)
+### P13: Working with other software (S) ✅ done 2026-10-08
 
 12. **A `rigctld` server.** Hamlib's TCP protocol (`f`, `F`, `m`, `M`, `t`, `T` and so
     on) on localhost: WSJT-X, fldigi, JTDX and most loggers speak it. It maps to

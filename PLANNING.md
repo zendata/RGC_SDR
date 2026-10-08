@@ -193,7 +193,7 @@ headless-testable and lets modules be swapped independently.
   one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
   carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan (section 7s) ✅,
   P12 SigMF, replay and playback controls (section 7t) ✅, P13 CAT server, a second
-  audio output and memory import/export.
+  audio output and memory import/export (section 7u) ✅.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1516,7 +1516,9 @@ All of it is saved with the station in a memory and in the last state.
 - Tracking a minimum also learns a steady CW tone as noise and removes it, so each bin's
   estimate is capped at twice its neighbours' median.
 - SAM on a live airband carrier, from the Pi's RTL-SDR: locked within a hertz, followed
-  a 400 Hz mistuning, audio correlated 0.8 with the envelope detector's.
+  a 400 Hz mistuning, audio correlated 0.8 with the envelope detector's. The RTL-SDR had
+  no antenna fitted (VK3RQ, afterwards); the carrier still stood 46 dB over the floor.
+  To repeat with an antenna.
 
 ## 7s. Markers and band plan (P11)
 
@@ -1554,6 +1556,31 @@ All of it is saved with the station in a memory and in the last state.
 - **Playback controls**: a seek bar, speeds 0.5-8x (audio is right only at 1x), loop,
   and an overview of the whole file -- one short FFT at each of 400 evenly spaced
   points, read from the file map, so even gigabytes take a moment -- to click on.
+
+## 7u. CAT server, second output, memory import/export (P13)
+
+- **CAT** (`cat.py`): the rigctld protocol on 127.0.0.1:4532, so WSJT-X, fldigi, JTDX
+  and loggers drive the app as hamlib's "NET rigctl" radio (model 2), whatever radio is
+  in use. Frequency (the listening frequency: the centre moves, the offset stays) and
+  mode both ways; the packet modes WSJT-X sets (PKTUSB) are USB and read back as set.
+  The server's threads never touch the window: they read a snapshot it publishes and
+  queue changes it applies every 50 ms. **No transmit**: `T 1` answers RPRT -11 and the
+  capabilities say ptt_type 0 (none) -- keying from another program is a new transmit
+  path, the operator's to open (CLAUDE.md).
+  *Found against hamlib 4.7.2's own rigctld (`rigctld -m 1`) and its client
+  (`rigctl -m 2`):* dump_state's preamp and attenuator lists end with 0, not a blank
+  line (a blank one left the client waiting); after `\chk_vfo` a client expects the
+  capabilities to go on as key=value lines ending "done"; `\get_lock_mode` answers a
+  value then "RPRT 0"; `q` is answered before the close. A test drives the server with
+  hamlib's own `rigctl` when it is installed.
+- **A second audio output** (`audio.SecondOutput`): the demodulated audio, from a tap
+  before the mute, through a FIFO of its own to a second device -- a virtual cable such
+  as BlackHole for WSJT-X. Reopened whenever the audio's rate or channels change.
+- **Memory import/export** (`memory_io.py`): the app's CSV (readable columns plus the
+  whole station and every radio's setup as JSON; edited columns win) and CHIRP's generic
+  CSV (analogue modes, shift, CTCSS/DCS; DMR rows come in with the DMR decoder). An
+  imported memory replaces one of the same name, keeping radios' setups it does not
+  carry.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
