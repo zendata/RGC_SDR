@@ -1,4 +1,4 @@
-"""Demodulators: AM, narrow/wide FM, and SSB.
+"""Demodulators: AM, synchronous AM, narrow/wide FM, and SSB.
 
 Every block here is *stateful and continuous*. The display can restart its filters each
 frame because it only shows the newest block, but audio is a single unbroken stream: any
@@ -11,7 +11,7 @@ Pure NumPy plus scipy for the one stateful IIR (FM de-emphasis). No Qt, no devic
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -19,12 +19,13 @@ from .decimate import StreamDecimator, lowpass_taps
 from .filters import Fir, bandpass_taps, fir_length_for  # noqa: F401  (re-exported)
 
 #: Modes the UI offers, in the order the roadmap introduces them.
-MODES = ("am", "nbfm", "wbfm", "usb", "lsb", "cw", "p25", "dab")
+MODES = ("am", "sam", "nbfm", "wbfm", "usb", "lsb", "cw", "p25", "dab")
 
 
 #: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
 BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "am": (3e3, 4.5e3, 6e3, 9e3, 12e3, 16e3),
+    "sam": (3e3, 4.5e3, 6e3, 9e3, 12e3, 16e3),
     "nbfm": (6e3, 8e3, 12.5e3, 16e3, 25e3),
     "wbfm": (150e3, 180e3, 200e3, 250e3),
     "usb": (1.8e3, 2.1e3, 2.4e3, 2.7e3, 3.0e3, 3.6e3),
@@ -79,6 +80,8 @@ class ModeSpec:
 MODE_SPECS: dict[str, ModeSpec] = {
     # Double-sideband AM broadcast: 9 kHz channel spacing in ITU regions 1 and 3.
     "am": ModeSpec(bandwidth_hz=9e3, if_target_hz=48e3, squelch_capable=True),
+    # Synchronous AM (P10): the carrier tracked and the signal demodulated coherently.
+    "sam": ModeSpec(bandwidth_hz=9e3, if_target_hz=48e3, squelch_capable=True),
     "nbfm": ModeSpec(
         bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3,
         audio_cutoff_hz=3.4e3, squelch_capable=True,
@@ -104,6 +107,166 @@ MODE_SPECS: dict[str, ModeSpec] = {
     # HE-AAC through FAAD2.
     "dab": ModeSpec(bandwidth_hz=1.536e6, if_target_hz=2.048e6),
 }
+
+
+#: Modes whose passband the IF shift moves (FM's stays centred: shifted, the
+#: discriminator would only hear one side of the deviation).
+SHIFT_MODES = ("am", "sam", "usb", "lsb", "cw")
+#: Modes the noise blanker, noise reduction and notches apply to: single-channel audio
+#: from a demodulator of the app's own.
+CLEANUP_MODES = ("am", "sam", "nbfm", "usb", "lsb", "cw")
+#: Audio AGC presets: (hang seconds, decay per block). "off" uses a fixed gain.
+AGC_MODES = ("fast", "medium", "slow", "off")
+AGC_PRESETS = {"fast": (0.1, 0.1), "medium": (AGC_HANG_S, 0.02), "slow": (1.5, 0.005)}
+SAM_SIDEBANDS = ("both", "upper", "lower")
+#: Modes the AGC-off fixed gain applies to.
+FIXED_GAIN_MODES = ("am", "sam", "usb", "lsb", "cw")
+
+
+@dataclass(frozen=True)
+class ReceiverOptions:
+    """The DSP row's settings (P10, PLANNING.md 7r)."""
+
+    #: Passband moved this far from the listening frequency (SHIFT_MODES).
+    if_shift_hz: float = 0.0
+    #: Noise blanker, 0 off, 1-10.
+    nb_level: int = 0
+    #: Noise reduction, 0 off, 1-10.
+    nr_level: int = 0
+    auto_notch: bool = False
+    #: Manual notches, as RF offsets from the listening frequency.
+    notch_offsets_hz: tuple[float, ...] = field(default_factory=tuple)
+    agc_mode: str = "medium"
+    #: Gain with the AGC off, dB.
+    manual_gain_db: float = 60.0
+    sam_sideband: str = "both"
+    #: NBFM: squelch on the noise above the voice instead of on level.
+    noise_squelch: bool = False
+    #: Noise squelch: opens when the noise is this far below a dead channel's.
+    quieting_db: float = 10.0
+
+
+def passband_for(mode: str, bandwidth_hz: float, shift_hz: float = 0.0,
+                 sideband: str = "both") -> tuple[float, float]:
+    """(low, high) of what is heard, in Hz from the listening frequency. The same edges
+    build the channel filter and shade the spectrum."""
+    w = float(bandwidth_hz)
+    shift = float(shift_hz) if mode in SHIFT_MODES else 0.0
+    if mode == "usb":
+        lo, hi = 0.0, w
+    elif mode == "lsb":
+        lo, hi = -w, 0.0
+    elif mode == "sam" and sideband == "upper":
+        lo, hi = 0.0, w / 2
+    elif mode == "sam" and sideband == "lower":
+        lo, hi = -w / 2, 0.0
+    else:
+        lo, hi = -w / 2, w / 2
+    return lo + shift, hi + shift
+
+
+def width_and_shift(mode: str, low_hz: float, high_hz: float,
+                    sideband: str = "both") -> tuple[float, float]:
+    """The inverse of `passband_for`: the width and shift giving edges `low`..`high` (as
+    a dragged passband asks). FM modes stay centred."""
+    lo, hi = sorted((float(low_hz), float(high_hz)))
+    if mode == "usb":
+        return hi - lo, lo
+    if mode == "lsb":
+        return hi - lo, hi
+    if mode == "sam" and sideband in ("upper", "lower"):
+        return 2 * (hi - lo), (lo if sideband == "upper" else hi)
+    if mode in SHIFT_MODES:
+        return hi - lo, (lo + hi) / 2
+    return 2 * max(abs(lo), abs(hi)), 0.0
+
+
+class SyncAmDetector:
+    """Synchronous AM: track the carrier, remove its phase, detect coherently.
+
+    The carrier is found in the first block by an FFT within +/-ACQUIRE_HZ, then followed
+    by a frequency-locked mixer updated once a block from the carrier's own rotation.
+    Its phase comes from a narrow one-pole low-pass of the derotated signal -- an IIR,
+    so scipy carries its state and no Python loop runs per sample. With the carrier's
+    phase removed, its sidebands are real: both are the real part, and one alone is the
+    receiver's sideband filter applied to them. Through selective fading this keeps the
+    audio clean where an envelope detector distorts, and choosing one sideband steps
+    away from interference on the other.
+    """
+
+    ACQUIRE_HZ = 1000.0
+    CARRIER_HZ = 30.0
+    FLL_GAIN = 0.3
+    #: Below this ratio of carrier to signal for LOST_BLOCKS blocks, find it again.
+    LOCK_RATIO = 0.15
+    LOST_BLOCKS = 20
+
+    def __init__(self, sample_rate: float, bandwidth_hz: float, sideband: str = "both"):
+        from scipy.signal import lfilter
+
+        self._lfilter = lfilter
+        self.rate = float(sample_rate)
+        a = float(np.exp(-2 * np.pi * self.CARRIER_HZ / self.rate))
+        self._b, self._a = np.array([1.0 - a]), np.array([1.0, -a])
+        self.sideband = sideband
+        self._ssb = None
+        if sideband in ("upper", "lower"):
+            self._ssb_taps = sideband_taps(bandwidth_hz / 2, self.rate, sideband == "upper")
+            from .filters import Fir as _Fir
+
+            self._ssb = _Fir(self._ssb_taps)
+        self.reset()
+
+    def reset(self) -> None:
+        #: Carrier frequency found, Hz from the listening frequency; None until found.
+        self.freq_hz: float | None = None
+        self._phase = 0.0
+        self._zi = np.zeros(1, dtype=np.complex128)
+        self._lost = 0
+        self.carrier = 0.0
+        if self._ssb is not None:
+            self._ssb.reset()
+
+    @property
+    def locked(self) -> bool:
+        return self.freq_hz is not None and self._lost == 0
+
+    def _acquire(self, x: np.ndarray) -> None:
+        n = 1 << max(13, int(np.ceil(np.log2(x.size))))
+        spectrum = np.abs(np.fft.fft(x * np.hanning(x.size), n))
+        freqs = np.fft.fftfreq(n, 1.0 / self.rate)
+        near = np.abs(freqs) <= self.ACQUIRE_HZ
+        self.freq_hz = float(freqs[near][int(np.argmax(spectrum[near]))])
+        self._zi = np.zeros(1, dtype=np.complex128)
+
+    def process(self, x: np.ndarray) -> np.ndarray:
+        if x.size == 0:
+            return np.zeros(0)
+        if self.freq_hz is None:
+            self._acquire(x)
+        step = -2.0 * np.pi * self.freq_hz / self.rate
+        phase = self._phase + step * np.arange(x.size)
+        self._phase = float((self._phase + step * x.size) % (2 * np.pi))
+        z = x * np.exp(1j * phase)
+        c, self._zi = self._lfilter(self._b, self._a, z, zi=self._zi)
+        if c.size > 1:
+            # The carrier's remaining rotation, per sample, steers the mixer.
+            turn = np.angle(np.sum(c[1:] * np.conj(c[:-1])))
+            self.freq_hz += self.FLL_GAIN * turn * self.rate / (2 * np.pi)
+        magnitude = np.abs(c)
+        self.carrier = float(magnitude.mean())
+        level = float(np.sqrt(np.mean(np.abs(z) ** 2)))
+        if level > 0 and self.carrier < self.LOCK_RATIO * level:
+            self._lost += 1
+            if self._lost >= self.LOST_BLOCKS:
+                self.freq_hz, self._lost = None, 0
+        else:
+            self._lost = 0
+        unit = c / np.maximum(magnitude, 1e-30)
+        base = z * np.conj(unit) - magnitude          # carrier removed, sidebands real
+        if self._ssb is None:
+            return base.real
+        return 2.0 * self._ssb.process(base).real
 
 
 class Mixer:
@@ -393,12 +556,15 @@ class DemodChain:
         agc: bool = True,
         bandwidth_hz: float | None = None,
         pitch_hz: float | None = None,
+        options: ReceiverOptions | None = None,
     ) -> None:
         if mode not in MODE_SPECS:
             raise ValueError(f"unknown mode {mode!r}; expected one of {MODES}")
         self.sample_rate = float(sample_rate)
         self.mode = mode
         self.spec = MODE_SPECS[mode]
+        self.options = options or ReceiverOptions()
+        self._agc_enabled = bool(agc)
         self.volume = float(volume)
         self.squelch_dbfs = squelch_dbfs
         #: In-channel power of the most recent block, for the S-meter. dBFS, so it is
@@ -427,6 +593,9 @@ class DemodChain:
 
         if mode == "am":
             self._detector = AmDetector()
+        elif mode == "sam":
+            self._detector = SyncAmDetector(self.if_rate, self.bandwidth_hz,
+                                            self.options.sam_sideband)
         elif mode in ("nbfm", "wbfm", "p25"):
             self._detector = FmDetector(self.if_rate, self.spec.deviation_hz)
         else:
@@ -498,14 +667,8 @@ class DemodChain:
         if mode == "wbfm":
             self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
 
-        # AM is levelled by its carrier, which is steady whatever the programme does:
-        # the audio becomes the modulation depth, so a pause cannot wind the gain up and
-        # the next word cannot start loud. Every other mode has no carrier to go by and
-        # uses the audio AGC, holding through pauses of up to AGC_HANG_S.
-        self._carrier_agc = bool(agc) and mode == "am"
         self._am_gain = 1.0
-        self._agc = (AudioAgc(hang_samples=int(AGC_HANG_S * self.audio_rate))
-                     if agc and not self._carrier_agc else None)
+        self._build_agc()
 
         cutoff = self.spec.audio_cutoff_hz
         self._audio_fir = None
@@ -520,6 +683,22 @@ class DemodChain:
         self.muted_blocks = 0
         self._tone_squelch = None
         self._tone_highpass = None
+        from .cleanup import AudioCleanup, NoiseBlanker
+
+        cleanable = mode in CLEANUP_MODES
+        self._blanker = (NoiseBlanker(self.sample_rate, self.options.nb_level)
+                         if cleanable else None)
+        self._cleanup = (AudioCleanup(self.audio_rate, self.options.nr_level,
+                                      self.options.auto_notch, self._notch_audio_hz())
+                         if cleanable else None)
+        #: NBFM noise squelch: the discriminator's noise above the voice, and what a dead
+        #: channel gives through the same filters (PLANNING.md 7r).
+        self.quieting_db: float | None = None
+        self._noise_open = False
+        self._noise_filter = None
+        self._noise_reference = None
+        if mode == "nbfm":
+            self._build_noise_squelch()
         #: The most recent channel-filtered block, complex. CW decoding needs the
         #: envelope of this rather than the audio, which carries the beat note.
         self.last_channel = np.zeros(0, dtype=np.complex128)
@@ -533,12 +712,118 @@ class DemodChain:
         return self._user_offset - self.pitch_hz
 
     def _channel_taps(self) -> np.ndarray:
+        shift = self.options.if_shift_hz if self.mode in SHIFT_MODES else 0.0
         if self.mode == "cw":
             # Centred on the pitch, so the keyed carrier lands inside the passband.
-            return bandpass_taps(self.pitch_hz, self.bandwidth_hz, self.if_rate)
+            return bandpass_taps(self.pitch_hz + shift, self.bandwidth_hz, self.if_rate)
         if self.mode in ("usb", "lsb"):
-            return sideband_taps(self.bandwidth_hz, self.if_rate, upper=(self.mode == "usb"))
+            if not shift:
+                return sideband_taps(self.bandwidth_hz, self.if_rate,
+                                     upper=(self.mode == "usb"))
+            lo, hi = passband_for(self.mode, self.bandwidth_hz, shift)
+            return bandpass_taps((lo + hi) / 2, hi - lo, self.if_rate)
+        if self.mode in ("am", "sam") and shift:
+            # Both sidebands, wherever the shift puts them: SAM picks one afterwards.
+            return bandpass_taps(shift, self.bandwidth_hz, self.if_rate)
         return channel_taps(self.bandwidth_hz, self.if_rate)
+
+    def passband(self) -> tuple[float, float]:
+        """What is heard, Hz from the listening frequency."""
+        return passband_for(self.mode, self.bandwidth_hz, self.options.if_shift_hz,
+                            self.options.sam_sideband)
+
+    def _build_agc(self) -> None:
+        """AM and SAM are levelled by their carrier, which is steady whatever the
+        programme does: the audio becomes the modulation depth, so a pause cannot wind
+        the gain up and the next word cannot start loud. Every other mode has no carrier
+        to go by and uses the audio AGC, holding through pauses. With the AGC off, a
+        fixed gain."""
+        mode = self.options.agc_mode if self.options.agc_mode in AGC_MODES else "medium"
+        on = self._agc_enabled and mode != "off"
+        # A fixed gain only where the audio has no level of its own: FM's discriminator
+        # is already scaled to full deviation, and 60 dB on it would only clip.
+        self._fixed_gain = (10.0 ** (self.options.manual_gain_db / 20.0)
+                            if self._agc_enabled and mode == "off"
+                            and self.mode in FIXED_GAIN_MODES else None)
+        self._carrier_agc = on and self.mode in ("am", "sam")
+        self._agc = None
+        if on and not self._carrier_agc:
+            hang_s, decay = AGC_PRESETS[mode]
+            self._agc = AudioAgc(decay=decay, hang_samples=int(hang_s * self.audio_rate))
+
+    def _notch_audio_hz(self) -> list[float]:
+        """Manual notches (RF offsets from the listening frequency) as audio frequencies:
+        where each lands after this mode's demodulator."""
+        out = []
+        for offset in self.options.notch_offsets_hz:
+            if self.mode == "usb":
+                f = offset
+            elif self.mode == "lsb":
+                f = -offset
+            elif self.mode == "cw":
+                f = offset + self.pitch_hz
+            else:
+                f = abs(offset)
+            if f > 0:
+                out.append(f)
+        return out
+
+    def _build_noise_squelch(self) -> None:
+        """The band above the voice (8-16 kHz of discriminator output), and its power
+        on a dead channel, found by running the chain's own channel filter and
+        discriminator on a fixed sample of Gaussian noise. A discriminator's output on
+        noise does not depend on the noise's level, so this is the reference whatever
+        the radio's gain."""
+        rate = self.if_rate
+        high = min(16e3, 0.45 * rate)
+        low = min(8e3, 0.5 * high)
+        taps = lowpass_taps(high / rate, fir_length_for(low / rate)) - lowpass_taps(
+            low / rate, fir_length_for(low / rate))
+        self._noise_filter = Fir(taps)
+        rng = np.random.default_rng(705)
+        n = int(0.25 * rate)
+        noise = rng.standard_normal(n) + 1j * rng.standard_normal(n)
+        channel = Fir(self._channel.taps).process(noise)
+        detected = FmDetector(rate, self.spec.deviation_hz).process(channel)
+        band = Fir(taps).process(detected)[taps.size:]
+        self._noise_reference = float(np.mean(band ** 2)) + 1e-30
+        self._noise_power: float | None = None
+
+    def _noise_squelched(self, detected: np.ndarray) -> bool:
+        band = self._noise_filter.process(detected)
+        if band.size:
+            power = float(np.mean(band ** 2)) + 1e-30
+            self._noise_power = (power if self._noise_power is None
+                                 else 0.5 * self._noise_power + 0.5 * power)
+            self.quieting_db = 10.0 * np.log10(self._noise_reference / self._noise_power)
+        if self.quieting_db is None:
+            return True
+        threshold = self.options.quieting_db
+        # Two decibels of hysteresis, so a signal near the threshold does not chatter.
+        if self._noise_open:
+            self._noise_open = self.quieting_db >= threshold - 2.0
+        else:
+            self._noise_open = self.quieting_db >= threshold
+        return not self._noise_open
+
+    def set_options(self, options: ReceiverOptions) -> None:
+        """Apply the DSP row's settings in place: only what changed is rebuilt."""
+        old, self.options = self.options, options
+        if (old.if_shift_hz, old.sam_sideband) != (options.if_shift_hz, options.sam_sideband):
+            self._channel = Fir(self._channel_taps())
+            if self.mode == "sam":
+                self._detector = SyncAmDetector(self.if_rate, self.bandwidth_hz,
+                                                options.sam_sideband)
+            if self.mode == "nbfm":
+                self._build_noise_squelch()
+        if (old.agc_mode, old.manual_gain_db) != (options.agc_mode, options.manual_gain_db):
+            self._build_agc()
+        if self._blanker is not None:
+            self._blanker.level = options.nb_level
+        if self._cleanup is not None:
+            self._cleanup.nr_level = options.nr_level
+            self._cleanup.auto_notch = options.auto_notch
+            self._cleanup.set_notches(self._notch_audio_hz())
 
     def set_bandwidth(self, bandwidth_hz: float) -> None:
         """Retune the channel filter in place.
@@ -551,6 +836,11 @@ class DemodChain:
             return
         self.bandwidth_hz = bandwidth_hz
         self._channel = Fir(self._channel_taps())
+        if self.mode == "sam":
+            self._detector = SyncAmDetector(self.if_rate, self.bandwidth_hz,
+                                            self.options.sam_sideband)
+        if self.mode == "nbfm":
+            self._build_noise_squelch()
 
     @staticmethod
     def _pick_factor(rate: float, target: float) -> int:
@@ -578,6 +868,8 @@ class DemodChain:
         self.pitch_hz = pitch_hz
         self._mixer.set_offset(self._mix_offset())
         self._channel = Fir(self._channel_taps())
+        if self._cleanup is not None:
+            self._cleanup.set_notches(self._notch_audio_hz())
 
     def set_tone_squelch(self, tone: tuple[str, object] | None) -> None:
         """Only let audio through while a CTCSS tone or DCS code is received (NBFM).
@@ -627,6 +919,13 @@ class DemodChain:
             self._audio_fir.reset()
         if self._agc is not None:
             self._agc.reset()
+        if self._blanker is not None:
+            self._blanker.reset()
+        if self._cleanup is not None:
+            self._cleanup.reset()
+        if self._noise_filter is not None:
+            self._noise_filter.reset()
+            self._noise_power, self.quieting_db, self._noise_open = None, None, False
         if self._p25 is not None:
             self._p25.reset()
             self._p25_up.reset()
@@ -657,6 +956,8 @@ class DemodChain:
         if iq.size == 0:
             return np.zeros(0, dtype=np.float32)
 
+        if self._blanker is not None:
+            iq = self._blanker.process(iq)
         shifted = self._mixer.process(iq)
         if self.mode == "dab":
             return self._dab_audio(shifted)
@@ -705,6 +1006,9 @@ class DemodChain:
             audio = self._detector.process(channel)
             if self.mode in ("nbfm", "am"):
                 self.last_detected = audio
+            if self._noise_filter is not None and self.options.noise_squelch:
+                if self._noise_squelched(audio):
+                    squelched = True
             if self._carrier_agc:
                 self._am_gain = min(AM_AUDIO_GAIN / max(self._detector.carrier, 1e-30),
                                     AM_MAX_GAIN)
@@ -727,12 +1031,17 @@ class DemodChain:
                 squelched = True
             audio = self._tone_highpass.process(audio)
 
+        if self._cleanup is not None:
+            audio = self._cleanup.process(audio)
+
         if squelched:
             self.muted_blocks += 1
             return np.zeros(audio.size, dtype=np.float32)
 
         if self._agc is not None:
             audio = self._agc.process(audio)
+        elif self._fixed_gain is not None:
+            audio = audio * self._fixed_gain
 
         return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
 
@@ -813,4 +1122,21 @@ class DemodChain:
     def agc_gain(self) -> float:
         if self._carrier_agc:
             return self._am_gain
+        if self._fixed_gain is not None:
+            return self._fixed_gain
         return self._agc.gain if self._agc is not None else 1.0
+
+    @property
+    def sam_locked(self) -> bool | None:
+        """SAM: whether the carrier is being tracked; None in other modes."""
+        return self._detector.locked if self.mode == "sam" else None
+
+    @property
+    def notched_hz(self) -> list[float]:
+        """Audio frequencies the automatic notch is removing now."""
+        return self._cleanup.notched_hz if self._cleanup is not None else []
+
+    @property
+    def blanked(self) -> float:
+        """Share of samples the noise blanker is removing lately."""
+        return self._blanker.blanked if self._blanker is not None else 0.0
