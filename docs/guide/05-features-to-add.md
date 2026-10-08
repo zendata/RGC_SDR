@@ -130,7 +130,7 @@ or power interlocks on transmit, likewise.
 Ordered by value for effort, and so each phase builds on the one before. Each ends
 runnable, tested, and verified on air.
 
-### P10: Receiver refinements (M)
+### P10: Receiver refinements (M) ✅ done 2026-10-08
 
 The biggest difference on HF, and good DSP to learn from.
 

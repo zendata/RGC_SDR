@@ -25,10 +25,10 @@ boundary is a click at the block rate.
 ## The common chain
 
 ```
-IQ --> mixer --> decimate --> channel filter --> detector --> audio shaping --> squelch --> AGC --> volume
-       (offset)  (2^k, to the     (FIR)           (per mode)    (de-emphasis,
-                  mode's IF)                                      audio decimation,
-                                                                  audio low-pass)
+IQ --> [noise --> mixer --> decimate --> channel filter --> detector --> audio shaping --> [noise reduction, --> squelch --> AGC --> volume
+        blanker]   (offset)  (2^k, to the    (FIR: width and    (per mode)    (de-emphasis,         notches]
+                              mode's IF)      IF shift)                       audio decimation,
+                                                                              audio low-pass)
 ```
 
 1. **Mixer.** Shifts the listening frequency (centre + Offset) to 0 Hz. Its phase
@@ -53,6 +53,7 @@ IQ --> mixer --> decimate --> channel filter --> detector --> audio shaping --> 
 | Mode | IF rate (at least) | Width choices (default **bold**) | Detector |
 |---|---|---|---|
 | AM | 48 kHz | 3, 4.5, 6, **9**, 12, 16 kHz | envelope |
+| SAM | 48 kHz | 3, 4.5, 6, **9**, 12, 16 kHz | coherent, after tracking the carrier |
 | NBFM | 48 kHz | 6, 8, **12.5**, 16, 25 kHz | FM discriminator, ±2.5 kHz |
 | WBFM | 300 kHz | 150, 180, **200**, 250 kHz | FM discriminator, ±75 kHz |
 | USB, LSB | 48 kHz | 1.8, 2.1, 2.4, **2.7**, 3.0, 3.6 kHz | sideband filter |
@@ -259,9 +260,97 @@ Only DAB+ (HE-AAC) stations on equal-error-protection (EEP) sub-channels play.
 Original DAB (MP2) stations, and sub-channels with unequal protection (UEP, used by
 MP2), are listed but not decoded.
 
+## Receiver refinements
+
+The DSP row (P10, PLANNING.md section 7r). The noise blanker and noise reduction apply
+to AM, SAM, NBFM, SSB and CW.
+
+### Passband and IF shift
+
+A mode's passband is `passband_for(mode, width, shift, sideband)`, in hertz from the
+listening frequency: USB 0 to W, LSB −W to 0, the rest −W/2 to W/2, each moved by the
+shift. FM keeps it centred, since a shifted discriminator would hear only one side of
+the deviation. The same function shades the spectrum and builds the channel filter, so
+the two cannot disagree. Dragging the shaded edges runs it backwards
+(`width_and_shift`). A shifted filter is a complex band-pass, a low-pass moved up or
+down, as SSB's always was.
+
+### Noise blanker
+
+`NoiseBlanker` works on the IQ at the radio's rate, before anything else, while an
+impulse is still short:
+
+- A sample counts as an impulse if it is over *k* times the block's median magnitude.
+  The median comes from a subsample, so impulses cannot move it.
+- Each impulse is zeroed together with 20 µs either side, since the radio's own filters
+  have already spread it a little. The mask is widened by convolution, with no loop.
+- *k* runs from 15.5 at level 1 to 2 at level 10.
+
+### Noise reduction and notches
+
+`AudioCleanup` works in short FFT frames (about 10 ms, overlapped by half, square-root
+Hann windows both ways, which reassemble the audio exactly when nothing is cut). It adds
+one frame of delay.
+
+- **Noise estimate.** Per bin: the minimum of a smoothed power, falling at once and
+  rising about 1 dB a second. Then it is doubled, to correct the bias of a minimum (the
+  quietest frame of steady noise lies well below its mean), and capped at twice its
+  neighbours' median. Without that cap, a steady CW tone's own bin crept up until the
+  tone counted as noise and was removed; a test pins that it is kept.
+- **Gain.** Each bin is turned down to `max(floor, 1 − a·noise/power)`, smoothed from
+  frame to frame against "musical noise". *a* runs from 0.75 to 3 and the floor from
+  −8 to −26 dB as the level goes from 1 to 10.
+- **Automatic notch.** Removes bins whose power, averaged over about a second, stands
+  13 dB over their neighbours' median: a steady carrier. Speech moves, so it is not
+  notched. It looks only between 150 Hz and 4 kHz.
+- **Manual notches** are radio frequencies, mapped to audio by the mode: USB as is, LSB
+  mirrored, CW plus the pitch, AM and FM by distance. Each removes ±40 Hz.
+
+### Synchronous AM (SAM)
+
+`SyncAmDetector`:
+
+1. **Find the carrier.** On the first block, an FFT finds it within ±1 kHz.
+2. **Follow it.** A frequency-locked mixer is updated once a block from the carrier's
+   own rotation.
+3. **Take its phase** from a narrow (30 Hz) one-pole low-pass of the derotated signal,
+   whose state SciPy carries between blocks, so there is no per-sample loop.
+4. **Demodulate coherently.** With the carrier's phase removed, the sidebands are real:
+   **Both** is the real part, and **Upper** or **Lower** is SSB's sideband filter applied
+   to them.
+
+Levelled by the carrier, as AM is. Through selective fading this stays clean where an
+envelope detector distorts, and choosing one sideband steps away from interference on
+the other. If the carrier falls below 15% of the signal for 20 blocks, it is searched
+for again.
+
+Measured on air (an airband AM carrier received by an RTL-SDR, 2026-10-08), SAM:
+
+- locked within a hertz
+- followed a 400 Hz mistuning
+- gave audio that tracks the envelope detector's (correlation 0.8)
+
+### NBFM noise squelch
+
+An FM radio's squelch listens to the noise above the voice, which falls as a signal
+"quiets" the receiver. Here:
+
+- The discriminator is band-passed to 8–16 kHz.
+- Its power is compared with what a dead channel gives. That reference is measured once,
+  by running the chain's own channel filter and discriminator on a fixed sample of
+  Gaussian noise. A discriminator's output on noise does not depend on the noise's level,
+  so the reference holds whatever the radio's gain.
+- The squelch opens when the noise is the chosen **quieting** below it (default 10 dB),
+  with 2 dB of hysteresis.
+
 ## AGC
 
-Every mode except AM uses the **audio AGC** (`AudioAgc`). It aims at an RMS of 0.15:
+**AGC** in the DSP row chooses **Fast** (holds 0.1 s, recovers 10% a block), **Medium**
+(below), **Slow** (holds 1.5 s, 0.5% a block) or **Off**, a fixed gain for AM, SAM, SSB
+and CW.
+
+Every mode except AM and SAM uses the **audio AGC** (`AudioAgc`). It aims at an RMS of
+0.15:
 
 - **Attack.** When the signal gets louder it backs off at once, ramped across the block
   so it does not click.

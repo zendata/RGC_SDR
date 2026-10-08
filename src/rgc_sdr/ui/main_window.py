@@ -26,7 +26,10 @@ from ..device.profiles import (
 from ..device.playback import PLAYBACK_DRIVER
 from ..device.source import IQSource
 from ..dsp.decimate import Decimator
-from ..dsp.demod import BANDWIDTH_PRESETS, CW_PITCHES, MODE_SPECS, MODES
+from ..dsp.demod import (
+    AGC_MODES, BANDWIDTH_PRESETS, CLEANUP_MODES, CW_PITCHES, FIXED_GAIN_MODES, MODE_SPECS,
+    MODES, SAM_SIDEBANDS, SHIFT_MODES, ReceiverOptions, passband_for, width_and_shift,
+)
 from ..recorder import DEFAULT_DIR, AudioRecorder, IQRecorder, timestamp_name
 from ..scanner import ScanAction, ScanConfig, Scanner
 from ..dsp.spectrum import SpectrumAnalyzer
@@ -286,6 +289,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.waterfall.setXLink(self.spectrum)  # one shared frequency axis
         self.spectrum.frequencySelected.connect(self._retune)
         self.waterfall.frequencySelected.connect(self._retune)
+        self.spectrum.passbandEdited.connect(self._on_passband_edited)
+        self.spectrum.notchToggled.connect(self._on_notch_toggled)
         # Spectrum only: tuning from the waterfall while reading back through history
         # is more confusing than useful.
         self.spectrum.frequencyNudged.connect(self.nudge_frequency)
@@ -350,6 +355,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Repeater and tone settings, before audio starts so its tone squelch is right.
         self._apply_fm_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
+        self._apply_dsp_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
@@ -618,6 +624,7 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setVisible(sdr)
         for widget in (self._span_label, self._span_combo):
             widget.setVisible(not sdr)
+        self._sync_dsp_row()
         if hasattr(self, "_panels"):
             for key in ("classify", "map"):
                 self._panels[key].setVisible(self._panel_open(key))
@@ -1640,6 +1647,8 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(self._display_row)
         self._audio_row = self._build_audio_row()
         outer.addWidget(self._audio_row)
+        self._dsp_row = self._build_dsp_row()
+        outer.addWidget(self._dsp_row)
         outer.addWidget(self._build_fm_row())
         self._memory_row = self._build_memory_row()
         outer.addWidget(self._memory_row)
@@ -1661,6 +1670,221 @@ class MainWindow(QtWidgets.QMainWindow):
             outer.insertWidget(outer.indexOf(self._radio_row) + 1, self._display_row)
             outer.addWidget(self._memory_row)
             outer.setSpacing(4)
+
+    #: Manual notches closer than this to a Cmd-click are removed by it.
+    NOTCH_CLICK_HZ = 60.0
+    #: The narrowest passband a drag may leave.
+    MIN_PASSBAND_HZ = 50.0
+
+    def _build_dsp_row(self) -> QtWidgets.QWidget:
+        """Receiver refinements (P10, PLANNING.md 7r): IF shift, noise blanker, noise
+        reduction, notches, AGC mode, SAM's sideband and the NBFM noise squelch."""
+        box = QtWidgets.QWidget()
+        row = QtWidgets.QHBoxLayout(box)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(QtWidgets.QLabel("DSP"))
+
+        def spin(low, high, step, suffix, tip, special=None, decimals=0):
+            w = QtWidgets.QDoubleSpinBox() if decimals else QtWidgets.QSpinBox()
+            w.setRange(low, high)
+            w.setSingleStep(step)
+            if suffix:
+                w.setSuffix(suffix)
+            if special:
+                w.setSpecialValueText(special)
+            w.setToolTip(tip)
+            w.valueChanged.connect(self._on_dsp_changed)
+            return w
+
+        self._shift_label = QtWidgets.QLabel("Shift")
+        row.addWidget(self._shift_label)
+        self._if_shift_spin = spin(-5000, 5000, 50, " Hz",
+                                   "IF shift: move the passband off the listening frequency\n"
+                                   "(AM, SAM, SSB, CW). Its edges also drag on the spectrum.")
+        row.addWidget(self._if_shift_spin)
+        row.addWidget(QtWidgets.QLabel("NB"))
+        self._nb_spin = spin(0, 10, 1, "", "Noise blanker: remove impulses (ignition, fences,\n"
+                             "switching supplies). 1 gentle, 10 aggressive.", special="Off")
+        row.addWidget(self._nb_spin)
+        row.addWidget(QtWidgets.QLabel("NR"))
+        self._nr_spin = spin(0, 10, 1, "", "Noise reduction: turns down what the noise floor\n"
+                             "holds, frequency by frequency. 1 gentle, 10 strong.", special="Off")
+        row.addWidget(self._nr_spin)
+        self._auto_notch_check = QtWidgets.QCheckBox("Notch")
+        self._auto_notch_check.setToolTip(
+            "Automatic notch: remove steady whistles (carriers) from the audio.\n"
+            "Cmd-click the spectrum to add or remove a manual notch there.")
+        self._auto_notch_check.toggled.connect(self._on_dsp_changed)
+        row.addWidget(self._auto_notch_check)
+        self._clear_notches_button = QtWidgets.QPushButton("Clear notches")
+        self._clear_notches_button.setToolTip("Remove the manual notches")
+        self._clear_notches_button.clicked.connect(self._clear_notches)
+        row.addWidget(self._clear_notches_button)
+        row.addWidget(QtWidgets.QLabel("AGC"))
+        self._agc_mode_combo = QtWidgets.QComboBox()
+        for mode in AGC_MODES:
+            self._agc_mode_combo.addItem(mode.capitalize(), mode)
+        self._agc_mode_combo.setCurrentIndex(self._agc_mode_combo.findData("medium"))
+        self._agc_mode_combo.setToolTip(
+            "Audio AGC: Fast, Medium or Slow recovery after a pause; Off uses a fixed gain\n"
+            "(AM, SAM, SSB, CW).")
+        self._agc_mode_combo.currentIndexChanged.connect(self._on_dsp_changed)
+        row.addWidget(self._agc_mode_combo)
+        self._gain_spin = spin(0, 120, 1, " dB", "Audio gain with the AGC off")
+        self._gain_spin.setValue(60)
+        row.addWidget(self._gain_spin)
+        self._sideband_combo = QtWidgets.QComboBox()
+        for side in SAM_SIDEBANDS:
+            self._sideband_combo.addItem(side.capitalize(), side)
+        self._sideband_combo.setToolTip("SAM: both sidebands, or only one, to step away from\n"
+                                        "interference on the other side")
+        self._sideband_combo.currentIndexChanged.connect(self._on_dsp_changed)
+        row.addWidget(self._sideband_combo)
+        self._noise_sq_check = QtWidgets.QCheckBox("Noise sq")
+        self._noise_sq_check.setToolTip(
+            "NBFM: squelch on the noise above the voice, as an FM radio does, rather than\n"
+            "on level. Opens when the noise has fallen by the quieting set.")
+        self._noise_sq_check.toggled.connect(self._on_dsp_changed)
+        row.addWidget(self._noise_sq_check)
+        self._quieting_spin = spin(3, 40, 1, " dB", "Quieting needed to open the noise squelch")
+        self._quieting_spin.setValue(10)
+        row.addWidget(self._quieting_spin)
+        self._dsp_state = QtWidgets.QLabel("")
+        self._dsp_state.setStyleSheet("color: #888;")
+        row.addWidget(self._dsp_state)
+        row.addStretch(1)
+        #: Manual notches, absolute Hz.
+        self._notches: list[float] = []
+        return box
+
+    def _receiver_options(self) -> ReceiverOptions:
+        listen = self.source.center_freq + self._offset_spin.value() * 1e3
+        return ReceiverOptions(
+            if_shift_hz=float(self._if_shift_spin.value()),
+            nb_level=int(self._nb_spin.value()),
+            nr_level=int(self._nr_spin.value()),
+            auto_notch=self._auto_notch_check.isChecked(),
+            notch_offsets_hz=tuple(f - listen for f in self._notches),
+            agc_mode=self._agc_mode_combo.currentData() or "medium",
+            manual_gain_db=float(self._gain_spin.value()),
+            sam_sideband=self._sideband_combo.currentData() or "both",
+            noise_squelch=self._noise_sq_check.isChecked(),
+            quieting_db=float(self._quieting_spin.value()),
+        )
+
+    def _push_receiver_options(self) -> None:
+        setter = getattr(self.audio, "set_options", None)
+        if setter is not None and getattr(self, "_dsp_row", None) is not None:
+            setter(self._receiver_options())
+
+    def _on_dsp_changed(self, *_args) -> None:
+        self._sync_dsp_row()
+        self._update_passband()          # draws the passband and pushes the options
+        self._schedule_save()
+
+    def _sync_dsp_row(self) -> None:
+        """Only what the mode can use."""
+        if getattr(self, "_dsp_row", None) is None:
+            return
+        mode = self.mode
+        sdr_audio = not self.is_transceiver and mode in MODE_SPECS
+        self._dsp_row.setVisible(sdr_audio)
+        for widget in (self._shift_label, self._if_shift_spin):
+            widget.setVisible(mode in SHIFT_MODES)
+        cleanable = mode in CLEANUP_MODES
+        for widget in (self._nb_spin, self._nr_spin, self._auto_notch_check):
+            widget.setEnabled(cleanable)
+        self._clear_notches_button.setVisible(bool(self._notches))
+        self._gain_spin.setVisible(self._agc_mode_combo.currentData() == "off"
+                                   and mode in FIXED_GAIN_MODES)
+        self._sideband_combo.setVisible(mode == "sam")
+        self._noise_sq_check.setVisible(mode == "nbfm")
+        self._quieting_spin.setVisible(mode == "nbfm" and self._noise_sq_check.isChecked())
+
+    def _on_passband_edited(self, low: float, high: float) -> None:
+        """Dragged passband edges: the width and IF shift that give them."""
+        mode = self.mode
+        if mode not in MODE_SPECS or self.is_transceiver:
+            return
+        listen = self.source.center_freq + self._offset_spin.value() * 1e3
+        width, shift = width_and_shift(mode, low - listen, high - listen,
+                                       self._sideband_combo.currentData() or "both")
+        width = max(self.MIN_PASSBAND_HZ, round(width / 10.0) * 10.0)
+        self._select_bandwidth(width)
+        if mode in SHIFT_MODES:
+            self._if_shift_spin.blockSignals(True)
+            self._if_shift_spin.setValue(int(round(shift / 10.0) * 10))
+            self._if_shift_spin.blockSignals(False)
+        self._on_audio_bandwidth_changed()
+        self._on_dsp_changed()
+
+    def _select_bandwidth(self, width: float) -> None:
+        """Choose `width` in the BW list, adding it if it is not one of the presets."""
+        combo = self._bw_audio_combo
+        index = combo.findData(float(width))
+        if index < 0:
+            at = next((i for i in range(combo.count())
+                       if (combo.itemData(i) or 0) > width), combo.count())
+            combo.insertItem(at, f"{width / 1e3:g} kHz", float(width))
+            index = at
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+
+    def _on_notch_toggled(self, hz: float) -> None:
+        """Cmd-click: remove a notch near there, else add one."""
+        near = [f for f in self._notches if abs(f - hz) <= self.NOTCH_CLICK_HZ]
+        if near:
+            self._notches = [f for f in self._notches if f not in near]
+        else:
+            self._notches.append(round(float(hz)))
+        self._on_dsp_changed()
+
+    def _clear_notches(self) -> None:
+        self._notches = []
+        self._on_dsp_changed()
+
+    def _apply_dsp_snapshot(self, snap: Snapshot) -> None:
+        """The DSP row as a memory or the last state had it."""
+        for widget, value in ((self._if_shift_spin, int(snap.if_shift_hz)),
+                              (self._nb_spin, snap.nb_level), (self._nr_spin, snap.nr_level),
+                              (self._gain_spin, int(snap.manual_gain_db)),
+                              (self._quieting_spin, int(snap.quieting_db))):
+            widget.blockSignals(True)
+            widget.setValue(value)
+            widget.blockSignals(False)
+        for check, on in ((self._auto_notch_check, snap.auto_notch),
+                          (self._noise_sq_check, snap.noise_squelch)):
+            check.blockSignals(True)
+            check.setChecked(bool(on))
+            check.blockSignals(False)
+        for combo, value in ((self._agc_mode_combo, snap.agc_mode),
+                             (self._sideband_combo, snap.sam_sideband)):
+            index = combo.findData(value)
+            if index >= 0:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+        self._notches = [float(f) for f in snap.notches_hz]
+        self._sync_dsp_row()
+        self._push_receiver_options()
+
+    def _update_dsp_state(self) -> None:
+        """What the DSP is doing now: SAM's lock, the quieting, impulses blanked."""
+        chain = getattr(self.audio, "chain", None)
+        parts = []
+        if chain is not None:
+            if chain.sam_locked is not None:
+                det = chain._detector
+                parts.append(f"locked {det.freq_hz:+.0f} Hz" if chain.sam_locked
+                             else "finding carrier")
+            if chain.quieting_db is not None and self._noise_sq_check.isChecked():
+                parts.append(f"quieting {chain.quieting_db:.0f} dB")
+            if chain.blanked > 0.0005:
+                parts.append(f"blanking {chain.blanked * 100:.1f}%")
+            if chain.notched_hz:
+                parts.append(f"notching {len(chain.notched_hz)} bins")
+        self._dsp_state.setText("   ".join(parts))
 
     def _build_radio_row(self) -> QtWidgets.QWidget:
         """The radio's own settings: IF bandwidth, gain stages, bias-tee.
@@ -2744,21 +2968,24 @@ class MainWindow(QtWidgets.QMainWindow):
         mode = self.mode
         if mode == "off" or mode not in MODE_SPECS:
             self.spectrum.clear_passband()
+            self.spectrum.set_notches([])
             return
+        # One function draws it and builds the filter (dsp.demod.passband_for), so the
+        # two cannot disagree. CW's is centred on the tuned frequency: the BFO is folded
+        # into the mixer, so a carrier *there* is what comes out at the pitch. (It was
+        # once drawn at centre + pitch, 500 Hz right of what was actually heard.) USB
+        # and LSB shade only the sideband demodulated.
         width = self._channel_bandwidth()
-        centre = self.source.center_freq + self._offset_spin.value() * 1e3
-        if mode == "cw":
-            # Centred on the tuned frequency: the BFO is folded into the mixer, so a
-            # carrier *there* is what comes out at the pitch. (It was once drawn at
-            # centre + pitch, 500 Hz right of what was actually heard.)
-            self.spectrum.set_passband(centre, width)
-            return
-        if mode in ("usb", "lsb"):
-            # One-sided: shade only the sideband actually being demodulated.
-            lower = centre if mode == "usb" else centre - width
-            self.spectrum.set_passband(lower + width / 2.0, width)
-        else:
-            self.spectrum.set_passband(centre, width)
+        listen = self.source.center_freq + self._offset_spin.value() * 1e3
+        dsp = getattr(self, "_dsp_row", None) is not None
+        shift = float(self._if_shift_spin.value()) if dsp else 0.0
+        side = (self._sideband_combo.currentData() or "both") if dsp else "both"
+        low, high = passband_for(mode, width, shift, side)
+        fixed = mode in ("dab", "p25")
+        self.spectrum.set_passband_edges(listen + low, listen + high, editable=not fixed)
+        if dsp:
+            self.spectrum.set_notches(self._notches if mode in CLEANUP_MODES else [])
+            self._push_receiver_options()
 
     def set_mode(self, mode: str) -> None:
         """Start, stop or switch demodulation.
@@ -2795,6 +3022,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             sink.set_force_mono(not self._stereo_check.isChecked())
             try:
+                if hasattr(sink, "set_options"):
+                    sink.set_options(self._receiver_options())
                 sink.set_tone_squelch(self.rx_tone())
                 sink.start()
                 sink.set_muted(self.muted)
@@ -2815,11 +3044,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_zerobeat_enabled()
         self._sync_pitch_visible()
         self._sync_mode_extras()
+        self._sync_dsp_row()
         self._update_passband()
 
     def _on_mode_changed(self) -> None:
         if self.mode == "dab":
             self._rate_for_dab()
+        # A shift means something different in each mode (USB's 0..W, AM's -W/2..W/2).
+        if getattr(self, "_dsp_row", None) is not None:
+            self._if_shift_spin.blockSignals(True)
+            self._if_shift_spin.setValue(0)
+            self._if_shift_spin.blockSignals(False)
         self.set_mode(self.mode)
         self._schedule_save()
 
@@ -3222,10 +3457,15 @@ class MainWindow(QtWidgets.QMainWindow):
             self._bw_audio_combo.addItem(label, width)
         if presets:
             wanted = self._initial_bandwidth
-            if wanted is None or wanted not in presets:
+            # A width dragged to on the spectrum is not a preset, but is kept: within
+            # reason for the mode (a 9 kHz AM width means nothing in WBFM).
+            if wanted is not None and wanted not in presets and \
+                    not (presets[0] / 4 <= wanted <= presets[-1] * 2):
+                wanted = None
+            if wanted is None:
                 wanted = MODE_SPECS[mode].bandwidth_hz if mode in MODE_SPECS else presets[0]
-            index = self._bw_audio_combo.findData(wanted)
-            self._bw_audio_combo.setCurrentIndex(index if index >= 0 else 0)
+            self._bw_audio_combo.blockSignals(True)
+            self._select_bandwidth(float(wanted))
         self._bw_audio_combo.blockSignals(False)
         self._bw_audio_combo.setEnabled(bool(presets))
 
@@ -3478,6 +3718,16 @@ class MainWindow(QtWidgets.QMainWindow):
             ctcss_hz=self._ctcss_hz,
             dcs_code=self._dcs_code,
             decoder=self.decoder_panel.decoder,
+            if_shift_hz=float(self._if_shift_spin.value()),
+            nb_level=int(self._nb_spin.value()),
+            nr_level=int(self._nr_spin.value()),
+            auto_notch=self._auto_notch_check.isChecked(),
+            notches_hz=tuple(self._notches),
+            agc_mode=self._agc_mode_combo.currentData() or "medium",
+            manual_gain_db=float(self._gain_spin.value()),
+            sam_sideband=self._sideband_combo.currentData() or "both",
+            noise_squelch=self._noise_sq_check.isChecked(),
+            quieting_db=float(self._quieting_spin.value()),
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:
@@ -3558,6 +3808,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._step_combo.blockSignals(False)
             self._on_step_changed()
         self._apply_fm_snapshot(snap)
+        self._apply_dsp_snapshot(snap)
         if self.is_transceiver:
             wanted = _TO_RADIO_MODE.get(snap.mode, snap.mode)
         else:
@@ -3815,6 +4066,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """What follows a new spectrum, wherever it came from."""
         self._update_smeter(dbfs, freqs)
         self._update_info_line()
+        self._update_dsp_state()
         self._update_tone_state()
         self._collect_decoded()
         self._scan_frame(freqs, dbfs)

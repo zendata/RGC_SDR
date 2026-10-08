@@ -20,7 +20,7 @@ from collections import deque
 import numpy as np
 
 from .device.source import IQSource
-from .dsp.demod import MODES, DemodChain
+from .dsp.demod import MODES, DemodChain, ReceiverOptions
 from .dsp.morse import ENVELOPE_DECIM, CwDecoder, EnvelopeSampler
 
 _SOUNDDEVICE_HINT = (
@@ -147,6 +147,8 @@ class AudioSink:
         self._pitch = pitch_hz
         self._muted = False
         self._force_mono = False
+        #: The DSP row's settings (P10): passband shift, blanker, NR, notches, AGC...
+        self._options = ReceiverOptions()
 
         self._chain: DemodChain | None = None
         self._reader = None
@@ -217,7 +219,24 @@ class AudioSink:
             squelch_dbfs=self._squelch,
             bandwidth_hz=self._bandwidth,
             pitch_hz=self._pitch,
+            options=self._options,
         )
+
+    @property
+    def options(self) -> ReceiverOptions:
+        return self._options
+
+    def set_options(self, options: ReceiverOptions) -> None:
+        """The DSP row's settings, applied to the running chain in place."""
+        self._options = options
+        with self._lock:
+            if self._chain is not None:
+                self._chain.set_options(options)
+
+    @property
+    def chain(self) -> DemodChain | None:
+        """The running demodulator, for its readings (quieting, SAM lock, notches)."""
+        return self._chain
 
     @property
     def muted(self) -> bool:

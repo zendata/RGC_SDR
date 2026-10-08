@@ -29,6 +29,10 @@ class SpectrumView(pg.PlotWidget):
     frequencySelected = QtCore.pyqtSignal(float)
     #: Emitted with a signed number of tuning steps on a sideways swipe.
     frequencyNudged = QtCore.pyqtSignal(int)
+    #: The passband's edges were dragged: (low Hz, high Hz), absolute (P10).
+    passbandEdited = QtCore.pyqtSignal(float, float)
+    #: Cmd-click (Control on other systems): add or remove a notch at this frequency.
+    notchToggled = QtCore.pyqtSignal(float)
 
     def __init__(self, alpha: float = 0.3, peak_decay_db: float = 0.5, parent=None) -> None:
         super().__init__(parent=parent)
@@ -56,13 +60,23 @@ class SpectrumView(pg.PlotWidget):
         self._swipe = SwipeAccumulator()
         # Shaded band showing what the demodulator is actually listening to, so the
         # offset and channel width are visible rather than abstract numbers.
+        # Its edges drag (P10): the width and IF shift follow, as on a radio's
+        # twin passband tuning.
         self._passband = pg.LinearRegionItem(
             values=(0.0, 0.0), movable=False,
             brush=pg.mkBrush(79, 195, 247, 40), pen=pg.mkPen(79, 195, 247, 90),
+            hoverPen=pg.mkPen(79, 195, 247, 220, width=3),
         )
         self._passband.setZValue(-10)
         self._passband.setVisible(False)
+        self._passband_editable = False
+        for line in self._passband.lines:
+            line.setMovable(False)
+        self._passband.sigRegionChangeFinished.connect(self._on_passband_dragged)
         self.addItem(self._passband, ignoreBounds=True)
+        self._setting_passband = False
+        #: Manual notches drawn as dashed red lines.
+        self._notch_lines: list[pg.InfiniteLine] = []
         self.scene().sigMouseClicked.connect(self._on_click)
 
     def _on_click(self, event) -> None:
@@ -71,8 +85,44 @@ class SpectrumView(pg.PlotWidget):
         vb = self.getViewBox()
         if not vb.sceneBoundingRect().contains(event.scenePos()):
             return
-        self.frequencySelected.emit(float(vb.mapSceneToView(event.scenePos()).x()))
+        hz = float(vb.mapSceneToView(event.scenePos()).x())
+        # Qt calls the Mac's Command key Control.
+        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+            self.notchToggled.emit(hz)
+        else:
+            self.frequencySelected.emit(hz)
         event.accept()
+
+    def _on_passband_dragged(self) -> None:
+        if self._setting_passband or not self._passband_editable:
+            return
+        low, high = self._passband.getRegion()
+        self.passbandEdited.emit(float(low), float(high))
+
+    def set_passband_edges(self, low_hz: float, high_hz: float, editable: bool = True) -> None:
+        """Shade what is heard, low..high in absolute Hz; `editable` lets its edges be
+        dragged."""
+        self._setting_passband = True
+        try:
+            self._passband.setRegion((float(low_hz), float(high_hz)))
+        finally:
+            self._setting_passband = False
+        self._passband_editable = bool(editable)
+        for line in self._passband.lines:
+            line.setMovable(self._passband_editable)
+        self._passband.setVisible(True)
+
+    def set_notches(self, freqs_hz) -> None:
+        """Draw manual notches at these absolute frequencies."""
+        for line in self._notch_lines:
+            self.removeItem(line)
+        self._notch_lines = []
+        for hz in freqs_hz:
+            line = pg.InfiniteLine(pos=float(hz), angle=90, movable=False,
+                                   pen=pg.mkPen("#ef5350", width=1,
+                                                style=QtCore.Qt.PenStyle.DashLine))
+            self.addItem(line, ignoreBounds=True)
+            self._notch_lines.append(line)
 
 
     def wheelEvent(self, event) -> None:  # noqa: N802  (Qt naming)
@@ -129,8 +179,7 @@ class SpectrumView(pg.PlotWidget):
             self._passband.setVisible(False)
             return
         half = bandwidth_hz / 2.0
-        self._passband.setRegion((center_hz - half, center_hz + half))
-        self._passband.setVisible(True)
+        self.set_passband_edges(center_hz - half, center_hz + half, editable=False)
 
     def clear_passband(self) -> None:
         self._passband.setVisible(False)

@@ -4719,3 +4719,92 @@ def test_zoom_on_a_network_radio_is_asked_of_the_server(qapp):
     assert win.waterfall._rect.width() == pytest.approx(512e3)
     assert win.effective_rate == 256e3                         # the IQ is not zoomed
     win.close()
+
+
+# -- receiver refinements (P10): the DSP row, the passband, notches ------------------
+
+
+def _dsp_window(mode="usb", **kw):
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024, **kw)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData(mode))
+    return win
+
+
+def test_the_dsp_row_shows_what_each_mode_can_use(qapp):
+    win = _dsp_window("usb")
+    assert not win._dsp_row.isHidden()
+    assert not win._if_shift_spin.isHidden() and win._sideband_combo.isHidden()
+    assert win._noise_sq_check.isHidden()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("sam"))
+    assert not win._sideband_combo.isHidden()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    assert not win._noise_sq_check.isHidden() and win._if_shift_spin.isHidden()
+    assert win._quieting_spin.isHidden()
+    win._noise_sq_check.setChecked(True)
+    assert not win._quieting_spin.isHidden()
+    win._agc_mode_combo.setCurrentIndex(win._agc_mode_combo.findData("off"))
+    assert win._gain_spin.isHidden()                    # FM has a level of its own
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    assert not win._gain_spin.isHidden()
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("off"))
+    assert win._dsp_row.isHidden()
+
+
+def test_dragging_the_passband_sets_width_and_shift(qapp):
+    win = _dsp_window("usb")
+    listen = win.source.center_freq
+    win.spectrum.passbandEdited.emit(listen + 300.0, listen + 2400.0)
+    assert win.bandwidth_hz() == 2100.0                  # not a preset: added
+    assert win._if_shift_spin.value() == 300
+    low, high = win.spectrum._passband.getRegion()
+    assert (low - listen, high - listen) == pytest.approx((300.0, 2400.0))
+    opts = win._receiver_options()
+    assert opts.if_shift_hz == 300.0
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("am"))
+    assert win._if_shift_spin.value() == 0               # a new mode starts centred
+
+
+def test_cmd_click_adds_and_removes_a_notch(qapp):
+    win = _dsp_window("usb")
+    listen = win.source.center_freq
+    win.spectrum.notchToggled.emit(listen + 1500.0)
+    assert win._notches == [listen + 1500.0]
+    assert win._receiver_options().notch_offsets_hz == pytest.approx((1500.0,))
+    assert not win._clear_notches_button.isHidden()
+    win.spectrum.notchToggled.emit(listen + 1530.0)      # near it: removes it
+    assert win._notches == []
+    win.spectrum.notchToggled.emit(listen + 800.0)
+    win._clear_notches()
+    assert win._notches == [] and win._clear_notches_button.isHidden()
+
+
+def test_the_dsp_row_is_saved_with_the_station(qapp, tmp_path):
+    from src.rgc_sdr.settings import Settings
+
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._nb_spin.setValue(4)
+    win._nr_spin.setValue(6)
+    win._auto_notch_check.setChecked(True)
+    win._agc_mode_combo.setCurrentIndex(win._agc_mode_combo.findData("slow"))
+    win.spectrum.notchToggled.emit(7.1015e6)
+    win.save_memory("dsp")
+    snap = Settings.load(tmp_path / "s.json").get_memory("dsp").snapshot
+    assert (snap.nb_level, snap.nr_level, snap.auto_notch, snap.agc_mode) == (4, 6, True, "slow")
+    assert snap.notches_hz == (7.1015e6,)
+    win._nb_spin.setValue(0)
+    win._clear_notches()
+    win.recall_memory("dsp")
+    assert win._nb_spin.value() == 4 and win._notches == [7.1015e6]
+    win.close()
+
+
+def test_sam_is_a_mode(qapp):
+    win = _dsp_window("sam")
+    assert win.mode == "sam"
+    low, high = win.spectrum._passband.getRegion()
+    assert high - low == pytest.approx(9000.0)
+    win._sideband_combo.setCurrentIndex(win._sideband_combo.findData("lower"))
+    low, high = win.spectrum._passband.getRegion()
+    assert (low, high) == pytest.approx((7.1e6 - 4500, 7.1e6))

@@ -92,6 +92,19 @@ class Snapshot:
     #: Data decoder to run ("" for none, else a key of decoding.DECODERS), so a memory
     #: such as "APRS 2m" brings its decoder with it.
     decoder: str = ""
+    #: The DSP row (P10, PLANNING.md 7r): passband shift, noise blanker and reduction
+    #: levels (0 off), notches (absolute Hz), AGC mode and its fixed gain, SAM sideband,
+    #: and the NBFM noise squelch.
+    if_shift_hz: float = 0.0
+    nb_level: int = 0
+    nr_level: int = 0
+    auto_notch: bool = False
+    notches_hz: tuple = ()
+    agc_mode: str = "medium"
+    manual_gain_db: float = 60.0
+    sam_sideband: str = "both"
+    noise_squelch: bool = False
+    quieting_db: float = 10.0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -107,6 +120,10 @@ class Snapshot:
                 setattr(snap, name, _coerce(data[name], default))
         if snap.decimation < 1:
             snap.decimation = 1
+        try:
+            snap.notches_hz = tuple(float(f) for f in snap.notches_hz)
+        except (TypeError, ValueError):
+            snap.notches_hz = ()
         return snap
 
     def describe(self) -> str:

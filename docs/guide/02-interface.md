@@ -44,7 +44,11 @@ A frequency beyond the current radio's reach hands over to a radio that reaches 
 - **Swipe vertically** to zoom the frequency axis of the plot. This only magnifies the
   picture; **Zoom** in Settings changes what is computed.
 - The shaded band on the spectrum is the **passband**: what the demodulator is
-  listening to, one-sided for USB and LSB. The dotted line marks the tuned centre.
+  listening to, one-sided for USB and LSB. **Drag its edges** to change the width and
+  IF shift (not for P25 or DAB). The dotted line marks the tuned centre.
+- **Cmd-click** the spectrum to add a manual notch there (a dashed red line), or remove
+  one near the click. Notches are radio frequencies, so they stay on their carrier when
+  you retune slightly.
 - **Labels** on the waterfall come from Classify. Each has an arrow over its signal.
 
 ## Settings
@@ -73,6 +77,27 @@ Built from what the radio reports, so it differs from radio to radio.
 | **PPM** | This radio's frequency error, + when it reads high. It is corrected in tuning, so the display shows the true frequency. Saved per radio; measured automatically the first time a radio is connected. |
 | **Cal** | Measure the error now from a carrier at the listening frequency. Tune exactly to a signal whose frequency you know first. |
 
+### DSP row
+
+Receiver refinements (P10), shown for the app's own demodulators. See
+[Demodulation](03-demodulation.md#receiver-refinements) for how each works.
+
+| Field | What it does |
+|---|---|
+| **Shift** | IF shift: moves the passband off the listening frequency (AM, SAM, USB, LSB, CW). Reset to 0 on a change of mode. |
+| **NB** | Noise blanker, Off or 1–10: removes impulses (ignition, electric fences, switching supplies). |
+| **NR** | Noise reduction, Off or 1–10. Measured on a tone in white noise: +4 dB S/N at 1, +9 at 6, +12 at 10. |
+| **Notch** | Automatic notch: removes steady whistles from the audio. |
+| **Clear notches** | Shown when there are manual notches; removes them. |
+| **AGC** | Fast, Medium (the default), Slow or Off. |
+| (gain) | With the AGC off, the fixed audio gain in dB (AM, SAM, SSB and CW only; FM has a level of its own). |
+| (sideband) | SAM only: Both, Upper or Lower. |
+| **Noise sq** | NBFM only: squelch on the noise above the voice, as an FM radio does. |
+| (quieting) | How far the noise must fall to open the noise squelch, default 10 dB. |
+| (state) | What the DSP is doing: SAM's lock and carrier offset, the quieting, impulses blanked, bins notched. |
+
+All of it is saved with each memory and in the last state.
+
 ### NBFM row
 
 Shown in NBFM mode.
@@ -90,7 +115,7 @@ Shown in NBFM mode.
 
 | Field | What it does |
 |---|---|
-| **Mode** | Off, AM, NBFM, WBFM, USB, LSB, CW, P25 or DAB. The IC-705 lists its own modes (LSB, USB, AM, CW, RTTY, FM, WFM) and changes the radio's mode. |
+| **Mode** | Off, AM, SAM (synchronous AM), NBFM, WBFM, USB, LSB, CW, P25 or DAB. The IC-705 lists its own modes (LSB, USB, AM, CW, RTTY, FM, WFM) and changes the radio's mode. |
 | **BW** | The channel filter's width. The choices depend on the mode (see [Demodulation](03-demodulation.md)); on the IC-705, its filters FIL1–3. |
 | **Pitch** | CW only: the beat-note pitch, 400–800 Hz, and what **Zero beat** tunes to. |
 | **Stereo** | WBFM only: decode stereo when the station sends it. Untick for mono, which is quieter on a weak station. |
@@ -203,7 +228,8 @@ decoder and frequency.
 
 **What a memory holds.** The station once: frequency, mode, channel width, squelch,
 offset, step, snap, CW pitch, stereo, repeater shift and offset, tone, decoder, volume,
-FFT size and colour map. Then each radio's own setup separately: sample rate, zoom,
+FFT size, colour map and the DSP row (shift, blanker, noise reduction, notches, AGC,
+SAM sideband, noise squelch). Then each radio's own setup separately: sample rate, zoom,
 gains, AGC, IF bandwidth, driver switches and colour range. Saving 621 kHz on the HackRF
 leaves its Airspy HF+ setup alone, and recalling it on either radio brings back that
 radio's setup. A radio recalling a memory for the first time uses its own last

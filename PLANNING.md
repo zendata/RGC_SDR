@@ -189,6 +189,11 @@ headless-testable and lets modules be swapped independently.
   following the listening frequency ✅ (verified 2026-10-07 over Tailscale: 25 lines a
   second of the RTL-SDR's 2.048 MHz span, the 256 kS/s window with nothing lost, tuning
   within the span leaving the radio and the waterfall where they were).
+- **P10-P13 (VK3RQ, 2026-10-08: "do 1 2 3 and 4 now", from docs/guide/05).** In order,
+  one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
+  carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan, P12
+  SigMF, replay and playback controls, P13 CAT server, a second audio output and memory
+  import/export.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1459,6 +1464,59 @@ settings stay apart from the same model plugged into the Mac.
   modules the server imports (`device/source.py`, `device/profiles.py`,
   `device/remote_protocol.py`, `dsp/decimate.py`, `dsp/spectrum.py`, `netserver.py`) must
   stay 3.13-clean.
+
+## 7r. Receiver refinements (P10)
+
+What the DSP row adds to the audio chain, in chain order:
+
+```
+IQ -> [noise blanker] -> mixer -> decimate -> channel filter (passband: width + IF shift)
+   -> detector (AM, SAM, FM, SSB, CW) -> [NBFM noise squelch] -> audio filters
+   -> [noise reduction + notches] -> squelch -> AGC (fast/medium/slow, or a fixed gain)
+```
+
+- **Passband and IF shift.** A mode's passband is `passband_for(mode, width, shift,
+  pitch)`, relative to the listening frequency: USB 0..W, LSB -W..0, the rest -W/2..W/2,
+  each moved by the shift (AM, SAM, SSB and CW; FM keeps it centred). One function draws
+  the shading and builds the filter, so the two cannot disagree. The shading's edges drag
+  on the spectrum.
+- **Noise blanker** on the IQ at the radio's rate, before anything else: samples over k
+  times the block's median magnitude are zeroed, with a guard of 20 us either side
+  (dilated by convolution, no loop). k runs from 15.5 (level 1) to 2 (level 10).
+- **Noise reduction and notches** in one short-time FFT stage on the audio (`dsp/
+  cleanup.py`): 50%-overlapped square-root Hann frames (perfect reconstruction),
+  ~10 ms long. A noise spectrum is tracked per bin (falls quickly to the quietest frames,
+  rises about 1 dB/s), and each bin gets a gain max(floor, 1 - a.noise/power), smoothed
+  over frames against "musical noise". The automatic notch finds bins whose slowly
+  averaged power (about a second) stands 13 dB over their neighbours' median -- a
+  steady carrier; speech moves and does not -- and zeroes them. Manual notches are RF
+  frequencies, set by Cmd-click on the spectrum, mapped to audio by the mode. Frames
+  are looped over (a few per block), never samples.
+- **Synchronous AM (SAM)**, a mode: the carrier is found in the first block by an FFT
+  within +/-1 kHz, followed by a frequency-locked mixer updated per block, and its phase
+  taken from a narrow one-pole low-pass of the derotated signal (scipy's lfilter carries
+  the state). Demodulation is coherent: the carrier's phase removed, then both sidebands
+  (the real part) or one (the receiver's own sideband filter, x2). Levelled by the
+  carrier, as AM is, which also rides through selective fading.
+- **AGC modes.** Fast (hang 0.1 s, decay 0.1 a block), medium (the existing 0.6 s,
+  0.02), slow (1.5 s, 0.005), or off with a fixed gain in dB. Off replaces AM's carrier
+  levelling too.
+- **NBFM noise squelch.** An FM radio's squelch listens to the noise above the voice:
+  the discriminator band-passed 8-16 kHz. Its power is compared with what pure noise
+  gives through the same filters, measured once by running the chain's own filters on
+  synthetic Gaussian noise; "quieting" is how far below that it is, and the squelch
+  opens at the chosen quieting (default 10 dB), with 2 dB hysteresis.
+
+All of it is saved with the station in a memory and in the last state.
+
+*Measured while building it (2026-10-08):*
+- Noise reduction first tracked each bin's raw minimum. That sits far below steady
+  noise's mean, so it took almost nothing off. The minimum of a smoothed power,
+  doubled, gives +4 dB S/N at level 1, +9 at 6 and +12 at 10, on a tone in white noise.
+- Tracking a minimum also learns a steady CW tone as noise and removes it, so each bin's
+  estimate is capped at twice its neighbours' median.
+- SAM on a live airband carrier, from the Pi's RTL-SDR: locked within a hertz, followed
+  a 400 Hz mistuning, audio correlated 0.8 with the envelope detector's.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:
