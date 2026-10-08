@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt6 import QtCore
+from PyQt6 import QtCore, QtGui
 
 from .gestures import (
     TUNE_DIRECTION,
@@ -33,6 +33,11 @@ class SpectrumView(pg.PlotWidget):
     passbandEdited = QtCore.pyqtSignal(float, float)
     #: Cmd-click (Control on other systems): add or remove a notch at this frequency.
     notchToggled = QtCore.pyqtSignal(float)
+
+    #: Markers further apart than this on screen are separate; a click nearer one
+    #: removes it (P11).
+    MARKER_CLICK_PIXELS = 8.0
+    MARKER_COLOURS = ("#ffee58", "#80deea", "#ffab91", "#ce93d8", "#a5d6a7", "#f48fb1")
 
     def __init__(self, alpha: float = 0.3, peak_decay_db: float = 0.5, parent=None) -> None:
         super().__init__(parent=parent)
@@ -77,6 +82,15 @@ class SpectrumView(pg.PlotWidget):
         self._setting_passband = False
         #: Manual notches drawn as dashed red lines.
         self._notch_lines: list[pg.InfiniteLine] = []
+        #: Markers (P11): [frequency Hz, line, label], the first the delta reference.
+        self._markers: list[list] = []
+        self._freqs: np.ndarray | None = None
+        #: Overlays (P11): the band plan along the bottom, memory names along the top.
+        self._band_items: list = []
+        self._memory_items: list = []
+        self._show_bands = False
+        self._memories: list[tuple[float, str]] = []
+        self.getViewBox().sigXRangeChanged.connect(self._refresh_overlays)
         self.scene().sigMouseClicked.connect(self._on_click)
 
     def _on_click(self, event) -> None:
@@ -86,12 +100,146 @@ class SpectrumView(pg.PlotWidget):
         if not vb.sceneBoundingRect().contains(event.scenePos()):
             return
         hz = float(vb.mapSceneToView(event.scenePos()).x())
-        # Qt calls the Mac's Command key Control.
-        if event.modifiers() & QtCore.Qt.KeyboardModifier.ControlModifier:
+        modifiers = event.modifiers()
+        # Qt calls the Mac's Command key Control, and Option Alt.
+        if modifiers & QtCore.Qt.KeyboardModifier.ControlModifier:
             self.notchToggled.emit(hz)
+        elif modifiers & QtCore.Qt.KeyboardModifier.AltModifier:
+            self.toggle_marker(hz)
         else:
             self.frequencySelected.emit(hz)
         event.accept()
+
+    # -- markers (P11) ---------------------------------------------------------------
+
+    @property
+    def markers(self) -> list[float]:
+        return [m[0] for m in self._markers]
+
+    def _hz_per_pixel(self) -> float:
+        (lo, hi), _ = self.getViewBox().viewRange()
+        return (hi - lo) / max(1.0, self.getViewBox().width())
+
+    def toggle_marker(self, hz: float) -> None:
+        """Remove a marker near `hz`, else add one on the strongest bin nearby."""
+        near = self.MARKER_CLICK_PIXELS * self._hz_per_pixel()
+        for marker in self._markers:
+            if abs(marker[0] - hz) <= near:
+                self._remove_marker(marker)
+                self._relabel()
+                return
+        if self._freqs is not None and self._smoothed is not None:
+            from ..dsp.measure import peak_near
+
+            hz = peak_near(self._freqs, self._smoothed, hz)
+        self.add_marker(hz)
+
+    def add_marker(self, hz: float) -> None:
+        colour = self.MARKER_COLOURS[len(self._markers) % len(self.MARKER_COLOURS)]
+        line = pg.InfiniteLine(pos=float(hz), angle=90, movable=False,
+                               pen=pg.mkPen(colour, width=1))
+        label = pg.TextItem(color=colour, anchor=(0, 1))
+        self.addItem(line, ignoreBounds=True)
+        self.addItem(label, ignoreBounds=True)
+        self._markers.append([float(hz), line, label])
+        self._relabel()
+
+    def _remove_marker(self, marker) -> None:
+        self.removeItem(marker[1])
+        self.removeItem(marker[2])
+        self._markers.remove(marker)
+
+    def clear_markers(self) -> None:
+        for marker in list(self._markers):
+            self._remove_marker(marker)
+
+    def peak_marker(self) -> float | None:
+        """A marker on the strongest signal in view; its frequency, or None."""
+        if self._freqs is None or self._smoothed is None:
+            return None
+        from ..dsp.measure import strongest
+
+        (lo, hi), _ = self.getViewBox().viewRange()
+        hz = strongest(self._freqs, self._smoothed, lo, hi)
+        if hz is not None:
+            self.add_marker(hz)
+        return hz
+
+    def marker_text(self, index: int) -> str:
+        """M1 145.0000 MHz -62.1 dBFS; later ones with their difference from M1."""
+        from ..dsp.measure import level_at
+
+        hz = self._markers[index][0]
+        if self._freqs is None or self._smoothed is None:
+            return f"M{index + 1} {hz / 1e6:.4f} MHz"
+        level = level_at(self._freqs, self._smoothed, hz)
+        text = f"M{index + 1} {hz / 1e6:.4f} MHz {level:.1f} dBFS"
+        if index:
+            ref = self._markers[0][0]
+            delta = level - level_at(self._freqs, self._smoothed, ref)
+            text += f"\n\u0394 {(hz - ref) / 1e3:+.3f} kHz {delta:+.1f} dB"
+        return text
+
+    def _relabel(self) -> None:
+        if self._smoothed is None or self._freqs is None:
+            return
+        from ..dsp.measure import level_at
+
+        for i, (hz, _line, label) in enumerate(self._markers):
+            label.setText(self.marker_text(i))
+            label.setPos(hz, level_at(self._freqs, self._smoothed, hz))
+
+    # -- overlays (P11) ----------------------------------------------------------------
+
+    def set_band_plan(self, on: bool) -> None:
+        self._show_bands = bool(on)
+        self._refresh_overlays()
+
+    def set_memories(self, memories) -> None:
+        """(frequency Hz, name) pairs to name along the top; empty for none."""
+        self._memories = [(float(f), str(n)) for f, n in memories]
+        self._refresh_overlays()
+
+    def _refresh_overlays(self, *_args) -> None:
+        from ..bandplan import KIND_COLOURS, bands_in
+
+        for item in self._band_items + self._memory_items:
+            self.removeItem(item)
+        self._band_items, self._memory_items = [], []
+        (lo, hi), (bottom, top) = self.getViewBox().viewRange()
+        hz_per_px = self._hz_per_pixel()
+        if self._show_bands:
+            for band in bands_in(lo, hi):
+                colour = QtGui.QColor(KIND_COLOURS.get(band.kind, "#9e9e9e"))
+                fill = QtGui.QColor(colour)
+                fill.setAlpha(120)
+                region = pg.LinearRegionItem(values=(band.low_hz, band.high_hz),
+                                             movable=False, span=(0.0, 0.035),
+                                             brush=pg.mkBrush(fill), pen=pg.mkPen(None))
+                region.setZValue(-20)
+                region.setToolTip(f"{band.name}: {band.low_hz / 1e6:g}-{band.high_hz / 1e6:g} MHz")
+                self.addItem(region, ignoreBounds=True)
+                self._band_items.append(region)
+                visible = min(hi, band.high_hz) - max(lo, band.low_hz)
+                if visible / hz_per_px > 8 * len(band.name):         # room for the name
+                    label = pg.TextItem(band.name, color=colour, anchor=(0, 1))
+                    label.setPos(max(lo, band.low_hz), bottom + 0.035 * (top - bottom))
+                    self.addItem(label, ignoreBounds=True)
+                    self._band_items.append(label)
+        shown = [(f, n) for f, n in self._memories if lo <= f <= hi]
+        if len(shown) <= 40:                 # a crowd of names is no help
+            last_x = None
+            for hz, name in sorted(shown):
+                tick = pg.InfiniteLine(pos=hz, angle=90, movable=False, span=(0.93, 1.0),
+                                       pen=pg.mkPen("#ce93d8", width=2))
+                self.addItem(tick, ignoreBounds=True)
+                self._memory_items.append(tick)
+                if last_x is None or (hz - last_x) / hz_per_px > 7 * len(name):
+                    label = pg.TextItem(name, color="#ce93d8", anchor=(0, 0))
+                    label.setPos(hz, top)
+                    self.addItem(label, ignoreBounds=True)
+                    self._memory_items.append(label)
+                    last_x = hz
 
     def _on_passband_dragged(self) -> None:
         if self._setting_passband or not self._passband_editable:
@@ -186,6 +334,8 @@ class SpectrumView(pg.PlotWidget):
 
     def set_levels(self, low: float, high: float) -> None:
         self.setYRange(float(low), float(high), padding=0.02)
+        if self._band_items or self._memory_items:
+            self._refresh_overlays()        # the labels sit at the top and bottom
 
     def set_peak_hold(self, enabled: bool) -> None:
         self._peak_enabled = bool(enabled)
@@ -204,6 +354,9 @@ class SpectrumView(pg.PlotWidget):
             a = self.alpha
             self._smoothed = (a * dbfs + (1.0 - a) * self._smoothed).astype(np.float32)
         self._curve.setData(freqs, self._smoothed)
+        self._freqs = freqs
+        if self._markers:
+            self._relabel()
 
         if not self._peak_enabled:
             return

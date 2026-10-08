@@ -157,7 +157,7 @@ The biggest difference on HF, and good DSP to learn from.
    (ABC Melbourne) and shortwave at night.
 6. **AGC modes** (fast, medium, slow, off) and an NBFM noise squelch.
 
-### P11: Markers and band plan (S)
+### P11: Markers and band plan (S) ✅ done 2026-10-08
 
 7. Markers, delta markers, peak search, channel power and occupied bandwidth, on the
    spectrum. All are computed from the Welch spectrum the frame already has.

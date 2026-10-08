@@ -4808,3 +4808,49 @@ def test_sam_is_a_mode(qapp):
     win._sideband_combo.setCurrentIndex(win._sideband_combo.findData("lower"))
     low, high = win.spectrum._passband.getRegion()
     assert (low, high) == pytest.approx((7.1e6 - 4500, 7.1e6))
+
+
+# -- markers and overlays (P11) --------------------------------------------------------
+
+
+def test_markers_land_on_the_signal_and_show_their_difference(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6, tone_hz=96e3), fft_size=1024)
+    win._on_frame()
+    tone = 7.1e6 + 96e3
+    hz = win.spectrum.peak_marker()
+    assert hz == pytest.approx(tone, abs=1e3)
+    win.spectrum.toggle_marker(7.1e6 - 100e3)
+    assert len(win.spectrum.markers) == 2
+    text = win.spectrum.marker_text(1)
+    assert text.startswith("M2 ") and "Δ" in text and "kHz" in text
+    win.spectrum.toggle_marker(win.spectrum.markers[1])  # a click on it removes it
+    assert len(win.spectrum.markers) == 1
+    win.spectrum.clear_markers()
+    assert win.spectrum.markers == []
+    win.close()
+
+
+def test_the_overlays_draw_and_are_remembered(qapp, tmp_path):
+    from src.rgc_sdr.settings import Settings
+
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps(), center=7.1e6), fft_size=1024, settings=settings)
+    win._bands_check.setChecked(True)
+    assert win.spectrum._band_items                     # 40 m is in view
+    win.save_memory("forty")
+    win._names_check.setChecked(True)
+    assert win.spectrum._memory_items
+    win._bands_check.setChecked(False)
+    assert not win.spectrum._band_items
+    win.close()
+    again = Settings.load(tmp_path / "s.json")
+    assert again.show_band_plan is False and again.show_memory_names is True
+
+
+def test_the_passband_is_measured(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6, tone_hz=1e3), fft_size=1024)
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("usb"))
+    win._on_frame()
+    text = win._measure_passband(*win._last_spectrum)
+    assert text.startswith("ch ") and "OBW" in text
+    win.close()

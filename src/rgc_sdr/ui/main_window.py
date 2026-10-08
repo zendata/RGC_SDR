@@ -356,6 +356,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Repeater and tone settings, before audio starts so its tone squelch is right.
         self._apply_fm_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
         self._apply_dsp_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
+        self._on_overlays_changed()
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
@@ -1869,6 +1870,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._sync_dsp_row()
         self._push_receiver_options()
 
+    def _on_overlays_changed(self, *_args) -> None:
+        self.settings.show_band_plan = self._bands_check.isChecked()
+        self.settings.show_memory_names = self._names_check.isChecked()
+        self.spectrum.set_band_plan(self.settings.show_band_plan)
+        self._show_memory_names()
+        self._schedule_save()
+
+    def _show_memory_names(self) -> None:
+        names = ([(m.snapshot.freq_hz, m.name) for m in self.settings.memories]
+                 if self._names_check.isChecked() else [])
+        self.spectrum.set_memories(names)
+
+    def _measure_passband(self, freqs, dbfs) -> str:
+        """Channel power and occupied bandwidth of the passband (P11)."""
+        from ..dsp.measure import channel_power_dbfs, occupied_bandwidth
+
+        if self.mode not in MODE_SPECS or self.is_transceiver:
+            return ""
+        low, high = self.spectrum._passband.getRegion()
+        power = channel_power_dbfs(freqs, dbfs, low, high)
+        obw = occupied_bandwidth(freqs, dbfs, low, high)
+        if power is None:
+            return ""
+        text = f"ch {power:.1f} dBFS"
+        if obw is not None:
+            text += f"  OBW {obw / 1e3:.2f} kHz" if obw < 1e6 else f"  OBW {obw / 1e6:.3f} MHz"
+        return text
+
     def _update_dsp_state(self) -> None:
         """What the DSP is doing now: SAM's lock, the quieting, impulses blanked."""
         chain = getattr(self.audio, "chain", None)
@@ -1884,6 +1913,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 parts.append(f"blanking {chain.blanked * 100:.1f}%")
             if chain.notched_hz:
                 parts.append(f"notching {len(chain.notched_hz)} bins")
+        freqs, dbfs = getattr(self, "_last_spectrum", (None, None))
+        if freqs is not None:
+            measured = self._measure_passband(freqs, dbfs)
+            if measured:
+                parts.insert(0, measured)
         self._dsp_state.setText("   ".join(parts))
 
     def _build_radio_row(self) -> QtWidgets.QWidget:
@@ -2376,6 +2410,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self._span_label.hide()
         self._span_combo.hide()
 
+        row.addSpacing(16)
+        # Overlays and markers (P11, PLANNING.md 7s): here, where the row has room.
+        self._bands_check = QtWidgets.QCheckBox("Bands")
+        self._bands_check.setToolTip("The band plan along the bottom of the spectrum\n"
+                                     "(simplified; the ACMA spectrum plan is the authority)")
+        self._bands_check.setChecked(self.settings.show_band_plan)
+        self._bands_check.toggled.connect(self._on_overlays_changed)
+        row.addWidget(self._bands_check)
+        self._names_check = QtWidgets.QCheckBox("Names")
+        self._names_check.setToolTip("Memory names at their frequencies, along the top")
+        self._names_check.setChecked(self.settings.show_memory_names)
+        self._names_check.toggled.connect(self._on_overlays_changed)
+        row.addWidget(self._names_check)
+        peak = QtWidgets.QPushButton("Marker")
+        peak.setToolTip("A marker on the strongest signal in view.\n"
+                        "Option-click the spectrum to place one, or remove one; the second\n"
+                        "and later show their difference from the first.")
+        peak.clicked.connect(self.spectrum.peak_marker)
+        row.addWidget(peak)
+        clear_markers = QtWidgets.QPushButton("\u2715")
+        clear_markers.setToolTip("Clear the markers")
+        clear_markers.setFixedWidth(28)
+        clear_markers.clicked.connect(self.spectrum.clear_markers)
+        row.addWidget(clear_markers)
+
         row.addStretch(1)
         return box
 
@@ -2464,6 +2523,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._peak_check.toggled.connect(self._on_peak_hold_toggled)
         self.spectrum.set_peak_hold(self._initial_peak_hold)
         row.addWidget(self._peak_check)
+
 
         # The info line: decoded Morse in CW, stereo status and RDS in broadcast FM.
         # Beside Peak hold, where the row has room to spare. Right-aligned, so decoded CW
@@ -3822,6 +3882,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _refresh_memories(self) -> None:
         if hasattr(self, "memory_panel"):
             self.memory_panel.refresh()
+        if hasattr(self, "_names_check"):
+            self._show_memory_names()
 
     def tune_radio_memory(self, freq_hz: float, radio_mode: str) -> None:
         """Tune to one of the transceiver's own memory channels, as its window asks."""
@@ -4064,6 +4126,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _after_spectrum(self, freqs, dbfs, rows: int = 1) -> None:
         """What follows a new spectrum, wherever it came from."""
+        self._last_spectrum = (freqs, dbfs)
         self._update_smeter(dbfs, freqs)
         self._update_info_line()
         self._update_dsp_state()

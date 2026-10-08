@@ -191,7 +191,8 @@ headless-testable and lets modules be swapped independently.
   within the span leaving the radio and the waterfall where they were).
 - **P10-P13 (VK3RQ, 2026-10-08: "do 1 2 3 and 4 now", from docs/guide/05).** In order,
   one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
-  carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan, P12
+  carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan (section 7s) ✅,
+  P12
   SigMF, replay and playback controls, P13 CAT server, a second audio output and memory
   import/export.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
@@ -1517,6 +1518,24 @@ All of it is saved with the station in a memory and in the last state.
   estimate is capped at twice its neighbours' median.
 - SAM on a live airband carrier, from the Pi's RTL-SDR: locked within a hertz, followed
   a 400 Hz mistuning, audio correlated 0.8 with the envelope detector's.
+
+## 7s. Markers and band plan (P11)
+
+- **Markers.** Option-click the spectrum to place one, or remove one near the click.
+  Each shows its frequency and level, read from the live spectrum every frame; the
+  second and later also show their difference from the first (delta markers). **Peak**
+  puts a marker on the strongest signal in view. A marker sits on the strongest bin
+  within a few bins of the click, so it lands on the signal, not beside it.
+- **Channel power and occupied bandwidth** of the passband, from the same spectrum:
+  power summed over its bins, and the narrowest span holding 99% of it (0.5% cut each
+  side, the ITU definition). `dsp/measure.py`, pure NumPy.
+- **Band plan** (`bandplan.py`): a simplified Australian table -- ACMA allocations for
+  broadcast, aviation, marine and the ISM bands, and the amateur bands (WIA band plan,
+  with ACMA's licence-condition limits). It is drawn as a coloured strip along the
+  bottom of the spectrum, labelled where there is room, with the full name on hover.
+  Simplified, for orientation: the ACMA spectrum plan is the authority.
+- **Memories on the spectrum**: each memory's name at its frequency, along the top.
+- Both overlays have tick boxes on the display row, remembered between runs.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

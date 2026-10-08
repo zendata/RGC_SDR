@@ -338,6 +338,9 @@ class Settings:
         #: Which panels the tab row had open (settings, decode, classify, memory, map,
         #: scan).
         self.open_panels: list[str] = ["settings"]
+        #: Spectrum overlays (P11): the band plan, and memory names.
+        self.show_band_plan = True
+        self.show_memory_names = False
         #: The radio last used, by profile key.
         self.device: str | None = None
         #: The radio last chosen from the list: first choice wherever it reaches.
@@ -375,6 +378,9 @@ class Settings:
                     settings.memories.append(Memory(str(entry["name"]).strip(), snap, radios,
                                                     group))
             settings._sort()
+        for key in ("show_band_plan", "show_memory_names"):
+            if isinstance(raw.get(key), bool):
+                setattr(settings, key, raw[key])
         panels = raw.get("open_panels")
         if isinstance(panels, list):
             settings.open_panels = [str(p) for p in panels]
@@ -433,6 +439,8 @@ class Settings:
             ],
             "memory_groups": list(self.memory_groups),
             "open_panels": list(self.open_panels),
+            "show_band_plan": self.show_band_plan,
+            "show_memory_names": self.show_memory_names,
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),

@@ -49,6 +49,15 @@ A frequency beyond the current radio's reach hands over to a radio that reaches 
 - **Cmd-click** the spectrum to add a manual notch there (a dashed red line), or remove
   one near the click. Notches are radio frequencies, so they stay on their carrier when
   you retune slightly.
+- **Option-click** the spectrum to place a **marker**, or remove one near the click. A
+  marker snaps onto the strongest bin within a few bins, and shows its frequency and
+  level. The second and later markers also show their difference from the first
+  (Δ kHz, Δ dB).
+- **The band plan** (tick **Bands**) is a coloured strip along the bottom: amateur
+  green, broadcast blue, aviation purple, marine cyan, CB orange, others grey. It is
+  labelled where there is room, with the full name and range on hover. It is a
+  simplified Australian plan for orientation; the ACMA spectrum plan is the authority.
+- **Memory names** (tick **Names**) are shown at their frequencies along the top.
 - **Labels** on the waterfall come from Classify. Each has an arrow over its signal.
 
 ## Settings
@@ -63,6 +72,10 @@ A frequency beyond the current radio's reach hands over to a radio that reaches 
 | **Rate** | The radio's sample rate, which is the span shown. Changing it restarts the stream, the audio and the decoders. |
 | **Zoom** | Decimate 1–32×: a narrower span with proportionally finer bins, centred on the tuned frequency. On a network radio the server zooms its own lines. |
 | **Span** | IC-705 only: the radio's scope span (centre mode). Disabled when its scope is in fixed mode. |
+| **Bands** | Show the band plan along the bottom of the spectrum. Remembered. |
+| **Names** | Show memory names at their frequencies. Remembered. |
+| **Marker** | Put a marker on the strongest signal in view. |
+| **✕** | Clear the markers. |
 
 ### Radio row
 
@@ -94,7 +107,7 @@ Receiver refinements (P10), shown for the app's own demodulators. See
 | (sideband) | SAM only: Both, Upper or Lower. |
 | **Noise sq** | NBFM only: squelch on the noise above the voice, as an FM radio does. |
 | (quieting) | How far the noise must fall to open the noise squelch, default 10 dB. |
-| (state) | What the DSP is doing: SAM's lock and carrier offset, the quieting, impulses blanked, bins notched. |
+| (state) | The passband's channel power (dBFS) and occupied bandwidth (the span holding 99% of its power); then what the DSP is doing: SAM's lock and carrier offset, the quieting, impulses blanked, bins notched. |
 
 All of it is saved with each memory and in the last state.
 
