@@ -147,8 +147,14 @@ Shown in NBFM mode.
 | Field | What it does |
 |---|---|
 | **Audio** | Record the demodulated audio to WAV. |
-| **IQ** | Record raw IQ, with a JSON sidecar. About 6 MB/s at 768 kS/s; stops at 2 GiB, or on a real retune. |
-| **Play…** | Play an IQ recording in place of the radio. **Pause** and **Stop** appear while it plays; Stop goes back to the radio. Choosing any radio from the list also ends playback. |
+| **IQ** | Record raw IQ as SigMF (`.sigmf-data` + `.sigmf-meta`). About 6 MB/s at 768 kS/s; stops at 2 GiB, or on a real retune. |
+| **Replay** | Go back over the last 10, 30 or 60 seconds received, or all that is kept. They play as a recording, then the radio comes back by itself. The menu also sets how much is kept: none, 30 s (the default), 1, 2 or 5 minutes, within 512 MB (about 16 s at 4 MS/s, 87 s at 768 kS/s). A real retune empties it. |
+| **Play…** | Play an IQ recording in place of the radio: SigMF (from this app, SDR++, GNU Radio and others; complex float32, int16, int8 or uint8), or this app's older `.cf32`. Choosing any radio from the list also ends playback. |
+| **Pause**, **Stop** | While playing: pause, or go back to the radio. |
+| (seek bar) | While playing: where it is; drag to go elsewhere. |
+| (speed) | While playing: 0.5× to 8×. Audio is right only at 1×. |
+| **Loop** | While playing: start again at the end. |
+| (overview) | While playing, a strip below the row: the whole recording, time left to right, frequency up. Click to go there. |
 
 ### Display row
 

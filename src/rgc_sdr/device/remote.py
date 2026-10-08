@@ -398,6 +398,7 @@ class RemoteIQSource(IQSource):
             self._stale += iq.size             # made before the latest retune
             return
         self._ring.write(iq)
+        self._remember(iq)
         self._samples += iq.size
 
     def _on_spectrum(self, centre: float, span: float, dbfs: np.ndarray) -> None:
@@ -487,6 +488,8 @@ class RemoteIQSource(IQSource):
             if flush:
                 self._generation += 1
                 self._ring.clear()
+                if self._history is not None:
+                    self._history.clear()
             self._freq = wanted
         conn = self._conn
         if conn is not None:
@@ -507,6 +510,8 @@ class RemoteIQSource(IQSource):
         reply = self._send("rate", wait=True, radio_rate=target, generation=self._generation)
         self._state = dict(reply.get("state", self._state))
         self._ring = _Ring(self._ring_capacity())
+        if self._history is not None:
+            self.set_history_seconds(self._history_wanted_s)
         self._lines.clear()
         self._latest_line = None
         return self.span_rate

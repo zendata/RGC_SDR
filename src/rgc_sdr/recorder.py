@@ -160,7 +160,9 @@ class AudioRecorder(_ThreadedWriter):
 
 
 class IQRecorder(_ThreadedWriter):
-    """Raw complex64 IQ, with a JSON sidecar describing how to read it.
+    """Raw complex64 IQ, with metadata describing how to read it: SigMF (a
+    `.sigmf-data` path gets a `.sigmf-meta` beside it, P12), or for a `.cf32` path the
+    app's earlier JSON sidecar.
 
     Pulls from its own gapless reader rather than being fed, so a recording is continuous
     regardless of what the display or audio path happens to be doing. The sidecar is
@@ -182,12 +184,23 @@ class IQRecorder(_ThreadedWriter):
         self.sample_rate = float(source.sample_rate)
         self.center_freq = float(source.center_freq)
         self.lost_samples = 0
+        self._started = datetime.now(timezone.utc)
         self._file = None
         self._reader = None
         self._feeder: threading.Thread | None = None
 
     @property
+    def sigmf(self) -> bool:
+        from .device.sigmf import DATA_SUFFIX
+
+        return self.path.suffix == DATA_SUFFIX
+
+    @property
     def sidecar_path(self) -> Path:
+        from .device.sigmf import meta_path_for
+
+        if self.sigmf:
+            return meta_path_for(self.path)
         return self.path.with_suffix(self.path.suffix + ".json")
 
     @property
@@ -199,6 +212,16 @@ class IQRecorder(_ThreadedWriter):
         return self.samples_written / max(self.sample_rate, 1.0)
 
     def _metadata(self) -> dict:
+        if self.sigmf:
+            from .device.sigmf import sigmf_meta
+
+            caps = self.source.caps
+            return sigmf_meta(
+                self.sample_rate, self.center_freq, started=self._started,
+                hw=getattr(caps, "label", "") or getattr(caps, "driver", ""),
+                extras={"driver": getattr(caps, "driver", "unknown"),
+                        "samples": self.samples_written,
+                        "lost_samples": self.lost_samples})
         return {
             "format": "complex64",
             "byte_order": "little",

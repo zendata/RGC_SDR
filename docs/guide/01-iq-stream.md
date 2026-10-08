@@ -148,16 +148,22 @@ antenna, which this receiver cannot know.
 ## Recording and playback
 
 - **Audio recording** writes the demodulated audio to a WAV file.
-- **IQ recording** writes raw `complex64` (interleaved little-endian float32 I/Q, no
-  header; about 6 MB/s at 768 kS/s). A JSON sidecar (`<file>.json`) records the sample
-  rate, centre frequency, radio driver, start time (UTC), samples written and samples
-  lost.
+- **IQ recording** writes **SigMF**: a `.sigmf-data` file of complex float32
+  (`cf32_le`, about 6 MB/s at 768 kS/s) and a `.sigmf-meta` JSON file with the sample
+  rate, centre frequency, start time (UTC) and radio. SDR++, GNU Radio and inspectrum
+  open these, and the app plays SigMF from them too: complex float32, int16, int8 and
+  uint8. Recordings made before SigMF (`.cf32` with a `.cf32.json` sidecar) still play.
 
 Both run on their own threads with bounded queues. A slow disk drops samples and counts
 them; it never stalls the audio or the window. IQ recording stops itself at 2 GiB rather
 than filling the disk, and a real retune ends it, because the sidecar records only one
 centre frequency. Files go to `~/Documents/RGC_SDR`, named by time and
 frequency.
+
+**Replay.** Each radio also keeps the last seconds of IQ in a second, longer ring,
+written by its reader thread beside the live one (default 30 s, at most 512 MB). Replay
+writes the chosen seconds to a SigMF file in `~/Library/Caches/RGC_SDR/replay` and plays
+it as a recording; at its end the radio comes back.
 
 **Playback** (`device/playback.py`) is a source like any radio. A thread writes the file
 into the same kind of ring, paced to the recorded rate, so the display, audio, decoders

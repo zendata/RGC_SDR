@@ -14,13 +14,13 @@ Must not import Qt or `rgc_sdr.dsp` (PLANNING.md section 5).
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from pathlib import Path
 
 import numpy as np
 
+from .sigmf import Recording, read_recording
 from .source import MIN_RING_SAMPLES, DeviceCaps, FreqRange, IQSource, SequentialReader, _Nco, _Ring
 
 #: Driver name a playback source reports, so the app can tell it from a radio.
@@ -29,39 +29,55 @@ PLAYBACK_DRIVER = "file"
 BLOCK_SECONDS = 0.02
 
 
+#: Playback speeds offered (P12): faster to look along a long recording, slower to
+#: study one. Audio follows only at 1x; at other speeds it skips or waits.
+SPEEDS = (0.5, 1.0, 2.0, 4.0, 8.0)
+
+
 def sidecar_for(path: Path) -> Path:
     """`x.cf32` -> `x.cf32.json`, as the IQ recorder writes it."""
     return path.with_suffix(path.suffix + ".json")
 
 
 def read_sidecar(path: Path) -> dict:
-    """The recording's description. Raises ValueError for anything not playable."""
-    try:
-        meta = json.loads(sidecar_for(path).read_text())
-    except FileNotFoundError:
-        raise ValueError(f"no sidecar {sidecar_for(path).name} beside the recording") from None
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"sidecar is not valid JSON: {exc}") from None
-    if meta.get("format") != "complex64" or meta.get("byte_order", "little") != "little":
-        raise ValueError(f"unsupported format {meta.get('format')!r}; expected complex64")
-    for key in ("sample_rate_hz", "center_freq_hz"):
-        if not isinstance(meta.get(key), (int, float)) or meta[key] <= 0:
-            raise ValueError(f"sidecar has no usable {key}")
-    return meta
+    """A recording's description (SigMF or the earlier sidecar). Raises ValueError for
+    anything not playable."""
+    return read_recording(path).meta
+
+
+def overview(recording: Recording, columns: int = 400, bins: int = 128) -> np.ndarray:
+    """A coarse picture of a whole recording, [bins, columns] in dB, columns in time
+    order: one short FFT at each of `columns` evenly spaced points, read from the file
+    map, so even gigabytes take a moment. For finding signals to seek to."""
+    raw = recording.open()
+    total = recording.samples
+    columns = max(1, min(columns, total // bins))
+    starts = (np.linspace(0, max(0, total - bins), columns)).astype(np.int64)
+    window = np.hanning(bins).astype(np.float32)
+    picture = np.empty((bins, columns), dtype=np.float32)
+    for i, start in enumerate(starts):              # a few hundred reads, not samples
+        block = recording.to_complex(raw[2 * start:2 * (start + bins)])
+        spectrum = np.fft.fftshift(np.fft.fft(block * window))
+        picture[:, i] = 10 * np.log10(np.abs(spectrum) ** 2 + 1e-20)
+    return picture
 
 
 class FileIQSource(IQSource):
-    """Replays a `.cf32` recording in real time, looping at the end."""
+    """Replays a recording in real time, looping at the end: SigMF (cf32, ci16, ci8,
+    cu8) or the app's earlier `.cf32` with its JSON sidecar."""
 
     def __init__(self, path: str | Path, loop: bool = True) -> None:
         self.path = Path(path)
-        meta = read_sidecar(self.path)
-        self.meta = meta
-        self._samples = np.memmap(self.path, dtype=np.complex64, mode="r")
-        if self._samples.size == 0:
+        self.recording = read_recording(self.path)
+        self.meta = self.recording.meta
+        self._raw = self.recording.open()
+        self._total = self.recording.samples
+        if self._total == 0:
             raise ValueError("the recording is empty")
-        self._rate = float(meta["sample_rate_hz"])
-        self.recorded_center = float(meta["center_freq_hz"])
+        self._rate = self.recording.sample_rate
+        self.recorded_center = self.recording.center_freq
+        #: Playback speed, a multiple of real time (SPEEDS).
+        self.speed = 1.0
         half = self._rate / 2.0
         self._caps = DeviceCaps(
             driver=PLAYBACK_DRIVER,
@@ -146,7 +162,7 @@ class FileIQSource(IQSource):
 
     @property
     def duration_s(self) -> float:
-        return self._samples.size / self._rate
+        return self._total / self._rate
 
     @property
     def position_s(self) -> float:
@@ -155,6 +171,11 @@ class FileIQSource(IQSource):
     @property
     def paused(self) -> bool:
         return self._paused.is_set()
+
+    def set_speed(self, speed: float) -> None:
+        """Play at `speed` times real time; the pacing starts afresh from now."""
+        self.speed = float(speed)
+        self._repace = True
 
     def set_paused(self, paused: bool) -> None:
         if paused:
@@ -166,7 +187,7 @@ class FileIQSource(IQSource):
         """Jump to `seconds` into the recording; what was buffered is dropped."""
         with self._lock:
             self._position = int(min(max(seconds, 0.0), self.duration_s) * self._rate)
-            self._position = min(self._position, self._samples.size - 1)
+            self._position = min(self._position, self._total - 1)
             self.finished = False
         self._ring.clear()
 
@@ -175,14 +196,15 @@ class FileIQSource(IQSource):
         play position. None at the end when not looping. The pacing thread's step, and
         directly callable so tests need no thread or clock."""
         with self._lock:
-            if self._position >= self._samples.size:
+            if self._position >= self._total:
                 if not self.loop:
                     self.finished = True
                     return None
                 self._position = 0
                 self._loops += 1
-            end = min(self._position + self._block, self._samples.size)
-            block = np.array(self._samples[self._position:end])   # a copy, out of the map
+            end = min(self._position + self._block, self._total)
+            # A copy out of the map, converted to complex64 at full scale 1.0.
+            block = self.recording.to_complex(self._raw[2 * self._position:2 * end])
             self._position = end
             self._nco.process(block)
         self._ring.write(block)
@@ -206,12 +228,15 @@ class FileIQSource(IQSource):
         """Write blocks at the recorded rate, catching up after any stall."""
         origin = time.monotonic()
         written = 0
+        self._repace = False
         while self._running.is_set():
+            if self._repace:
+                origin, written, self._repace = time.monotonic(), 0, False
             if self._paused.is_set() or self.finished:
                 time.sleep(0.02)
                 origin, written = time.monotonic(), 0     # resume without a burst
                 continue
-            due = (time.monotonic() - origin) * self._rate
+            due = (time.monotonic() - origin) * self._rate * self.speed
             if written + self._block > due:
                 time.sleep(BLOCK_SECONDS / 4)
                 continue

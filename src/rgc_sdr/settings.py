@@ -341,6 +341,8 @@ class Settings:
         #: Spectrum overlays (P11): the band plan, and memory names.
         self.show_band_plan = True
         self.show_memory_names = False
+        #: Seconds of IQ kept for Replay (P12); 0 keeps none.
+        self.replay_seconds = 30.0
         #: The radio last used, by profile key.
         self.device: str | None = None
         #: The radio last chosen from the list: first choice wherever it reaches.
@@ -381,6 +383,9 @@ class Settings:
         for key in ("show_band_plan", "show_memory_names"):
             if isinstance(raw.get(key), bool):
                 setattr(settings, key, raw[key])
+        replay = raw.get("replay_seconds")
+        if isinstance(replay, (int, float)) and not isinstance(replay, bool) and replay >= 0:
+            settings.replay_seconds = float(replay)
         panels = raw.get("open_panels")
         if isinstance(panels, list):
             settings.open_panels = [str(p) for p in panels]
@@ -441,6 +446,7 @@ class Settings:
             "open_panels": list(self.open_panels),
             "show_band_plan": self.show_band_plan,
             "show_memory_names": self.show_memory_names,
+            "replay_seconds": self.replay_seconds,
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),

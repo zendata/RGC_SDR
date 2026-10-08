@@ -164,7 +164,7 @@ The biggest difference on HF, and good DSP to learn from.
 8. A band-plan overlay from a small data file of ACMA and WIA allocations, drawn as
    coloured bands under the spectrum, plus memory names at their frequencies.
 
-### P12: Time shift and SigMF (M)
+### P12: Time shift and SigMF (M) ✅ done 2026-10-08 (as "Replay")
 
 9. **SigMF.** Write recordings as `.sigmf-data` plus `.sigmf-meta`, and read SigMF and
    the existing complex64 + JSON format. It is a small change to `recorder.py` and

@@ -192,9 +192,8 @@ headless-testable and lets modules be swapped independently.
 - **P10-P13 (VK3RQ, 2026-10-08: "do 1 2 3 and 4 now", from docs/guide/05).** In order,
   one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
   carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan (section 7s) ✅,
-  P12
-  SigMF, replay and playback controls, P13 CAT server, a second audio output and memory
-  import/export.
+  P12 SigMF, replay and playback controls (section 7t) ✅, P13 CAT server, a second
+  audio output and memory import/export.
 - **P7 — Icom IC-705 (remote control, not an SDR).** Order agreed 2026-09-27: spike ✅,
   CI-V core ✅, scope/waterfall ✅, control ✅, audio + TX ✅ (verified on air), WiFi (Icom's network
   protocol) ✅ (receive side verified on the radio 2026-10-02, AP mode; TX through the
@@ -1536,6 +1535,25 @@ All of it is saved with the station in a memory and in the last state.
   Simplified, for orientation: the ACMA spectrum plan is the authority.
 - **Memories on the spectrum**: each memory's name at its frequency, along the top.
 - Both overlays have tick boxes on the display row, remembered between runs.
+
+## 7t. SigMF, replay and playback controls (P12)
+
+- **SigMF** (`device/sigmf.py`): recordings are now `.sigmf-data` plus `.sigmf-meta`
+  (core:datatype cf32_le, sample rate, version 1.0.0, one capture with frequency and
+  UTC datetime; the radio as core:hw; the app's own fields under `rgc_sdr:`). Playback
+  reads SigMF in cf32_le, ci16_le, ci8 and cu8 -- what SDR++, GNU Radio, the HackRF and
+  the RTL-SDR tools write -- converting each block to complex64 at full scale 1.0, and
+  still the app's earlier `.cf32` + JSON. The recorder picks the format by suffix.
+- **Replay**: each source keeps the last N seconds of IQ in a second ring, written by
+  the reader beside the live one (`IQSource.set_history_seconds`; local and network
+  radios). Replay writes the chosen seconds to one SigMF file in the cache directory
+  (overwritten each time) and plays it without looping; at its end the radio comes back
+  on its own. Capped at 512 MiB: about 16 s at 4 MS/s, 33 at 2.048, 87 at 768 kS/s.
+  Default 30 s. A real retune empties it, as a SigMF capture holds one frequency.
+  While a replay plays, the radio is closed, so that time is not kept.
+- **Playback controls**: a seek bar, speeds 0.5-8x (audio is right only at 1x), loop,
+  and an overview of the whole file -- one short FFT at each of 400 evenly spaced
+  points, read from the file map, so even gigabytes take a moment -- to click on.
 
 ## 8. Testing & quality
 - Pure-DSP tests run headless with synthetic IQ arrays, no radio and no Qt:

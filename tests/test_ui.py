@@ -949,19 +949,22 @@ def test_audio_recording_needs_a_mode(qapp, tmp_path):
     win.close()
 
 
-def test_iq_recording_writes_a_file_and_a_sidecar(qapp, tmp_path):
+def test_iq_recording_writes_sigmf(qapp, tmp_path):
+    import json
     import time
 
     src = StubSource(_caps(), center=7.1e6)
     win = window_for(src, fft_size=1024, fps=25, recordings_dir=tmp_path)
     path = win.start_iq_recording()
-    assert path is not None and path.suffix == ".cf32"
+    assert path is not None and path.suffix == ".sigmf-data"
     assert win.iq_recorder is not None
     time.sleep(0.3)
     win.stop_iq_recording()
     assert win.iq_recorder is None
     assert path.is_file()
-    assert path.with_suffix(".cf32.json").is_file()
+    meta = json.loads(path.with_suffix(".sigmf-meta").read_text())
+    assert meta["global"]["core:datatype"] == "cf32_le"
+    assert meta["captures"][0]["core:frequency"] == 7.1e6
     win.close()
 
 
@@ -4854,3 +4857,65 @@ def test_the_passband_is_measured(qapp):
     text = win._measure_passband(*win._last_spectrum)
     assert text.startswith("ch ") and "OBW" in text
     win.close()
+
+
+# -- replay and playback controls (P12) -------------------------------------------------
+
+
+def test_replay_plays_the_last_seconds_then_comes_back_live(qapp, tmp_path, monkeypatch):
+    from src.rgc_sdr.ui import main_window as mw_module
+
+    monkeypatch.setattr(mw_module.MainWindow, "REPLAY_DIR", tmp_path / "replay")
+    win, first, _ = switching_window()
+    radio = win.source
+    assert radio.history_seconds > 0                      # kept by default
+    assert win.replay(10) is False                        # nothing received yet
+    radio._history.write(np.ones(int(radio.sample_rate), np.complex64))
+    assert win.replay(10) is True
+    assert win.playing_back and win._replaying
+    assert win.source.duration_s == pytest.approx(1.0, abs=0.01)
+    assert (tmp_path / "replay" / "replay.sigmf-meta").is_file()
+    assert "replay" in win._play_label.text() and not win._replay_button.isEnabled()
+    win.source.finished = True                            # reached "now"
+    win._update_play_label()
+    assert not win.playing_back and win.current_device_key() == "airspyhf"
+    win.source.close()
+
+
+def test_the_replay_buffer_setting_is_kept(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win, _, _ = switching_window(settings=settings)
+    win._replay_keep_actions[120].trigger()
+    assert settings.replay_seconds == 120
+    # 120 s asked; 512 MB holds 87 s at 768 kS/s.
+    assert win.source.history_seconds == pytest.approx(512 * 1024 ** 2 / 8 / 768e3, abs=1)
+    win._replay_keep_actions[0].trigger()
+    assert win.source.history_seconds == 0
+    win._save_state()
+    assert Settings.load(tmp_path / "s.json").replay_seconds == 0
+    win.source.close()
+
+
+def test_playback_controls_seek_speed_loop_and_overview(qapp, tmp_path):
+    from src.rgc_sdr.device.sigmf import write_sigmf
+
+    win, _, _ = switching_window()
+    n = 768_000 * 2
+    path = write_sigmf(tmp_path / "x.sigmf-data",
+                       np.exp(2j * np.pi * 50e3 * np.arange(n) / 768e3).astype(np.complex64),
+                       768e3, 145e6)
+    assert win.open_recording(path)
+    for widget in (win._seek_slider, win._speed_combo, win._loop_check, win._overview):
+        assert widget.isVisibleTo(win)
+    win.seek_playback(0.5)
+    assert win.source.position_s == pytest.approx(1.0, abs=0.05)
+    win._speed_combo.setCurrentIndex(win._speed_combo.findData(4.0))
+    assert win.source.speed == 4.0
+    win._loop_check.setChecked(False)
+    assert win.source.loop is False
+    assert win._overview._image is not None
+    win._overview.seekRequested.emit(0.25)
+    assert win.source.position_s == pytest.approx(0.5, abs=0.05)
+    win.stop_playback()
+    assert not win._seek_slider.isVisibleTo(win)
+    win.source.close()

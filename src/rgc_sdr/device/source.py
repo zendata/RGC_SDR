@@ -371,8 +371,54 @@ class _Nco:
         self._phase = float((self._phase + step * x.size) % (2 * np.pi))
 
 
+#: The replay buffer's ceiling (P12): 512 MiB holds about 16 seconds at 4 MS/s, 33 at
+#: 2.048 MS/s, 87 at the HF+'s 768 kS/s.
+REPLAY_MAX_BYTES = 512 * 1024 ** 2
+
+
 class IQSource(ABC):
     """A running stream of complex baseband samples."""
+
+    #: The replay buffer, when one is kept: the last few minutes, alongside the ring.
+    _history: "_Ring | None" = None
+    _history_wanted_s = 0.0
+
+    def set_history_seconds(self, seconds: float) -> float:
+        """Keep the last `seconds` of IQ for replay (0 for none), within
+        REPLAY_MAX_BYTES. Returns the seconds actually kept."""
+        self._history_wanted_s = max(0.0, float(seconds))
+        rate = float(self.sample_rate)
+        samples = int(min(self._history_wanted_s * rate,
+                          REPLAY_MAX_BYTES // np.dtype(np.complex64).itemsize))
+        self._history = _Ring(samples) if samples > 0 and rate > 0 else None
+        return self.history_seconds
+
+    @property
+    def history_seconds(self) -> float:
+        """Seconds the replay buffer can hold (0 with none)."""
+        if self._history is None or self.sample_rate <= 0:
+            return 0.0
+        return self._history.capacity / float(self.sample_rate)
+
+    @property
+    def history_filled_s(self) -> float:
+        """Seconds of IQ in the replay buffer now."""
+        if self._history is None or self.sample_rate <= 0:
+            return 0.0
+        return len(self._history) / float(self.sample_rate)
+
+    def history(self, seconds: float | None = None) -> np.ndarray:
+        """The last `seconds` of IQ (all that is kept, for None), oldest first."""
+        if self._history is None:
+            return np.zeros(0, dtype=np.complex64)
+        n = len(self._history) if seconds is None else int(seconds * self.sample_rate)
+        return self._history.read_latest(n)
+
+    def _remember(self, block: np.ndarray) -> None:
+        """For the reader: what went into the ring goes into the replay buffer too."""
+        history = self._history
+        if history is not None:
+            history.write(block)
 
     #: Where the radio's DC spike appears, relative to `center_freq`. Zero for a radio
     #: without one, or one listened to at centre.
@@ -644,6 +690,8 @@ class SoapyIQSource(IQSource):
         if flush:
             self._ring.clear()
             self._arm_settle()
+            if self._history is not None:
+                self._history.clear()          # a replay holds one frequency
         return self._freq
 
     def _tune_hardware(self, wanted: float) -> None:
@@ -724,6 +772,8 @@ class SoapyIQSource(IQSource):
         self._rate = float(self._dev.getSampleRate(SOAPY_RX, 0))
         self._ring = _Ring(self._ring_capacity())
         self._nco = _Nco(self._nco.shift_hz, self._rate)
+        if self._history is not None:
+            self.set_history_seconds(self._history_wanted_s)   # sized for the new rate
         if was_running:
             self.start()
         return self._rate
@@ -798,6 +848,7 @@ class SoapyIQSource(IQSource):
                     continue
                 self._nco.process(buf[:ret])       # undo the LO offset, if any
                 self._ring.write(buf[:ret])
+                self._remember(buf[:ret])
                 self._total_samples += ret
             elif ret == ERR_OVERFLOW:
                 self._overflows += 1

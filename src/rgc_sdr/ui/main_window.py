@@ -357,6 +357,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._apply_fm_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
         self._apply_dsp_snapshot(self.settings.last or Snapshot(freq_hz=source.center_freq))
         self._on_overlays_changed()
+        self._replaying = False
+        self._keep_history()
         if self._initial_mode != "off":
             self.set_mode(self._initial_mode)
         self._sync_zerobeat_enabled()
@@ -799,6 +801,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._auto_pending = True
         self._ppm_measured = None
         self._apply_device_profile()
+        self._keep_history()
         saved = (self.settings.radios.get(self.current_device_key())
                  if restore_settings and not self.playing_back else None)
         if saved is not None:
@@ -824,16 +827,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def playing_back(self) -> bool:
         return getattr(self.source.caps, "driver", "") == PLAYBACK_DRIVER
 
-    def open_recording(self, path) -> bool:
+    def open_recording(self, path, loop: bool = True, replay: bool = False) -> bool:
         """Play an IQ recording in place of the radio. False, leaving the radio, if the
         file cannot be played."""
-        from ..device.playback import FileIQSource
+        from ..device.playback import FileIQSource, overview
 
         try:
-            new = FileIQSource(path)
+            new = FileIQSource(path, loop=loop)
         except (OSError, ValueError) as exc:
             self._status.showMessage(f"cannot play {Path(path).name}: {exc}", 10000)
             return False
+        self._replaying = replay
+        try:
+            self._overview.set_picture(overview(new.recording),
+                                       self._cmap_combo.currentText())
+        except (OSError, ValueError):
+            self._overview.set_picture(np.zeros((0, 0)))
         if not self.playing_back:
             self._radio_before_playback = (self.current_device_key(), self.source.center_freq)
             self._save_state()                     # the radio's state, before it goes
@@ -853,14 +862,74 @@ class MainWindow(QtWidgets.QMainWindow):
         """Back to the radio that was in use before the recording was opened."""
         if not self.playing_back:
             return False
+        self._replaying = False
         key = self._radio_before_playback[0] if self._radio_before_playback else None
         key = key or self.settings.device or "airspyhf"
         return self.switch_device(key)
 
+    #: Where replays are written: one at a time, overwritten by the next.
+    REPLAY_DIR = Path.home() / "Library" / "Caches" / "RGC_SDR" / "replay"
+
+    def replay(self, seconds: float | None = None) -> bool:
+        """Play the last `seconds` received (all that is kept, for None), then come back
+        to the radio (P12)."""
+        from ..device.sigmf import write_sigmf
+
+        if self.playing_back or self.is_transceiver:
+            return False
+        src = self.source
+        iq = src.history(seconds)
+        if iq.size < 0.5 * src.sample_rate:
+            kept = src.history_seconds
+            self._status.showMessage(
+                "nothing to replay yet" if kept else
+                "no replay buffer: choose how much to keep in the Replay menu", 6000)
+            return False
+        path = write_sigmf(self.REPLAY_DIR / "replay.sigmf-data", iq, src.sample_rate,
+                           src.center_freq, hw=src.caps.label or src.caps.driver,
+                           extras={"replay": True})
+        return self.open_recording(path, loop=False, replay=True)
+
+    def _set_replay_seconds(self, seconds: float) -> None:
+        self.settings.replay_seconds = float(seconds)
+        self._keep_history()
+        kept = getattr(self.source, "history_seconds", 0.0)
+        if seconds and kept < seconds:
+            self._status.showMessage(
+                f"keeping {kept:.0f} s: the replay buffer is limited to 512 MB at "
+                f"{self.source.sample_rate / 1e6:g} MS/s", 8000)
+        self._schedule_save()
+
+    def _keep_history(self) -> None:
+        """Size the source's replay buffer from the setting (not for a recording or a
+        transceiver, which have none)."""
+        setter = getattr(self.source, "set_history_seconds", None)
+        if setter is not None and not self.playing_back and not self.is_transceiver:
+            setter(self.settings.replay_seconds)
+
+    def seek_playback(self, fraction: float) -> None:
+        if not self.playing_back:
+            return
+        self.source.seek(fraction * self.source.duration_s)
+        self.spectrum.reset()
+        self.waterfall.clear_history()
+        if self.audio is not None:
+            self.audio.reset()
+        self._update_play_label()
+
+    def _on_speed_changed(self) -> None:
+        if self.playing_back:
+            self.source.set_speed(self._speed_combo.currentData() or 1.0)
+
+    def _on_loop_toggled(self, on: bool) -> None:
+        if self.playing_back:
+            self.source.loop = bool(on)
+
     def _on_play_clicked(self) -> None:
         start = self.recordings_dir if self.recordings_dir.exists() else Path.home()
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Play an IQ recording", str(start), "IQ recordings (*.cf32)")
+            self, "Play an IQ recording", str(start),
+            "IQ recordings (*.sigmf-data *.sigmf-meta *.cf32);;All files (*)")
         if path:
             self.open_recording(path)
 
@@ -870,9 +939,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_playback_ui(self) -> None:
         playing = self.playing_back
-        for widget in (self._pause_button, self._stop_play_button, self._play_label):
+        for widget in (self._pause_button, self._stop_play_button, self._play_label,
+                       self._seek_slider, self._speed_combo, self._loop_check,
+                       self._overview):
             widget.setVisible(playing)
         self._pause_button.setChecked(False)
+        self._replay_button.setEnabled(not playing and not self.is_transceiver)
+        if playing:
+            self._speed_combo.blockSignals(True)
+            self._speed_combo.setCurrentIndex(self._speed_combo.findData(self.source.speed))
+            self._speed_combo.blockSignals(False)
+            self._loop_check.blockSignals(True)
+            self._loop_check.setChecked(self.source.loop)
+            self._loop_check.blockSignals(False)
         # Recording a recording only copies it.
         self._rec_iq_button.setEnabled(not playing and not self.is_transceiver)
         self._update_play_label()
@@ -882,8 +961,18 @@ class MainWindow(QtWidgets.QMainWindow):
             self._play_label.setText("")
             return
         src = self.source
-        self._play_label.setText(f"{src.path.name}  {src.position_s:5.1f} / "
-                                 f"{src.duration_s:.1f} s")
+        name = "replay" if self._replaying else src.path.name
+        self._play_label.setText(f"{name}  {src.position_s:5.1f} / {src.duration_s:.1f} s")
+        fraction = src.position_s / max(src.duration_s, 1e-9)
+        if not self._seek_slider.isSliderDown():
+            self._seek_slider.blockSignals(True)
+            self._seek_slider.setValue(int(fraction * 1000))
+            self._seek_slider.blockSignals(False)
+        self._overview.set_position(fraction)
+        if self._replaying and src.finished:
+            # The end of a replay is now: back to the radio.
+            self.stop_playback()
+            self._status.showMessage("end of replay: back to live", 5000)
 
     # -- per-radio settings ------------------------------------------------
 
@@ -1653,6 +1742,12 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.addWidget(self._build_fm_row())
         self._memory_row = self._build_memory_row()
         outer.addWidget(self._memory_row)
+        from .overview import RecordingOverview
+
+        self._overview = RecordingOverview()
+        self._overview.seekRequested.connect(self.seek_playback)
+        self._overview.hide()
+        outer.addWidget(self._overview)
         return bar
 
     def _compact_rows(self, compact: bool) -> None:
@@ -2459,6 +2554,34 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rec_iq_button.clicked.connect(self._on_record_iq)
         row.addWidget(self._rec_iq_button)
 
+        # Replay (P12): go back over what was just received.
+        self._replay_button = QtWidgets.QToolButton()
+        self._replay_button.setText("Replay")
+        self._replay_button.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._replay_button.setToolTip(
+            "Go back over the last seconds received: they play as a recording, then the\n"
+            "radio comes back. The app keeps the last seconds of IQ in memory for this\n"
+            "(set below; at most 512 MB, so about 16 s at 4 MS/s).")
+        menu = QtWidgets.QMenu(self._replay_button)
+        for seconds in (10, 30, 60, None):
+            label = f"Last {seconds} s" if seconds else "All that is kept"
+            menu.addAction(label).triggered.connect(
+                lambda _=False, s=seconds: self.replay(s))
+        menu.addSeparator()
+        keep = QtGui.QActionGroup(menu)
+        self._replay_keep_actions = {}
+        for seconds in (0, 30, 60, 120, 300):
+            action = menu.addAction("Keep none" if seconds == 0 else
+                                    f"Keep {seconds // 60} min" if seconds >= 60 else
+                                    f"Keep {seconds} s")
+            action.setCheckable(True)
+            action.setChecked(float(seconds) == float(self.settings.replay_seconds))
+            keep.addAction(action)
+            action.triggered.connect(lambda _=False, s=seconds: self._set_replay_seconds(s))
+            self._replay_keep_actions[seconds] = action
+        self._replay_button.setMenu(menu)
+        row.addWidget(self._replay_button)
+
         self._rec_label = QtWidgets.QLabel("")
         self._rec_label.setMinimumWidth(260)
         row.addWidget(self._rec_label)
@@ -2478,7 +2601,30 @@ class MainWindow(QtWidgets.QMainWindow):
         row.addWidget(self._stop_play_button)
         self._play_label = QtWidgets.QLabel("")
         row.addWidget(self._play_label)
-        for widget in (self._pause_button, self._stop_play_button, self._play_label):
+        # Playback controls (P12): where it is, how fast, whether it loops.
+        self._seek_slider = QtWidgets.QSlider(QtCore.Qt.Orientation.Horizontal)
+        self._seek_slider.setRange(0, 1000)
+        self._seek_slider.setFixedWidth(200)
+        self._seek_slider.setToolTip("Where playback is: drag to go elsewhere")
+        self._seek_slider.sliderReleased.connect(
+            lambda: self.seek_playback(self._seek_slider.value() / 1000.0))
+        row.addWidget(self._seek_slider)
+        from ..device.playback import SPEEDS
+
+        self._speed_combo = QtWidgets.QComboBox()
+        for speed in SPEEDS:
+            self._speed_combo.addItem(f"{speed:g}\u00d7", speed)
+        self._speed_combo.setCurrentIndex(self._speed_combo.findData(1.0))
+        self._speed_combo.setToolTip("Playback speed. Audio is right only at 1\u00d7.")
+        self._speed_combo.currentIndexChanged.connect(self._on_speed_changed)
+        row.addWidget(self._speed_combo)
+        self._loop_check = QtWidgets.QCheckBox("Loop")
+        self._loop_check.setChecked(True)
+        self._loop_check.setToolTip("Start again at the end")
+        self._loop_check.toggled.connect(self._on_loop_toggled)
+        row.addWidget(self._loop_check)
+        for widget in (self._pause_button, self._stop_play_button, self._play_label,
+                       self._seek_slider, self._speed_combo, self._loop_check):
             widget.hide()
 
         row.addStretch(1)
@@ -3695,7 +3841,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def start_iq_recording(self) -> Path | None:
         if self.iq_recorder is not None:
             return self.iq_recorder.path
-        name = timestamp_name(self.source.center_freq, ".cf32")
+        name = timestamp_name(self.source.center_freq, ".sigmf-data")
         recorder = IQRecorder(self.recordings_dir / name, self.source)
         try:
             recorder.start()
