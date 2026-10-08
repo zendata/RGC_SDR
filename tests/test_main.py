@@ -120,6 +120,7 @@ def test_a_missing_driver_reports_cleanly(monkeypatch, tmp_path, capsys):
 
     monkeypatch.setattr(entry.Settings, "load",
                         classmethod(lambda cls, path=None: Settings(tmp_path / "s.json")))
+    monkeypatch.setattr(entry, "_radio_instead", lambda problem, freq, failed: None)   # quit
     assert entry.main(["--driver", "definitely-not-a-driver"]) == 2
     assert "Could not open" in capsys.readouterr().err
 
@@ -195,8 +196,8 @@ def test_with_no_radio_attached_the_wifi_705_is_offered(monkeypatch, tmp_path):
     monkeypatch.setattr(entry, "SoapyIQSource", lambda **kw: (_ for _ in ()).throw(
         RuntimeError("no device")))
     offered = []
-    monkeypatch.setattr(entry, "_wifi_radio_instead",
-                        lambda problem: offered.append(problem) or WifiRadio())
+    monkeypatch.setattr(entry, "_radio_instead",
+                        lambda problem, freq, failed: offered.append(problem) or WifiRadio())
     ran = []
     monkeypatch.setattr(mw, "run", lambda source, **kw: ran.append(source) or 0)
     assert entry.main([]) == 0
@@ -211,7 +212,7 @@ def test_declining_the_wifi_705_exits_cleanly(monkeypatch, tmp_path):
     monkeypatch.setattr(entry, "choose_driver", lambda requested, remembered: "airspyhf")
     monkeypatch.setattr(entry, "SoapyIQSource", lambda **kw: (_ for _ in ()).throw(
         RuntimeError("no device")))
-    monkeypatch.setattr(entry, "_wifi_radio_instead", lambda problem: None)
+    monkeypatch.setattr(entry, "_radio_instead", lambda problem, freq, failed: None)
     assert entry.main([]) == 2
 
 
@@ -234,8 +235,33 @@ def test_the_wifi_launcher_asks_for_the_login_when_it_cannot_connect(monkeypatch
     monkeypatch.setattr(icom, "open_ic705", lambda driver: (_ for _ in ()).throw(
         ConnectionError("its WiFi address and user are not set up yet")))
     offered = []
-    monkeypatch.setattr(entry, "_wifi_radio_instead",
-                        lambda problem: offered.append(problem) or WifiRadio())
+    monkeypatch.setattr(entry, "_radio_instead",
+                        lambda problem, freq, failed: offered.append(problem) or WifiRadio())
     monkeypatch.setattr(mw, "run", lambda source, **kw: 0)
     assert entry.main(["--driver", "icom705net"]) == 0
     assert "not set up" in offered[0]
+
+
+def test_a_radio_asked_for_by_name_that_fails_still_offers_the_others(monkeypatch, tmp_path):
+    """--driver hackrf with no HackRF: the chooser, not an exit (VK3RQ, 2026-10-08)."""
+    from src.rgc_sdr.settings import Settings
+    import src.rgc_sdr.ui.main_window as mw
+
+    class Other:
+        center_freq = 7.1e6
+
+        class caps:
+            @staticmethod
+            def covers(hz):
+                return True
+
+    monkeypatch.setattr(entry.Settings, "load",
+                        classmethod(lambda cls, path=None: Settings(tmp_path / "s.json")))
+    monkeypatch.setattr(entry, "SoapyIQSource", lambda **kw: (_ for _ in ()).throw(
+        RuntimeError("no device")))
+    offered = []
+    monkeypatch.setattr(entry, "_radio_instead",
+                        lambda problem, freq, failed: offered.append((problem, failed)) or Other())
+    monkeypatch.setattr(mw, "run", lambda source, **kw: 0)
+    assert entry.main(["--driver", "hackrf"]) == 0
+    assert "Could not open HackRF" in offered[0][0] and offered[0][1] == "hackrf"

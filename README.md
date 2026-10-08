@@ -171,6 +171,10 @@ R2/Mini, HackRF One, RTL-SDR and ADALM-Pluto — and says which are connected. P
 the window rebuilds for it: its frequency range and sample rates, and whatever gain stages,
 AGC and bias-tee it actually has. The HF+ has none of those, so none are shown.
 
+At start the last radio used is reopened. If it cannot be -- the IC-705 over WiFi is
+switched off, say -- a chooser lists the radios that are there instead (and the IC-705
+over WiFi, with its login), with **Look again** for one just plugged in, and **Quit**.
+
 **Frequency correction.** SDRs read a few parts per million off (the Pluto about +4.7 ppm,
 the HackRF about -11.7, measured). The **PPM** field on the Radio row holds each radio's
 error, saved per radio, and tuning corrects for it -- receive and transmit -- so the

@@ -109,33 +109,34 @@ def choose_driver(requested: str | None, remembered: str | None) -> str:
     return remembered_profile.driver if remembered_profile else "airspyhf"
 
 
-def _wifi_radio_instead(problem: str):
-    """No radio to open: offer the IC-705 over WiFi rather than not starting at all.
-    Asks for its address and login, retries on failure. None if declined."""
+def _radio_instead(problem: str, freq_hz: float, failed: str = ""):
+    """The radio asked for would not open: let the user start with any other that is
+    there (ui/startup_dialog.py). None if they quit."""
     from PyQt6 import QtWidgets
 
-    from .device.icom import open_ic705
-    from .device.icom_net import load_login, save_login
-    from .ui.network_login import NetworkLoginDialog
+    from .device.profiles import availability, profile_for, starting_frequency
+    from .ui.startup_dialog import choose_radio
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])  # noqa: F841
-    while True:
-        box = QtWidgets.QMessageBox(QtWidgets.QMessageBox.Icon.Warning, "VK3RQ Super SDR",
-                                    problem)
-        wifi = box.addButton("Connect IC-705 over WiFi\u2026",
-                             QtWidgets.QMessageBox.ButtonRole.AcceptRole)
-        box.addButton("Quit", QtWidgets.QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is not wifi:
-            return None
-        dialog = NetworkLoginDialog(load_login())
-        if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
-            continue
-        save_login(dialog.login())
-        try:
+
+    def opener(key: str):
+        profile = profile_for(key)
+        if key == "icom705net":
+            # Its address and login may be what needs putting right.
+            from .device.icom import open_ic705
+            from .device.icom_net import load_login, save_login
+            from .ui.network_login import NetworkLoginDialog
+
+            dialog = NetworkLoginDialog(load_login())
+            if dialog.exec() != QtWidgets.QDialog.DialogCode.Accepted:
+                return None
+            save_login(dialog.login())
             return open_ic705("icom705net")
-        except Exception as exc:
-            problem = f"Could not connect to the IC-705 over WiFi: {exc}"
+        from .ui.main_window import _open_soapy
+
+        return _open_soapy(profile.driver, starting_frequency(profile, freq_hz))
+
+    return choose_radio(problem, opener, availability, failed)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -234,10 +235,10 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         label = chosen.label if chosen is not None else driver
         print(f"Could not open driver={driver}: {exc}", file=sys.stderr)
-        # An explicit --driver is honoured as asked, except the WiFi 705 itself: its
-        # login may need setting up or correcting first.
-        offer = not args.driver or driver == "icom705net"
-        source = _wifi_radio_instead(f"Could not open {label}: {exc}") if offer else None
+        # Whichever radio it was, and however it was asked for (the WiFi shortcut asks
+        # for the IC-705), offer the others rather than only a way out.
+        source = _radio_instead(f"Could not open {label}: {exc}", freq,
+                                chosen.key if chosen is not None else driver)
         if source is None:
             print("Run with --list to see attached devices.", file=sys.stderr)
             return 2
