@@ -1594,8 +1594,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_decoder_changed(self, key: str) -> None:
         self._mode_for_decoder(key)
         self._start_decoder(key)
-        if key in ("ais", "acars", "adsb", "p25", "dmr"):
-            self.show_map()                 # ships and aircraft are best seen on a map
+        # Ships and aircraft are best seen on a map. Not P25 or DMR (VK3RQ, 2026-10-09):
+        # their radios rarely report a position; the Map tab still shows any that do.
+        if key in ("ais", "acars", "adsb"):
+            self.show_map()
 
     def classify_signal(self) -> None:
         """Capture the tuned frequency for a few seconds and name what is there, on the

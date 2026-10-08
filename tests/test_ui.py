@@ -5051,3 +5051,13 @@ def test_choosing_the_dmr_decoder_listens_in_dmr_voice(qapp):
                                 center=438.825e6), fft_size=1024)
     win.decoder_panel.combo.setCurrentIndex(win.decoder_panel.combo.findData("dmr"))
     assert win.mode == "dmr"
+
+
+def test_p25_and_dmr_leave_the_map_closed(qapp):
+    win = window_for(StubSource(_caps(sample_rates=(768e3,), freq_ranges=(FreqRange(24e6, 1.7e9),)),
+                                center=420e6), fft_size=1024)
+    for key in ("p25", "dmr"):
+        win.decoder_panel.combo.setCurrentIndex(win.decoder_panel.combo.findData(key))
+        assert not win._map_button.isChecked(), key
+    win.decoder_panel.combo.setCurrentIndex(win.decoder_panel.combo.findData("ais"))
+    assert win._map_button.isChecked()
