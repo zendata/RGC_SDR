@@ -360,9 +360,14 @@ class ClientHandler:
         self.reply(request, state=session.state())
 
     def _close_session(self) -> None:
-        session, self.session = self.session, None
+        # The radio is released *before* the session is cleared: a client opening the
+        # radio waits for this one's session to clear (Server.claim), and clearing it
+        # first let the open race the release and find the radio still in use
+        # (an intermittent test failure, 2026-10-08).
+        session = self.session
         if session is not None:
             session.close()
+        self.session = None
 
     def close(self) -> None:
         self._close_session()
