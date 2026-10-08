@@ -1,9 +1,10 @@
-"""Transmit: microphone -> modulator -> (one day) the radio. PLANNING.md, P6.
+"""Transmit: microphone -> modulator -> the radio. PLANNING.md, P6.
 
-For now there is no `IQSink` behind it, so pressing TX is a *dry run*: the MacBook Air
-microphone is captured, modulated in the current mode exactly as it would be for the air,
-and metered -- and nothing is radiated. That exercises the whole audio side of the chain
-before a transmitter is ever keyed.
+The MacBook Air microphone is captured, modulated in the current mode and written to the
+radio's `IQSink` (device/sink.py; verified on air with the HackRF, 2026-10-06). With no
+sink behind it, pressing TX is a *dry run*: modulated exactly as it would be for the air
+and metered, and nothing radiated -- which exercises the whole audio side of the chain
+without keying a transmitter.
 
 A worker thread does the modulating, for the same reason the receive side has one: the
 PortAudio callback must never do real work. The timeout is checked by the caller (the

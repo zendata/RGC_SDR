@@ -1,7 +1,6 @@
 """P25 Phase 1 (TIA-102): frame sync, network ID, and trunking control blocks.
 
-Metadata only -- no voice, which would need an IMBE codec from outside (PLANNING.md 7p).
-Every frame starts with the 48-bit frame sync and a 64-bit network ID: a 12-bit NAC
+Metadata and packet data; the voice is p25voice.py's (IMBE through mbelib). Every frame starts with the 48-bit frame sync and a 64-bit network ID: a 12-bit NAC
 (network access code) and a 4-bit DUID (what kind of frame), protected by BCH(63,16),
 which corrects up to 11 bit errors. A status symbol is woven into the stream after
 every 35 dibits and is dropped on reading.
