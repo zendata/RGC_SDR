@@ -6,7 +6,9 @@ named memories, **audio demodulation** (AM, NBFM, WBFM, USB, LSB), a signal mete
 recording and **IQ playback**, a **band scanner**, and **data decoders** (POCSAG pagers,
 APRS, AIS, ACARS, ADS-B, and P25 and DMR metadata), with ships, aircraft, APRS stations and objects on a map.
 
-See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts.
+See [PLANNING.md](PLANNING.md) for the roadmap, architecture and measured hardware facts,
+and [the guide](docs/guide/README.md) for how it works: the IQ stream, every field of the
+interface, how each mode is demodulated and each protocol decoded, and features to add.
 
 Real hardware only — there is no simulated device mode, by design
 ([PLANNING.md](PLANNING.md) §1).
