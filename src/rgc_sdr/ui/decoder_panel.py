@@ -7,6 +7,8 @@ Nothing shown here is written to disk (PLANNING.md 7p).
 
 from __future__ import annotations
 
+import time
+
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from ..decoding import DECODERS
@@ -20,6 +22,13 @@ class DecoderPanel(QtWidgets.QWidget):
     decoderChanged = QtCore.pyqtSignal(str)
     #: The Map button: show the map window.
     mapRequested = QtCore.pyqtSignal()
+    #: A voice call double-clicked: (frequency Hz) to listen there in P25 mode.
+    callTuneRequested = QtCore.pyqtSignal(float)
+
+    #: Voice calls kept in the table, most recent first.
+    CALLS_KEPT = 60
+    CALL_COLUMNS = ("Heard", "Talkgroup / to", "From", "Frequency", "Phase", "Encrypted",
+                    "Hearable")
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -65,7 +74,25 @@ class DecoderPanel(QtWidgets.QWidget):
         # Wrapped to the panel, so a long message or APRS comment is read without
         # scrolling sideways.
         self.log.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth)
-        outer.addWidget(self.log, 1)
+        # P25 voice calls the control channel grants, beside the messages (VK3RQ,
+        # 2026-10-08): where each call is, and whether the app can play it.
+        self.calls = QtWidgets.QTreeWidget()
+        self.calls.setColumnCount(len(self.CALL_COLUMNS))
+        self.calls.setHeaderLabels(self.CALL_COLUMNS)
+        self.calls.setRootIsDecorated(False)
+        self.calls.setToolTip(
+            "Voice calls the control channel has granted. Hearable: Phase 1 and not\n"
+            "encrypted -- double-click one to listen on its frequency. Phase 2 (TDMA)\n"
+            "and encrypted calls cannot be played.")
+        self.calls.itemDoubleClicked.connect(self._on_call_double_clicked)
+        self._call_items: dict = {}
+        split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        split.addWidget(self.log)
+        split.addWidget(self.calls)
+        split.setSizes([600, 500])
+        outer.removeWidget(self.log)
+        outer.addWidget(split, 1)
+        self.calls.hide()
         self._messages: list = []
         self._sync_show_text()
 
@@ -81,6 +108,7 @@ class DecoderPanel(QtWidgets.QWidget):
         spec = DECODERS.get(self.decoder)
         private = bool(spec and spec.private)
         self.show_text.setVisible(private)
+        self.calls.setVisible(self.decoder == "p25")
 
     def add(self, messages: list) -> None:
         if not messages:
@@ -89,6 +117,8 @@ class DecoderPanel(QtWidgets.QWidget):
         show = self.show_text.isChecked()
         for message in messages:
             self.log.appendPlainText(message.summary(show_text=show))
+            for call in getattr(message, "fields", {}).get("calls", ()):
+                self._note_call(getattr(message, "nac", 0), call, message.received)
 
     def _redraw(self) -> None:
         show = self.show_text.isChecked()
@@ -98,6 +128,61 @@ class DecoderPanel(QtWidgets.QWidget):
     def clear(self) -> None:
         self._messages = []
         self.log.clear()
+        self.calls.clear()
+        self._call_items = {}
+
+    @staticmethod
+    def hearable(call: dict) -> str:
+        """Whether the app can play a call, or why not."""
+        if call.get("encrypted"):
+            return "no: encrypted"
+        if call.get("phase") == "2":
+            return "no: Phase 2"
+        if call.get("phase") == "?":
+            return "?"                       # no channel plan heard yet
+        return "yes" if call.get("encrypted") is False else "yes, unless encrypted"
+
+    def _note_call(self, nac: int, call: dict, received: float) -> None:
+        """Add a call to the table or refresh it: one row per talkgroup (or pair of
+        radios), moved to the top each time it is granted."""
+        who = (f"TG {call['group']}" if call.get("group") is not None
+               else f"to {call.get('target', '?')}")
+        key = (nac, who)
+        item = self._call_items.get(key)
+        if item is None:
+            item = QtWidgets.QTreeWidgetItem()
+            self._call_items[key] = item
+        else:
+            self.calls.takeTopLevelItem(self.calls.indexOfTopLevelItem(item))
+        source = call.get("source")
+        if source is None and item.text(2):
+            source_text = item.text(2)              # an update does not name the talker
+        else:
+            source_text = "" if source is None else str(source)
+        freq = call.get("freq_hz")
+        slot = f" slot {call['slot']}" if call.get("slot") else ""
+        encrypted = call.get("encrypted")
+        values = (time.strftime("%H:%M:%S", time.localtime(received)), who, source_text,
+                  (f"{freq / 1e6:.5f} MHz{slot}" if freq else f"ch {call['channel']}"),
+                  {"1": "1", "2": "2 (TDMA)"}.get(call.get("phase"), "?"),
+                  {True: "yes", False: "no"}.get(encrypted, item.text(5) or "?"),
+                  self.hearable(call))
+        for column, text in enumerate(values):
+            item.setText(column, text)
+        item.setData(0, QtCore.Qt.ItemDataRole.UserRole, freq)
+        playable = values[-1].startswith("yes")
+        colour = QtGui.QColor("#a5d6a7" if playable else "#9e9e9e")
+        for column in range(len(values)):
+            item.setForeground(column, colour)
+        self.calls.insertTopLevelItem(0, item)
+        while self.calls.topLevelItemCount() > self.CALLS_KEPT:
+            old = self.calls.takeTopLevelItem(self.calls.topLevelItemCount() - 1)
+            self._call_items = {k: v for k, v in self._call_items.items() if v is not old}
+
+    def _on_call_double_clicked(self, item, _column) -> None:
+        freq = item.data(0, QtCore.Qt.ItemDataRole.UserRole)
+        if freq:
+            self.callTuneRequested.emit(float(freq))
 
     def set_status(self, text: str) -> None:
         self.status.setText(text)

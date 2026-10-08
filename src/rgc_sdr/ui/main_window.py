@@ -1387,8 +1387,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_panel = DecoderPanel()
         self.decoder_panel.decoderChanged.connect(self._on_decoder_changed)
         self.decoder_panel.mapRequested.connect(self.show_map)
+        self.decoder_panel.callTuneRequested.connect(self._listen_to_call)
         # The Decode tab's panel, full width: ACARS and ADS-B lines are long.
         self._decoder_dock = self.decoder_panel
+
+    def _listen_to_call(self, freq_hz: float) -> None:
+        """A P25 voice call double-clicked: listen on its channel in P25 mode, with the
+        P25 decoder (it follows the listening frequency) still showing who talks."""
+        self._offset_spin.setValue(0.0)
+        self._retune(freq_hz, allow_snap=False, auto_radio=True)
+        index = self._mode_combo.findData("p25")
+        if index >= 0 and self._mode_combo.currentIndex() != index:
+            self._mode_combo.setCurrentIndex(index)
 
     # -- the tab row and its panels ---------------------------------------------------
 

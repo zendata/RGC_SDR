@@ -196,6 +196,12 @@ this is the data side (`p25.py`).
   IPv4/UDP: see [Packet data](#packet-data-p25-and-dmr).
 - **Voice calls** show the talkgroup and the talking radio's ID from LDU1's link
   control, and whether the call is encrypted.
+- **Grants into calls.** Each voice grant's channel (a 4-bit identifier and a 12-bit
+  number) is turned into a frequency by the channel plan with that identifier. A plan
+  sent as TDMA with two slots (opcode 0x33, channel types 3-5) means a Phase 2 call;
+  otherwise Phase 1. The service options byte of group grants (opcodes 0x00 and 0x03)
+  says whether the call is encrypted (0x40) or an emergency (0x80). The Decode panel's
+  Voice calls table is built from these.
 
 ## DMR
 

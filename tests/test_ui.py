@@ -5001,3 +5001,36 @@ def test_memories_import_and_export_from_the_panel(qapp, tmp_path):
     assert "imported 1" in panel.hint.text()
     assert panel.export_to(tmp_path / "chirp.csv", chirp=True) == 0   # mode Off: none
     win.close()
+
+
+def test_the_voice_calls_table(qapp):
+    from types import SimpleNamespace
+
+    from src.rgc_sdr.ui.decoder_panel import DecoderPanel
+
+    panel = DecoderPanel()
+    panel.combo.setCurrentIndex(panel.combo.findData("p25"))
+    assert not panel.calls.isHidden()
+
+    def grant(group, freq, phase, encrypted, source=None):
+        call = {"group": group, "source": source, "freq_hz": freq, "phase": phase,
+                "encrypted": encrypted, "channel": "1-8", "slot": None}
+        return SimpleNamespace(nac=0x123, fields={"calls": [call]}, received=0.0,
+                               summary=lambda show_text=True: "grant")
+
+    panel.add([grant(501, 420.1e6, "1", False, 1234), grant(502, 420.2e6, "2", None),
+               grant(503, 420.3e6, "1", True)])
+    rows = {panel.calls.topLevelItem(i).text(1): panel.calls.topLevelItem(i)
+            for i in range(panel.calls.topLevelItemCount())}
+    assert rows["TG 501"].text(6) == "yes" and rows["TG 501"].text(2) == "1234"
+    assert rows["TG 502"].text(6) == "no: Phase 2"
+    assert rows["TG 503"].text(6) == "no: encrypted"
+    panel.add([grant(501, 420.1e6, "1", None)])             # an update: talker kept
+    assert panel.calls.topLevelItem(0).text(1) == "TG 501"
+    assert panel.calls.topLevelItem(0).text(2) == "1234"
+    tuned = []
+    panel.callTuneRequested.connect(tuned.append)
+    panel._on_call_double_clicked(panel.calls.topLevelItem(0), 0)
+    assert tuned == [pytest.approx(420.1e6)]
+    panel.combo.setCurrentIndex(panel.combo.findData("aprs"))
+    assert panel.calls.isHidden()

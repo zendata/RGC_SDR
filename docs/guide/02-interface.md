@@ -214,6 +214,13 @@ Changes made on the radio's own screen show in the app.
 | **Map** | Open the Map tab. |
 | **Clear** | Clear the messages. |
 
+**Voice calls** (P25 only), beside the messages: every voice call the control channel
+grants, newest first, one row per talkgroup (or pair of radios). Each row has the talker,
+the voice frequency (and TDMA slot), Phase 1 or 2, whether the grant says it is
+encrypted, and **Hearable**: yes for a clear Phase 1 call, otherwise why not (Phase 2
+and encrypted calls cannot be played). Double-click a call to listen on its frequency
+in P25 mode; tune back to the control channel to see the grants again.
+
 Decoders run on their own thread with their own demodulator, so they keep decoding
 whatever the audio mode, and through mute and squelch. AIS listens on both of its
 channels wherever the radio is tuned, provided they are in view. How each protocol is

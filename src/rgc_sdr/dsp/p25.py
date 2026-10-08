@@ -418,6 +418,24 @@ class P25Decoder:
         return [P25Message(nac, "data", f"packet data {way} {llid}: {what}", f,
                            content=content, position=position, radio=llid)]
 
+    def _call(self, value: int, options: int | None = None, **who) -> dict:
+        """What a voice grant says about the call, for the Voice calls table: where it
+        is, whether it is Phase 1 (FDMA, which the app decodes) or Phase 2 (TDMA, which
+        it does not), and whether it is encrypted (when the grant says)."""
+        iden, number = value >> 12, value & 0xFFF
+        plan = self.plans.get(iden)
+        call = {"channel": f"{iden}-{number}", "freq_hz": None, "slot": None,
+                "phase": "?", "encrypted": None, **who}
+        if plan is not None:
+            call["freq_hz"] = plan.frequency(number)
+            call["phase"] = "2" if plan.slots > 1 else "1"
+            if plan.slots > 1:
+                call["slot"] = number % plan.slots + 1
+        if options is not None:
+            call["encrypted"] = bool(options & 0x40)
+            call["emergency"] = bool(options & 0x80)
+        return call
+
     def _channel(self, value: int) -> str:
         iden, number = value >> 12, value & 0xFFF
         plan = self.plans.get(iden)
@@ -437,24 +455,35 @@ class P25Decoder:
         name = OPCODES.get(op, f"opcode {op:02X}")
         text = name
         if op == 0x00:
-            f.update(channel=_field(a, 8, 16), group=_field(a, 24, 16),
-                     source=_field(a, 40, 24))
+            f.update(options=_field(a, 0, 8), channel=_field(a, 8, 16),
+                     group=_field(a, 24, 16), source=_field(a, 40, 24))
             text += (f"  TG {f['group']}  from {f['source']}  "
                      f"{self._channel(f['channel'])}")
+            f["calls"] = [self._call(f["channel"], f["options"], group=f["group"],
+                                     source=f["source"])]
+            if f["options"] & 0x40:
+                text += "  encrypted"
         elif op == 0x02:
             f.update(channel=_field(a, 0, 16), group=_field(a, 16, 16),
                      channel_b=_field(a, 32, 16), group_b=_field(a, 48, 16))
             text += f"  TG {f['group']} {self._channel(f['channel'])}"
+            f["calls"] = [self._call(f["channel"], group=f["group"])]
             if f["group_b"] != f["group"]:
                 text += f"; TG {f['group_b']} {self._channel(f['channel_b'])}"
+                f["calls"].append(self._call(f["channel_b"], group=f["group_b"]))
         elif op == 0x03:
-            f.update(channel=_field(a, 16, 16), group=_field(a, 48, 16))
+            f.update(options=_field(a, 0, 8), channel=_field(a, 16, 16),
+                     group=_field(a, 48, 16))
             text += f"  TG {f['group']} {self._channel(f['channel'])}"
+            f["calls"] = [self._call(f["channel"], f["options"], group=f["group"])]
+            if f["options"] & 0x40:
+                text += "  encrypted"
         elif op in (0x04, 0x06):
             f.update(channel=_field(a, 0, 16), target=_field(a, 16, 24),
                      source=_field(a, 40, 24))
             text += (f"  to {f['target']}  from {f['source']}  "
                      f"{self._channel(f['channel'])}")
+            f["calls"] = [self._call(f["channel"], target=f["target"], source=f["source"])]
         elif op in (0x33, 0x34, 0x3D):
             iden = _field(a, 0, 4)
             spacing = _field(a, 22, 10) * 125.0

@@ -209,3 +209,46 @@ def test_a_damaged_block_is_rejected_not_shown():
             dibits[i] ^= 0b11
     decoder = P25Decoder(RATE)
     assert run(decoder, fsk4_wave(dibits)) == [] and decoder.bad_blocks == 1
+
+
+# -- voice calls from grants (VK3RQ, 2026-10-08) ----------------------------------------
+
+
+def _tsbk_bits(op, fields):
+    """96 TSBK bits: opcode, manufacturer 0, then (start, width, value) argument fields."""
+    bits = np.zeros(96, dtype=np.uint8)
+
+    def put(start, width, value):
+        for i in range(width):
+            bits[start + i] = (value >> (width - 1 - i)) & 1
+
+    put(2, 6, op)
+    for start, width, value in fields:
+        put(16 + start, width, value)
+    return bits
+
+
+def test_grants_say_where_each_call_is_and_whether_it_can_be_heard():
+    from src.rgc_sdr.dsp.p25 import P25Decoder
+
+    dec = P25Decoder(48e3)
+    # Channel plans: identifier 1 FDMA (Phase 1) from 420.0 MHz every 12.5 kHz; identifier
+    # 2 TDMA, two slots (Phase 2), from 421.0 MHz.
+    dec._tsbk(0x123, _tsbk_bits(0x3D, [(0, 4, 1), (22, 10, 100), (32, 32, 84_000_000)]))
+    dec._tsbk(0x123, _tsbk_bits(0x33, [(0, 4, 2), (4, 4, 3), (22, 10, 100),
+                                      (32, 32, 84_200_000)]))
+    clear = dec._tsbk(0x123, _tsbk_bits(0x00, [(0, 8, 0x00), (8, 16, (1 << 12) | 8),
+                                              (24, 16, 501), (40, 24, 1234)]))
+    [call] = clear.fields["calls"]
+    assert call["freq_hz"] == pytest.approx(420.1e6) and call["phase"] == "1"
+    assert call["encrypted"] is False and call["group"] == 501 and call["source"] == 1234
+    secret = dec._tsbk(0x123, _tsbk_bits(0x00, [(0, 8, 0x40), (8, 16, (1 << 12) | 8),
+                                               (24, 16, 502), (40, 24, 99)]))
+    assert secret.fields["calls"][0]["encrypted"] is True and "encrypted" in secret.text
+    tdma = dec._tsbk(0x123, _tsbk_bits(0x02, [(0, 16, (2 << 12) | 5), (16, 16, 503),
+                                             (32, 16, (2 << 12) | 5), (48, 16, 503)]))
+    [call] = tdma.fields["calls"]
+    assert call["phase"] == "2" and call["slot"] == 2
+    assert call["freq_hz"] == pytest.approx(421.0e6 + 2 * 12.5e3)
+    unknown = dec._tsbk(0x123, _tsbk_bits(0x00, [(8, 16, (7 << 12) | 1), (24, 16, 1)]))
+    assert unknown.fields["calls"][0]["phase"] == "?"          # no plan for identifier 7
