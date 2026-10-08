@@ -105,6 +105,7 @@ Receiver refinements (P10), shown for the app's own demodulators. See
 | **AGC** | Fast, Medium (the default), Slow or Off. |
 | (gain) | With the AGC off, the fixed audio gain in dB (AM, SAM, SSB and CW only; FM has a level of its own). |
 | (sideband) | SAM only: Both, Upper or Lower. |
+| (slot) | DMR only: Both slots (the first to speak keeps it), Slot 1 or Slot 2. |
 | **Noise sq** | NBFM only: squelch on the noise above the voice, as an FM radio does. |
 | (quieting) | How far the noise must fall to open the noise squelch, default 10 dB. |
 | (state) | The passband's channel power (dBFS) and occupied bandwidth (the span holding 99% of its power); then what the DSP is doing: SAM's lock and carrier offset, the quieting, impulses blanked, bins notched. |
@@ -128,7 +129,7 @@ Shown in NBFM mode.
 
 | Field | What it does |
 |---|---|
-| **Mode** | Off, AM, SAM (synchronous AM), NBFM, WBFM, USB, LSB, CW, P25 or DAB. The IC-705 lists its own modes (LSB, USB, AM, CW, RTTY, FM, WFM) and changes the radio's mode. |
+| **Mode** | Off, AM, SAM (synchronous AM), NBFM, WBFM, USB, LSB, CW, P25, DMR or DAB. The IC-705 lists its own modes (LSB, USB, AM, CW, RTTY, FM, WFM) and changes the radio's mode. |
 | **BW** | The channel filter's width. The choices depend on the mode (see [Demodulation](03-demodulation.md)); on the IC-705, its filters FIL1–3. |
 | **Pitch** | CW only: the beat-note pitch, 400–800 Hz, and what **Zero beat** tunes to. |
 | **Stereo** | WBFM only: decode stereo when the station sends it. Untick for mono, which is quieter on a weak station. |

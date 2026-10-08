@@ -1955,6 +1955,13 @@ class MainWindow(QtWidgets.QMainWindow):
                                         "interference on the other side")
         self._sideband_combo.currentIndexChanged.connect(self._on_dsp_changed)
         row.addWidget(self._sideband_combo)
+        self._dmr_slot_combo = QtWidgets.QComboBox()
+        for label, slot in (("Both slots", 0), ("Slot 1", 1), ("Slot 2", 2)):
+            self._dmr_slot_combo.addItem(label, slot)
+        self._dmr_slot_combo.setToolTip("DMR: the timeslot to hear, or whichever is talking\n"
+                                        "(the first to speak keeps it)")
+        self._dmr_slot_combo.currentIndexChanged.connect(self._on_dsp_changed)
+        row.addWidget(self._dmr_slot_combo)
         self._noise_sq_check = QtWidgets.QCheckBox("Noise sq")
         self._noise_sq_check.setToolTip(
             "NBFM: squelch on the noise above the voice, as an FM radio does, rather than\n"
@@ -1985,6 +1992,7 @@ class MainWindow(QtWidgets.QMainWindow):
             sam_sideband=self._sideband_combo.currentData() or "both",
             noise_squelch=self._noise_sq_check.isChecked(),
             quieting_db=float(self._quieting_spin.value()),
+            dmr_slot=int(self._dmr_slot_combo.currentData() or 0),
         )
 
     def _push_receiver_options(self) -> None:
@@ -2013,6 +2021,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._gain_spin.setVisible(self._agc_mode_combo.currentData() == "off"
                                    and mode in FIXED_GAIN_MODES)
         self._sideband_combo.setVisible(mode == "sam")
+        self._dmr_slot_combo.setVisible(mode == "dmr")
         self._noise_sq_check.setVisible(mode == "nbfm")
         self._quieting_spin.setVisible(mode == "nbfm" and self._noise_sq_check.isChecked())
 
@@ -2074,7 +2083,8 @@ class MainWindow(QtWidgets.QMainWindow):
             check.setChecked(bool(on))
             check.blockSignals(False)
         for combo, value in ((self._agc_mode_combo, snap.agc_mode),
-                             (self._sideband_combo, snap.sam_sideband)):
+                             (self._sideband_combo, snap.sam_sideband),
+                             (self._dmr_slot_combo, snap.dmr_slot)):
             index = combo.findData(value)
             if index >= 0:
                 combo.blockSignals(True)
@@ -3325,7 +3335,7 @@ class MainWindow(QtWidgets.QMainWindow):
         shift = float(self._if_shift_spin.value()) if dsp else 0.0
         side = (self._sideband_combo.currentData() or "both") if dsp else "both"
         low, high = passband_for(mode, width, shift, side)
-        fixed = mode in ("dab", "p25")
+        fixed = mode in ("dab", "p25", "dmr")
         self.spectrum.set_passband_edges(listen + low, listen + high, editable=not fixed)
         if dsp:
             self.spectrum.set_notches(self._notches if mode in CLEANUP_MODES else [])
@@ -4074,6 +4084,7 @@ class MainWindow(QtWidgets.QMainWindow):
             sam_sideband=self._sideband_combo.currentData() or "both",
             noise_squelch=self._noise_sq_check.isChecked(),
             quieting_db=float(self._quieting_spin.value()),
+            dmr_slot=int(self._dmr_slot_combo.currentData() or 0),
         )
 
     def apply_snapshot(self, snap: Snapshot) -> None:

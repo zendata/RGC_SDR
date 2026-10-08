@@ -228,7 +228,8 @@ each slot in turn, each 132 symbols with a 24-symbol sync in the middle.
 - Every one of those codes was settled on air in Melbourne, over four channels
   (PLANNING.md P8e).
 
-No voice: DMR's AMBE+2 codec is not available to the app.
+Voice is decoded in DMR mode (AMBE+2 through mbelib): see
+[Demodulation: DMR](03-demodulation.md#dmr-voice).
 
 ## Packet data (P25 and DMR)
 

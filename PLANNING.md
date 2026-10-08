@@ -189,6 +189,12 @@ headless-testable and lets modules be swapped independently.
   following the listening frequency ✅ (verified 2026-10-07 over Tailscale: 25 lines a
   second of the RTL-SDR's 2.048 MHz span, the 256 kS/s window with nothing lost, tuning
   within the span leaving the radio and the waterfall where they were).
+- **DMR voice and P25 voice calls (VK3RQ, 2026-10-08: "go with these first two").**
+  The Decode panel's Voice calls table lists each P25 grant with its frequency, phase
+  (Phase 2 TDMA plans cannot be played) and encryption, and a double-click listens
+  there. DMR voice: AMBE+2 through mbelib (VK3RQ chose to use the codec, for personal
+  receive-only use), bursts B-F read from burst A's sync, encrypted calls muted. Tested
+  on synthetic superframes; the codec itself needs an on-air call.
 - **P10-P13 (VK3RQ, 2026-10-08: "do 1 2 3 and 4 now", from docs/guide/05).** In order,
   one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
   carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan (section 7s) ✅,

@@ -59,6 +59,7 @@ IQ --> [noise --> mixer --> decimate --> channel filter --> detector --> audio s
 | USB, LSB | 48 kHz | 1.8, 2.1, 2.4, **2.7**, 3.0, 3.6 kHz | sideband filter |
 | CW | 48 kHz | 100, 250, **500**, 800, 1500 Hz | band-pass at the pitch |
 | P25 | 48 kHz | **12.5** kHz | discriminator, then the P25 voice decoder |
+| DMR | 48 kHz | **12.5** kHz | discriminator, then the DMR voice decoder |
 | DAB | 2.048 MS/s | **1.536** MHz | the DAB receiver |
 
 ## AM
@@ -241,6 +242,30 @@ ring overran, and frames were lost.
 
 Who is talking is shown in the Decode panel, under the privacy rule: P25 and DMR IDs and
 content stay on screen and are never written anywhere.
+
+## DMR (voice)
+
+DMR voice is the same four-level FSK, so the chain is NBFM's up to the discriminator,
+whose output goes to `DmrVoice` (`dsp/dmrvoice.py`):
+
+1. **Finding the bursts.** A call on one timeslot is a run of superframes: six bursts,
+   A to F, one every 60 ms, with the other slot's bursts in between. Only burst A
+   carries the voice sync; B to F carry embedded signalling (EMB) in its place. So the
+   sync finder hands over a whole superframe from each voice sync, with its timing and
+   scale fixed by that sync, and B to F are read at their places. A place holding a data
+   sync instead is the call's terminator, and ends it.
+2. **Three AMBE+2 frames a burst**, 72 bits each: the 108 bits before the middle, the
+   108 after, and the second frame straddling the middle.
+3. **Deinterleave and decode.** Each frame goes into mbelib's 4×24 frame by DSD's DMR
+   interleave tables, and through mbelib's AMBE 3600×2450 decoder (the same library as
+   P25's IMBE). Out comes 20 ms of 8 kHz speech a frame.
+4. **Which slot.** The DSP row's slot choice: **Slot 1**, **Slot 2**, or **Both**, where
+   the first slot to speak keeps the audio until it stops.
+5. **Encryption.** A call whose EMB privacy indicator is set is muted.
+6. Interpolated ×6 to 48 kHz, levelled and paced, as P25 is.
+
+Choosing the **DMR** decoder switches to this mode, so the Decode panel's talkgroup and
+source show beside the audio.
 
 ## DAB (DAB+ radio)
 

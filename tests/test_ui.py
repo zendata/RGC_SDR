@@ -5034,3 +5034,20 @@ def test_the_voice_calls_table(qapp):
     assert tuned == [pytest.approx(420.1e6)]
     panel.combo.setCurrentIndex(panel.combo.findData("aprs"))
     assert panel.calls.isHidden()
+
+
+def test_dmr_mode_offers_the_timeslot(qapp):
+    win = _dsp_window("dmr")
+    assert win.mode == "dmr" and not win._dmr_slot_combo.isHidden()
+    win._dmr_slot_combo.setCurrentIndex(win._dmr_slot_combo.findData(2))
+    assert win._receiver_options().dmr_slot == 2
+    assert win.current_snapshot().dmr_slot == 2
+    win._mode_combo.setCurrentIndex(win._mode_combo.findData("nbfm"))
+    assert win._dmr_slot_combo.isHidden()
+
+
+def test_choosing_the_dmr_decoder_listens_in_dmr_voice(qapp):
+    win = window_for(StubSource(_caps(sample_rates=(768e3,), freq_ranges=(FreqRange(24e6, 1.7e9),)),
+                                center=438.825e6), fft_size=1024)
+    win.decoder_panel.combo.setCurrentIndex(win.decoder_panel.combo.findData("dmr"))
+    assert win.mode == "dmr"

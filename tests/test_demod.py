@@ -660,4 +660,4 @@ def test_the_pacer_turns_bursts_into_steady_audio():
 
 def test_bursty_modes_get_a_deeper_output_buffer():
     from src.rgc_sdr.audio import BURSTY_BUFFER_BLOCKS, BURSTY_MODES
-    assert set(BURSTY_MODES) == {"dab", "p25"} and BURSTY_BUFFER_BLOCKS * 1024 > 0.3 * 48000
+    assert set(BURSTY_MODES) == {"dab", "p25", "dmr"} and BURSTY_BUFFER_BLOCKS * 1024 > 0.3 * 48000

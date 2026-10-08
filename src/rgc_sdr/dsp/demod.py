@@ -19,7 +19,7 @@ from .decimate import StreamDecimator, lowpass_taps
 from .filters import Fir, bandpass_taps, fir_length_for  # noqa: F401  (re-exported)
 
 #: Modes the UI offers, in the order the roadmap introduces them.
-MODES = ("am", "sam", "nbfm", "wbfm", "usb", "lsb", "cw", "p25", "dab")
+MODES = ("am", "sam", "nbfm", "wbfm", "usb", "lsb", "cw", "p25", "dmr", "dab")
 
 
 #: Channel widths offered per mode, in Hz. The mode's own spec value is the default.
@@ -35,6 +35,7 @@ BANDWIDTH_PRESETS: dict[str, tuple[float, ...]] = {
     "cw": (100.0, 250.0, 500.0, 800.0, 1.5e3),
     # A P25 channel is 12.5 kHz; the voice decoder needs all of it.
     "p25": (12.5e3,),
+    "dmr": (12.5e3,),
     # A DAB ensemble is 1.536 MHz, all of it needed.
     "dab": (1.536e6,),
 }
@@ -103,6 +104,8 @@ MODE_SPECS: dict[str, ModeSpec] = {
     # P25 Phase 1 digital voice (dsp/p25voice.py): the FM discriminator's four-level
     # symbols, decoded to IMBE frames and through mbelib to 8 kHz audio.
     "p25": ModeSpec(bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3),
+    # DMR voice (dsp/dmrvoice.py): the same four-level FSK, AMBE+2 through mbelib.
+    "dmr": ModeSpec(bandwidth_hz=12.5e3, if_target_hz=48e3, deviation_hz=2.5e3),
     # DAB+ (dsp/dab.py, dsp/dabplus.py): the whole ensemble at 2.048 MS/s, a station's
     # HE-AAC through FAAD2.
     "dab": ModeSpec(bandwidth_hz=1.536e6, if_target_hz=2.048e6),
@@ -144,6 +147,8 @@ class ReceiverOptions:
     noise_squelch: bool = False
     #: Noise squelch: opens when the noise is this far below a dead channel's.
     quieting_db: float = 10.0
+    #: DMR: the timeslot to hear, 1 or 2, or 0 for whichever is talking.
+    dmr_slot: int = 0
 
 
 def passband_for(mode: str, bandwidth_hz: float, shift_hz: float = 0.0,
@@ -596,7 +601,7 @@ class DemodChain:
         elif mode == "sam":
             self._detector = SyncAmDetector(self.if_rate, self.bandwidth_hz,
                                             self.options.sam_sideband)
-        elif mode in ("nbfm", "wbfm", "p25"):
+        elif mode in ("nbfm", "wbfm", "p25", "dmr"):
             self._detector = FmDetector(self.if_rate, self.spec.deviation_hz)
         else:
             # SSB and CW need no detector: the filter did the work and the real part of
@@ -663,6 +668,16 @@ class DemodChain:
             self._p25_up = Interpolator(6)
             self.audio_rate = 6 * AUDIO_RATE
             # Voice arrives in 180 ms bursts and not at all between calls: paced.
+            self._pacer = AudioPacer(1, PACER_PREBUFFER_S * self.audio_rate)
+        #: DMR's voice decoder: AMBE+2 at 8 kHz, paced as P25's is.
+        self._dmr = None
+        if mode == "dmr":
+            from .dmrvoice import AUDIO_RATE as DMR_RATE, DmrVoice
+            from .modulate import Interpolator
+
+            self._dmr = DmrVoice(self.if_rate, self.options.dmr_slot)
+            self._dmr_up = Interpolator(6)
+            self.audio_rate = 6 * DMR_RATE
             self._pacer = AudioPacer(1, PACER_PREBUFFER_S * self.audio_rate)
         if mode == "wbfm":
             self._audio_decimator_pair = [StreamDecimator(self.audio_decim) for _ in range(2)]
@@ -818,6 +833,8 @@ class DemodChain:
                 self._build_noise_squelch()
         if (old.agc_mode, old.manual_gain_db) != (options.agc_mode, options.manual_gain_db):
             self._build_agc()
+        if self._dmr is not None:
+            self._dmr.slot = int(options.dmr_slot)
         if self._blanker is not None:
             self._blanker.level = options.nb_level
         if self._cleanup is not None:
@@ -930,6 +947,10 @@ class DemodChain:
             self._p25.reset()
             self._p25_up.reset()
             self._pacer.reset()
+        if self._dmr is not None:
+            self._dmr.reset()
+            self._dmr_up.reset()
+            self._pacer.reset()
         if self._dab is not None:
             # A retune is another ensemble: a fresh receiver, or the last one's stations
             # stay in the list and the new ones are added to them (VK3RQ, 2026-10-07).
@@ -989,6 +1010,17 @@ class DemodChain:
                 return np.zeros(audio.shape, dtype=np.float32)
             if self._agc is not None:
                 audio = self._agc.process(audio)     # one gain for both channels
+            return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
+
+        if self._dmr is not None:
+            self.last_detected = self._detector.process(channel)
+            voice = self._dmr.process(self.last_detected)
+            if voice.size:
+                audio = self._dmr_up.process(voice.astype(np.float64))
+                if self._agc is not None:
+                    audio = self._agc.process(audio)
+                self._pacer.push(audio.astype(np.float32))
+            audio = self._pacer.pull(channel.size / self.if_rate * self.audio_rate)
             return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
 
         if self._p25 is not None:
@@ -1107,6 +1139,11 @@ class DemodChain:
     def force_mono(self, value: bool) -> None:
         if self._stereo is not None:
             self._stereo.force_mono = bool(value)
+
+    @property
+    def dmr_voice(self):
+        """The DMR voice decoder, in DMR mode."""
+        return self._dmr
 
     @property
     def p25_voice(self):

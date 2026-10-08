@@ -212,8 +212,8 @@ The largest change, and the one that most separates high-end software.
 
 ### P16: Digital voice (M each)
 
-21. **DMR voice**, through mbelib's AMBE decoder, once the codec's patent position is
-    checked. The DMR decoder already finds voice bursts by their sync.
+21. **DMR voice** ✅ done 2026-10-08, through mbelib's AMBE decoder (VK3RQ's decision on
+    the codec, for personal receive-only use). The DMR decoder already finds voice bursts by their sync.
 22. **D-STAR and System Fusion**, for the VK amateur repeaters that use them.
 
 ### P17: Network server, phase 3 (M)

@@ -38,7 +38,7 @@ ALL_MODES = sum(MODE_BITS.values())
 
 #: The app's modes as hamlib names them.
 TO_HAMLIB = {"usb": "USB", "lsb": "LSB", "cw": "CW", "am": "AM", "sam": "SAM",
-             "nbfm": "FM", "wbfm": "WFM", "p25": "FM", "dab": "WFM", "off": "USB",
+             "nbfm": "FM", "wbfm": "WFM", "p25": "FM", "dmr": "FM", "dab": "WFM", "off": "USB",
              # The IC-705's own modes.
              "fm": "FM", "wfm": "WFM", "rtty": "RTTY"}
 #: hamlib's modes as the app has them: the packet modes (what WSJT-X asks for) are

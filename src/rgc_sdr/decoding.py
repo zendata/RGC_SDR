@@ -62,7 +62,7 @@ DECODERS: dict[str, DecoderSpec] = {
     # 4800-symbol/s four-level FSK in a 12.5 kHz channel: metadata, not voice.
     # Packet data can carry text and radios' positions: hideable, like pager text.
     "p25": DecoderSpec("P25", P25Decoder, 12.5e3, private=True, listen_mode="p25"),
-    "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3, private=True),
+    "dmr": DecoderSpec("DMR", DmrDecoder, 12.5e3, private=True, listen_mode="dmr"),
     # A whole DAB ensemble (1.5 MHz) from raw IQ: tune to its centre at 2.048 MS/s.
     "dab": DecoderSpec("DAB", DabReceiver, 1.536e6, mode="iq"),
 }

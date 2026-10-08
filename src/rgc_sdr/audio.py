@@ -112,7 +112,7 @@ class AudioFifo:
 
 #: Modes whose audio comes from a frame-at-a-time decoder, and the FIFO they get
 #: (blocks of `blocksize`: 20 x 1024 frames is about 0.4 s at 48 kHz).
-BURSTY_MODES = ("dab", "p25")
+BURSTY_MODES = ("dab", "p25", "dmr")
 BURSTY_BUFFER_BLOCKS = 20
 
 

@@ -105,6 +105,8 @@ class Snapshot:
     sam_sideband: str = "both"
     noise_squelch: bool = False
     quieting_db: float = 10.0
+    #: DMR: the timeslot to hear (1, 2, or 0 for whichever is talking).
+    dmr_slot: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
