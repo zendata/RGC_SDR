@@ -168,9 +168,9 @@ class MemoryPanel(QtWidgets.QWidget):
                 head.addChild(item)
                 if memory.name in selected:
                     item.setSelected(True)
-            head.setExpanded(self._expanded is None or group in self._expanded)
+            head.setExpanded(self._expanded is not None and group in self._expanded)
         if self._expanded is None:
-            self._expanded = set(self.settings.memory_groups)
+            self._expanded = set()
         for col in range(3):
             self.tree.resizeColumnToContents(col)
         has = bool(self.settings.memories)
@@ -186,6 +186,12 @@ class MemoryPanel(QtWidgets.QWidget):
         memory = self.settings.get_memory(name)
         self.in_use = memory.name if memory is not None else ""
         self.refresh()
+
+    def collapse_all(self) -> None:
+        """Every group closed, so any of them is reached without scrolling past the
+        others (VK3RQ, 2026-10-09): done each time the Memory tab is opened."""
+        self.tree.collapseAll()
+        self._expanded = set()
 
     def selected_names(self) -> list[str]:
         return [i.data(0, NAME_ROLE) for i in self.tree.selectedItems() if i.data(0, NAME_ROLE)]

@@ -1535,6 +1535,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panels[key].setVisible(on)
         if on and key == "map":
             self.map_window.refresh()
+        if on and key == "memory":
+            self.memory_panel.collapse_all()
         self._layout_panels()
         open_now = [k for k, *_ in self.TABS if self._tabs[k].isChecked()]
         if open_now != self.settings.open_panels:

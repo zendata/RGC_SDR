@@ -5061,3 +5061,19 @@ def test_p25_and_dmr_leave_the_map_closed(qapp):
         assert not win._map_button.isChecked(), key
     win.decoder_panel.combo.setCurrentIndex(win.decoder_panel.combo.findData("ais"))
     assert win._map_button.isChecked()
+
+
+def test_memory_groups_start_closed_and_close_when_the_tab_opens(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    win.save_memory("forty")
+    tree = win.memory_panel.tree
+    heads = [tree.topLevelItem(i) for i in range(tree.topLevelItemCount())]
+    assert not any(h.isExpanded() for h in heads)
+    heads[3].setExpanded(True)                               # HF, opened by hand
+    win.save_memory("forty two")                             # a refresh keeps it open
+    assert tree.topLevelItem(3).isExpanded()
+    win._tabs["memory"].setChecked(False)
+    win._tabs["memory"].setChecked(True)                     # reopening the tab closes all
+    assert not any(tree.topLevelItem(i).isExpanded() for i in range(tree.topLevelItemCount()))
+    win.close()

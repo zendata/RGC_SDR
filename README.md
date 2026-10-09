@@ -137,7 +137,7 @@ digit by one at a time, whatever the tuning step.
 
 ### Memories
 
-The **Memory** tab lists memories in groups -- LW, AM broadcast, FM broadcast, HF, VHF,
+The **Memory** tab lists memories in groups, all closed each time it opens, -- LW, AM broadcast, FM broadcast, HF, VHF,
 UHF, Airband, Satellites, Air Nav/Data, P25, DMR, DAB+ to start, each memory placed by
 its mode, decoder and frequency. Drag memories onto a group (or any memory in it) to
 move them; double-click (or **Recall**) to tune; **Save current...** stores what the
