@@ -193,8 +193,16 @@ headless-testable and lets modules be swapped independently.
   The Decode panel's Voice calls table lists each P25 grant with its frequency, phase
   (Phase 2 TDMA plans cannot be played) and encryption, and a double-click listens
   there. DMR voice: AMBE+2 through mbelib (VK3RQ chose to use the codec, for personal
-  receive-only use), bursts B-F read from burst A's sync, encrypted calls muted. Tested
-  on synthetic superframes; the codec itself needs an on-air call.
+  receive-only use), bursts B-F read from burst A's sync, encrypted calls muted.
+  *Verified on air 2026-10-09* (the Pi's RTL-SDR over Tailscale, from away): on a strong
+  repeater every one of 1296 voice frames decoded with at most one codec correction, and
+  the 438.825 MHz amateur repeater (CC 1) 98% -- so the burst timing and DSD's interleave
+  are right; the audio had speech's syllable swings (330-1450x energy, 90th/10th
+  percentile), neither flag encrypted. The codec's error count proved the better test:
+  a weak cluster near 472 MHz gave a median of 3 corrections a frame -- its symbols were
+  10% wrong (error rms 0.75-1.1 against levels 2 apart), not the unpacking (swapping or
+  reversing the bits changed nothing). Its voice syncs also came every 1152 symbols a
+  slot, not DMR's 1728; not followed up, as the signal was too weak to read.
 - **P10-P13 (VK3RQ, 2026-10-08: "do 1 2 3 and 4 now", from docs/guide/05).** In order,
   one at a time: P10 receiver refinements (section 7r) ✅ (SAM verified on an airband
   carrier from the Pi's RTL-SDR, 2026-10-08), P11 markers and band plan (section 7s) ✅,
