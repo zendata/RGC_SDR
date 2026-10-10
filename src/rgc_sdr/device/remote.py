@@ -32,9 +32,9 @@ from pathlib import Path
 import numpy as np
 
 from .remote_protocol import (
-    DEFAULT_PORT, FRAME_IQ, FRAME_SPECTRUM, PROTOCOL_VERSION, ProtocolError,
-    caps_from_dict, decode_iq, decode_spectrum, iq_rate_for, json_frame, parse_json,
-    read_frame,
+    DEFAULT_PORT, FRAME_AUDIO, FRAME_IQ, FRAME_SPECTRUM, PROTOCOL_VERSION, ProtocolError,
+    caps_from_dict, decode_audio, decode_iq, decode_spectrum, iq_rate_for, json_frame,
+    parse_json, read_frame,
 )
 from .source import IQSource, SequentialReader, _Ring
 
@@ -136,13 +136,16 @@ class _Connection:
     """One TCP connection: requests out, replies matched by id, IQ handed to `on_iq`."""
 
     def __init__(self, server: ServerAddress, on_iq=None, on_close=None,
-                 timeout: float = CONNECT_TIMEOUT_S, on_spectrum=None) -> None:
+                 timeout: float = CONNECT_TIMEOUT_S, on_spectrum=None, on_audio=None,
+                 on_event=None) -> None:
         self.server = server
         self._sock = socket.create_connection((server.host, server.port), timeout=timeout)
         self._sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._sock.settimeout(None)
         self._on_iq = on_iq
         self._on_spectrum = on_spectrum
+        self._on_audio = on_audio
+        self._on_event = on_event
         self._on_close = on_close
         self._send_lock = threading.Lock()
         self._next_id = 0
@@ -200,7 +203,15 @@ class _Connection:
                     if self._on_spectrum is not None:
                         self._on_spectrum(*decode_spectrum(payload))
                     continue
+                if kind == FRAME_AUDIO:
+                    if self._on_audio is not None:
+                        self._on_audio(*decode_audio(payload))
+                    continue
                 reply = parse_json(payload)
+                if "event" in reply:                       # unasked: e.g. DAB's status
+                    if self._on_event is not None:
+                        self._on_event(reply)
+                    continue
                 state = reply.get("state")
                 if state is not None and self.on_state is not None:
                     self.on_state(reply.get("id"), state)
@@ -320,6 +331,10 @@ class RemoteIQSource(IQSource):
         #: Settings sent but not yet confirmed: path -> (value, request id).
         self._pending: dict[tuple, tuple] = {}
         self._lines: deque[SpectrumLine] = deque(maxlen=SPECTRUM_QUEUE)
+        #: DAB+ decoded on the server: its audio, (rate, frames x channels), and status.
+        self._dab_audio: deque = deque(maxlen=64)
+        self.dab_info: dict | None = None
+        self._dab_wanted = False
         self._latest_line: SpectrumLine | None = None
         #: (fft size, lines a second, zoom) asked of the server.
         self._display = (4096, 25.0, 1)
@@ -331,7 +346,8 @@ class RemoteIQSource(IQSource):
 
     def _open(self) -> None:
         conn = _Connection(self.server, on_iq=self._on_iq, on_close=self._on_closed,
-                           on_spectrum=self._on_spectrum)
+                           on_spectrum=self._on_spectrum, on_audio=self._on_audio,
+                           on_event=self._on_event)
         fft_size, fps, zoom = self._display
         try:
             hello(conn)
@@ -372,6 +388,8 @@ class RemoteIQSource(IQSource):
                     self._conn.request("agc", wait=False, on=bool(agc))
                 if self._running:
                     self._conn.request("start")
+                if self._dab_wanted:
+                    self._conn.request("dab_start")
                 self._reconnects += 1
                 return
             except (OSError, RemoteError, KeyError):
@@ -556,6 +574,42 @@ class RemoteIQSource(IQSource):
         self._state = dict(reply.get("state", self._state))
         self._freq = float(self._state.get("freq", self._freq))
         return list(reply.get("reports", []))
+
+    # -- DAB+ decoded on the server -----------------------------------------------------
+
+    def _on_audio(self, rate: float, pcm: np.ndarray) -> None:
+        self._dab_audio.append((rate, pcm))
+
+    def _on_event(self, message: dict) -> None:
+        if message.get("event") == "dab":
+            self.dab_info = message
+
+    def dab_start(self) -> dict:
+        """Decode DAB+ on the server, from the radio's whole span: audio and status
+        arrive on their own (`take_dab_audio`, `dab_info`)."""
+        self._dab_wanted = True
+        self._dab_audio.clear()
+        reply = self._send("dab_start", wait=True)
+        self.dab_info = reply.get("dab", self.dab_info)
+        return self.dab_info or {}
+
+    def dab_select(self, sid: int) -> None:
+        self._send("dab_select", sid=int(sid))
+
+    def dab_stop(self) -> None:
+        self._dab_wanted = False
+        self.dab_info = None
+        self._dab_audio.clear()
+        self._send("dab_stop")
+
+    def take_dab_audio(self) -> list[tuple[float, np.ndarray]]:
+        out = []
+        while self._dab_audio:
+            try:
+                out.append(self._dab_audio.popleft())
+            except IndexError:
+                break
+        return out
 
     def set_gain(self, name: str, db: float) -> None:
         self._set_locally(("gains", name), float(db))

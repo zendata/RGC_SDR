@@ -379,3 +379,80 @@ def test_a_survey_runs_on_the_server(server, monkeypatch):
         assert _wait(lambda: src.stats["samples"] > 0)        # the IQ carries on after
     finally:
         src.close()
+
+
+# -- DAB+ decoded on the server (2026-10-10) ------------------------------------------
+
+
+def test_audio_frames_round_trip():
+    from src.rgc_sdr.device.remote_protocol import decode_audio, encode_audio
+
+    pcm = np.column_stack([np.linspace(-1, 1, 480), np.linspace(1, -1, 480)])
+    rate, back = decode_audio(encode_audio(pcm, 48000.0)[5:])
+    assert rate == 48000.0 and back.shape == (480, 2)
+    assert np.abs(back - pcm).max() < 1e-4
+    rate, mono = decode_audio(encode_audio(np.zeros(100), 32000.0)[5:])
+    assert mono.shape == (100, 1)
+
+
+class FakeDab:
+    """Stands in for DabReceiver on the server: one DAB+ station, a tone."""
+
+    def __init__(self, rate):
+        from types import SimpleNamespace
+
+        self.ensemble = SimpleNamespace(label="Test ensemble", services={0x1234: "Station"},
+                                        dab_plus={0x1234: True})
+        self.service, self.audio, self.clipped = None, None, 0.0
+        self._ns = SimpleNamespace
+
+    def process(self, iq):
+        return []
+
+    def select(self, sid):
+        self.service = sid
+        self.audio = self._ns(bitrate=48, superframes=1, bad_aus=0, sample_rate=48000.0)
+        return True
+
+    def take_audio(self):
+        if self.audio is None:
+            return np.zeros((0, 2), np.float32)
+        return np.full((4800, 2), 0.25, np.float32)
+
+
+def test_dab_is_decoded_on_the_server_and_played_here(server, monkeypatch):
+    import src.rgc_sdr.dsp.dab as dab_module
+    from src.rgc_sdr.audio import RemoteDabChain
+
+    monkeypatch.setattr(dab_module, "DabReceiver", FakeDab)
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=202.928e6)
+    try:
+        src.start()
+        chain = RemoteDabChain(src, volume=1.0)
+        assert _wait(lambda: (src.dab_info or {}).get("service") == 0x1234)
+        view = chain.dab
+        assert view.ensemble.label == "Test ensemble" and view.ensemble.services == {0x1234: "Station"}
+        assert view.audio.bitrate == 48 and view.service == 0x1234
+        assert _wait(lambda: len(src._dab_audio) > 5)       # past the pacer's prebuffer
+        out = np.concatenate([chain.process(np.zeros(25_000, np.complex64)) for _ in range(20)])
+        assert out.shape[1] == 2 and np.any(np.isclose(out[:, 0], 0.25, atol=1e-4))   # the station, via int16
+        view.select(0x1234)
+        chain.close()
+        assert src.dab_info is None
+    finally:
+        src.close()
+
+
+def test_a_dab_problem_on_the_server_is_shown(server):
+    from src.rgc_sdr.audio import RemoteDabChain
+
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=1e6, center_freq=202.928e6)
+    try:
+        src.start()
+        chain = RemoteDabChain(src)
+        assert _wait(lambda: bool(chain.problem))           # 1 MS/s cannot do DAB
+        assert chain.dab is None
+        chain.process(np.zeros(1000, np.complex64))
+        assert chain.dab_problem
+    finally:
+        src.close()

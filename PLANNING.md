@@ -200,6 +200,15 @@ headless-testable and lets modules be swapped independently.
   2026-10-10, the Pi's RTL-SDR over Tailscale from away:* 460-468 MHz in 51 s a pass,
   22 DMR/P25 channels, voice on two -- against about 3.5 s a channel listening one by
   one.
+- **DAB+ on a network radio (VK3RQ, 2026-10-10: the Pi's RTL-SDR at 2 MS/s refused DAB,
+  the IQ window being 256 kHz).** As for the survey, the decoding goes where the span is:
+  the server runs `DabReceiver` on the radio's own 2.048 MS/s (`dab_start`,
+  `dab_select`, `dab_stop` requests) and sends the selected station's PCM as frame type
+  4 (`rate f32, channels u8, count u32`, then int16 interleaved -- about 100 kbit/s
+  rather than 65 Mbit/s of IQ) and the ensemble, station list and audio quality as a
+  JSON event once a second. The app's `RemoteDabChain` plays it paced by the IQ window,
+  as local DAB is played. The server needs `dsp/dab.py`, `dsp/dabplus.py` and FAAD2
+  (`libfaad2`).
 - **P25 trunk following (VK3RQ, 2026-10-10).** `trunking.py` decides, the window acts:
   a grant the app can play (Phase 1, clear, frequency known, not locked out, inside the
   span) is followed by the listening offset (a network radio: its IQ window), back on a
@@ -1458,7 +1467,7 @@ settings stay apart from the same model plugged into the Mac.
   trip is waited for, so dragging a digit over the internet does not stall the window.
 - **Rates.** For each radio rate up to 10 MS/s (the profile's), link rates are that rate
   over 1, 2, 4 ... between 48 kS/s and 1 MS/s; each link rate is served from the radio
-  rate nearest the profile's default. DAB's 2.048 MS/s is out of reach remotely.
+  rate nearest the profile's default. (DAB is decoded on the server: see below.)
 - **Receive only.** No transmit over the network in P9 (the HackRF's TX stays local).
 - **Security.** Bound to the Pi's Tailscale address only, as SoapyRemote is; Tailscale is
   the authentication. One client at a time; a new connection replaces the old (a dropped
@@ -1496,7 +1505,8 @@ settings stay apart from the same model plugged into the Mac.
     the spectrum line rate.
 - **The Pi** runs Debian's Python 3.13 with apt's NumPy and SoapySDR bindings, so the
   modules the server imports (`device/source.py`, `device/profiles.py`,
-  `device/remote_protocol.py`, `dsp/decimate.py`, `dsp/spectrum.py`, `netserver.py`) must
+  `device/remote_protocol.py`, `dsp/decimate.py`, `dsp/spectrum.py`, `dsp/dab.py`,
+  `dsp/dabplus.py`, `netserver.py`, and the survey's modules) must
   stay 3.13-clean.
 
 ## 7r. Receiver refinements (P10)

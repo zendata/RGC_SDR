@@ -3634,11 +3634,8 @@ class MainWindow(QtWidgets.QMainWindow):
         off the side of the screen."""
         from ..dsp.dab import RATE as DAB_RATE
 
-        if self._wide:
-            self._status.showMessage(
-                "DAB needs 2.048 MS/s of IQ: more than a network radio sends", 8000)
-            return
-        rate = self.source.sample_rate
+        # A network radio decodes DAB on its server, from its own rate (its span).
+        rate = self._rate_setting()
         ratio = rate / DAB_RATE
         if abs(ratio - round(ratio)) < 1e-6 and round(ratio) in (1, 2, 4):
             return

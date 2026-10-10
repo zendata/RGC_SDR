@@ -285,6 +285,11 @@ Only DAB+ (HE-AAC) stations on equal-error-protection (EEP) sub-channels play.
 Original DAB (MP2) stations, and sub-channels with unequal protection (UEP, used by
 MP2), are listed but not decoded.
 
+On a radio on a network server the app has only a 256 kHz IQ window, too narrow for an
+ensemble, so the server runs the DAB receiver on the radio's whole 2.048 MS/s and sends
+the station list and the chosen station's audio (frame type 4, about 100 kbit/s). The
+app plays it exactly as local DAB; the server needs FAAD2 too.
+
 ## Receiver refinements
 
 The DSP row (P10, PLANNING.md section 7r). The noise blanker and noise reduction apply

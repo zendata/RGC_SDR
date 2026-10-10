@@ -25,10 +25,14 @@ PROTOCOL_VERSION = 2
 FRAME_JSON = 1
 FRAME_IQ = 2
 FRAME_SPECTRUM = 3
+#: Decoded audio from the server (DAB+ decoded on the Pi): `rate f32, channels u8,
+#: count u32`, then `count` int16 frames of `channels` samples.
+FRAME_AUDIO = 4
 
 _HEADER = struct.Struct("<BI")
 _IQ_HEADER = struct.Struct("<IfI")
 _SPECTRUM_HEADER = struct.Struct("<ddffI")
+_AUDIO_HEADER = struct.Struct("<fBI")
 #: Largest frame accepted: a corrupt length must not allocate gigabytes.
 MAX_FRAME = 16 << 20
 
@@ -115,6 +119,27 @@ def decode_spectrum(payload: bytes) -> tuple[float, float, np.ndarray]:
     return centre, span, (low + body.astype(np.float32) * np.float32(step))
 
 
+def encode_audio(pcm: np.ndarray, rate: float) -> bytes:
+    """Decoded audio, -1..1, (frames,) or (frames, channels), as int16."""
+    pcm = np.asarray(pcm, dtype=np.float32)
+    if pcm.ndim == 1:
+        pcm = pcm[:, None]
+    ints = np.round(np.clip(pcm, -1.0, 1.0) * 32767.0).astype("<i2")
+    return frame(FRAME_AUDIO, _AUDIO_HEADER.pack(float(rate), pcm.shape[1], pcm.shape[0])
+                 + ints.tobytes())
+
+
+def decode_audio(payload: bytes) -> tuple[float, np.ndarray]:
+    """(rate, float32 audio of shape (frames, channels)) from an audio frame."""
+    if len(payload) < _AUDIO_HEADER.size:
+        raise ProtocolError("short audio frame")
+    rate, channels, count = _AUDIO_HEADER.unpack_from(payload)
+    body = np.frombuffer(payload, dtype="<i2", offset=_AUDIO_HEADER.size)
+    if channels == 0 or body.size != channels * count:
+        raise ProtocolError("audio frame length does not match its count")
+    return rate, (body.astype(np.float32) / 32767.0).reshape(count, channels)
+
+
 def read_exact(sock: socket.socket, n: int) -> bytes:
     """Exactly `n` bytes, or ConnectionError if the other end closes first."""
     chunks = []
@@ -129,7 +154,7 @@ def read_exact(sock: socket.socket, n: int) -> bytes:
 
 def read_frame(sock: socket.socket) -> tuple[int, bytes]:
     kind, length = _HEADER.unpack(read_exact(sock, _HEADER.size))
-    if kind not in (FRAME_JSON, FRAME_IQ, FRAME_SPECTRUM) or length > MAX_FRAME:
+    if kind not in (FRAME_JSON, FRAME_IQ, FRAME_SPECTRUM, FRAME_AUDIO) or length > MAX_FRAME:
         raise ProtocolError(f"bad frame (type {kind}, {length} bytes)")
     return kind, read_exact(sock, length)
 

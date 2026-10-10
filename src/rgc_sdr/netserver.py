@@ -26,8 +26,9 @@ from .device.profiles import profile_for
 import numpy as np
 
 from .device.remote_protocol import (
-    DEFAULT_PORT, FRAME_JSON, PROTOCOL_VERSION, ProtocolError, caps_to_dict, encode_iq,
-    encode_spectrum, iq_rate_for, json_frame, needs_recentre, parse_json, read_frame,
+    DEFAULT_PORT, FRAME_JSON, PROTOCOL_VERSION, ProtocolError, caps_to_dict, encode_audio,
+    encode_iq, encode_spectrum, iq_rate_for, json_frame, needs_recentre, parse_json,
+    read_frame,
 )
 from .device.source import _Nco
 from .dsp.decimate import Decimator, StreamDecimator
@@ -96,6 +97,12 @@ class RadioSession:
             self._apply_rate(radio_rate)
         self._running = threading.Event()
         self._threads: list[threading.Thread] = []
+        #: DAB+ decoded here (VK3RQ, 2026-10-10): the client has only the IQ window, and
+        #: DAB needs the whole 2.048 MS/s. None when not asked for.
+        self._dab = None
+        self._dab_lock = threading.Lock()
+        self._dab_thread: threading.Thread | None = None
+        self._dab_problem = ""
         RadioSession.open_sessions.add(self)
 
     # -- the radio's state, as sent to the client
@@ -139,6 +146,9 @@ class RadioSession:
         with self._lock:
             self._apply_rate(radio_rate)
             self.generation = int(generation)
+        if self._dab is not None or self._dab_problem:
+            with self._dab_lock:
+                self._new_dab()
 
     def tune(self, hz: float, flush: bool, generation: int) -> None:
         """Move the IQ window; the radio only when the window would leave its span."""
@@ -150,6 +160,9 @@ class RadioSession:
                 self.source.set_center_freq(self.tuned, flush=True)
                 flush = True
             self._set_mixer()
+            if flush and self._dab is not None:
+                with self._dab_lock:
+                    self._new_dab()                       # another ensemble
             if flush:
                 # Replaced, not reset: the pump may be using the old one outside the lock.
                 self._decimator = StreamDecimator(self.factor)
@@ -197,6 +210,80 @@ class RadioSession:
         return survey_iq(iq, src.sample_rate, src.center_freq, float(lo_hz), float(hi_hz),
                          src.dc_spike_offset_hz)
 
+    # -- DAB+ decoded here ----------------------------------------------------------
+
+    def _new_dab(self) -> None:
+        """A fresh ensemble receiver for the radio's rate (a retune is another ensemble)."""
+        from .dsp.dab import DabReceiver
+
+        try:
+            self._dab, self._dab_problem = DabReceiver(self.source.sample_rate), ""
+        except ValueError as exc:
+            self._dab, self._dab_problem = None, str(exc)
+
+    def dab_start(self) -> None:
+        with self._dab_lock:
+            self._new_dab()
+        if self._dab_thread is None:
+            self._dab_thread = threading.Thread(target=self._dab_pump, name="dab", daemon=True)
+            self._dab_thread.start()
+
+    def dab_select(self, sid: int) -> None:
+        with self._dab_lock:
+            if self._dab is not None:
+                self._dab.select(int(sid))
+
+    def dab_stop(self) -> None:
+        thread, self._dab_thread = self._dab_thread, None
+        with self._dab_lock:
+            self._dab, self._dab_problem = None, ""
+        if thread is not None:
+            thread.join(timeout=2.0)
+
+    def dab_info(self) -> dict:
+        """What the client shows: the ensemble, its stations, what is playing."""
+        rx = self._dab
+        if rx is None:
+            return {"event": "dab", "problem": self._dab_problem or "not running"}
+        e, audio = rx.ensemble, rx.audio
+        return {"event": "dab", "problem": "", "label": e.label,
+                "services": {str(k): v for k, v in e.services.items()},
+                "dab_plus": {str(k): bool(v) for k, v in e.dab_plus.items()},
+                "service": rx.service, "clipped": float(rx.clipped),
+                "audio": None if audio is None else {
+                    "bitrate": audio.bitrate, "superframes": audio.superframes,
+                    "bad_aus": audio.bad_aus}}
+
+    def _dab_pump(self) -> None:
+        reader = self.source.sequential_reader()
+        block = int(self.source.sample_rate * 0.1)
+        last_info = 0.0
+        while self._dab_thread is threading.current_thread():
+            if reader.available() < block:
+                time.sleep(0.02)
+                continue
+            iq = reader.read(block)
+            with self._dab_lock:
+                rx = self._dab
+                if rx is None:
+                    continue
+                rx.process(iq)
+                if rx.service is None:
+                    # The first DAB+ station the FIC names, so there is something to hear.
+                    for sid, plus in rx.ensemble.dab_plus.items():
+                        if plus and rx.select(sid):
+                            break
+                pcm = rx.take_audio()
+                audio = rx.audio
+            try:
+                if pcm.size and audio is not None:
+                    self._send(encode_audio(pcm, audio.sample_rate))
+                if time.monotonic() - last_info > 1.0:
+                    last_info = time.monotonic()
+                    self._send(json_frame(self.dab_info()))
+            except OSError:
+                return                                    # the client has gone
+
     def apply(self, op: str, message: dict) -> None:
         """The simple setters: gain, AGC, IF bandwidth, a driver switch, ppm."""
         src = self.source
@@ -237,6 +324,7 @@ class RadioSession:
 
     def close(self) -> None:
         RadioSession.open_sessions.discard(self)
+        self.dab_stop()
         self.stop()
         self.source.close()
 
@@ -383,6 +471,14 @@ class ClientHandler:
         elif op == "rate":
             session.set_rate(float(request["radio_rate"]),
                              int(request.get("generation", session.generation)))
+        elif op == "dab_start":
+            session.dab_start()
+            self.reply(request, dab=session.dab_info())
+            return
+        elif op == "dab_select":
+            session.dab_select(int(request["sid"]))
+        elif op == "dab_stop":
+            session.dab_stop()
         elif op == "survey":
             reports = session.survey(request["centre_hz"], request.get("seconds", 3.0),
                                      request.get("lo_hz", 0.0), request.get("hi_hz", 1e12),

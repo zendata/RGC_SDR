@@ -116,6 +116,80 @@ BURSTY_MODES = ("dab", "p25", "dmr")
 BURSTY_BUFFER_BLOCKS = 20
 
 
+class _RemoteDabView:
+    """What the window reads of a DAB receiver, for one decoding on a network radio's
+    server: built from its status messages."""
+
+    def __init__(self, source) -> None:
+        from types import SimpleNamespace
+
+        self._source = source
+        info = source.dab_info or {}
+        self.ensemble = SimpleNamespace(
+            label=info.get("label", ""),
+            services={int(k): v for k, v in (info.get("services") or {}).items()},
+            dab_plus={int(k): v for k, v in (info.get("dab_plus") or {}).items()})
+        self.service = info.get("service")
+        audio = info.get("audio")
+        self.audio = None if audio is None else SimpleNamespace(**audio)
+        self.clipped = float(info.get("clipped", 0.0))
+
+    def select(self, sid: int) -> bool:
+        self._source.dab_select(int(sid))
+        return True
+
+
+class RemoteDabChain(DemodChain):
+    """DAB+ for a radio on a network radio server (VK3RQ, 2026-10-10): the ensemble is
+    decoded on the server, which has the radio's whole 2.048 MS/s where the app has a
+    256 kHz window, and its station's audio arrives here. Played as local DAB is -- at
+    48 kHz stereo (32 kHz stations interpolated 3/2), paced by the IQ that keeps
+    arriving, so the audio runs in real time."""
+
+    def __init__(self, source, volume: float = 0.4) -> None:
+        super().__init__(source.sample_rate, "dab", volume=volume)
+        self._source = source
+        self.dab_problem = ""
+        self._dab = None                          # no local receiver
+        source.dab_start()
+
+    @property
+    def dab(self):
+        info = self._source.dab_info
+        return _RemoteDabView(self._source) if info and not info.get("problem") else None
+
+    @property
+    def problem(self) -> str:
+        info = self._source.dab_info or {}
+        return info.get("problem", "") if info.get("problem") != "not running" else ""
+
+    def process(self, iq: np.ndarray) -> np.ndarray:
+        from .dsp.decimate import StreamDecimator
+        from .dsp.modulate import Interpolator
+
+        self.dab_problem = self.problem
+        for rate, pcm in self._source.take_dab_audio():
+            if pcm.shape[1] == 1:
+                pcm = np.repeat(pcm, 2, axis=1)
+            if rate == 32000.0:
+                if self._dab_up is None:
+                    self._dab_up = [(Interpolator(3), StreamDecimator(2)) for _ in range(2)]
+                pcm = np.column_stack([
+                    dec.process(up.process(pcm[:, c].astype(np.float64)))
+                    for c, (up, dec) in enumerate(self._dab_up)])
+            self._pacer.push(pcm.astype(np.float32))
+        out = self._pacer.pull(iq.size / self.sample_rate * self.audio_rate)
+        return np.clip(out * self.volume, -1.0, 1.0).astype(np.float32)
+
+    def reset(self) -> None:
+        # A retune: the server starts a fresh receiver itself; drop what is queued.
+        self._pacer.reset()
+        self._source.take_dab_audio()
+
+    def close(self) -> None:
+        self._source.dab_stop()
+
+
 def output_devices(sd=None) -> list[str]:
     """Names of the sound devices that can play (for the second output)."""
     try:
@@ -272,6 +346,8 @@ class AudioSink:
         return self._offset
 
     def _build_chain(self) -> DemodChain:
+        if self._mode == "dab" and hasattr(self.source, "dab_start"):
+            return RemoteDabChain(self.source, volume=self._volume)
         return DemodChain(
             self.source.sample_rate,
             self._mode,
@@ -474,6 +550,12 @@ class AudioSink:
         if self._worker is not None:
             self._worker.join(timeout=2.0)
             self._worker = None
+        closer = getattr(self._chain, "close", None)
+        if closer is not None:
+            try:
+                closer()                      # a network radio's DAB stops on its server
+            except Exception:
+                pass
         if self._stream is not None:
             try:
                 self._stream.stop()
