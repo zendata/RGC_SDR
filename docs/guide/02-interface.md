@@ -23,6 +23,12 @@ fit a 1280-point-wide screen.
 
 Classify and Map are hidden while the IC-705 is in use, because the radio sends no IQ.
 
+**A panel in its own window.** Right-click a tab and tick *In a window of its own*: the
+panel moves out from above the spectrum into a window that can be moved and resized
+anywhere, leaving the waterfall its full height. The tab then opens and closes that
+window, and closing the window unticks the tab. Where each window was, and which panels
+live in windows, is remembered. Right-click the tab and untick it to put the panel back.
+
 ### The frequency display
 
 The large yellow readout is the tuned frequency, in MHz to the hertz.

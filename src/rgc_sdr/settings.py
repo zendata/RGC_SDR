@@ -340,6 +340,10 @@ class Settings:
         #: Which panels the tab row had open (settings, decode, classify, memory, map,
         #: scan).
         self.open_panels: list[str] = ["settings"]
+        #: Panels shown in a window of their own rather than above the spectrum, and
+        #: where each window last was (Qt's saved geometry, base64), detached or not.
+        self.detached_panels: list[str] = []
+        self.panel_geometry: dict[str, str] = {}
         #: Spectrum overlays (P11): the band plan, and memory names.
         self.show_band_plan = True
         self.show_memory_names = False
@@ -411,6 +415,12 @@ class Settings:
         panels = raw.get("open_panels")
         if isinstance(panels, list):
             settings.open_panels = [str(p) for p in panels]
+        detached = raw.get("detached_panels")
+        if isinstance(detached, list):
+            settings.detached_panels = [str(p) for p in detached]
+        geometry = raw.get("panel_geometry")
+        if isinstance(geometry, dict):
+            settings.panel_geometry = {str(k): str(v) for k, v in geometry.items()}
         groups = raw.get("memory_groups")
         if isinstance(groups, list):
             settings.memory_groups = [str(g) for g in groups if str(g).strip()]
@@ -466,6 +476,8 @@ class Settings:
             ],
             "memory_groups": list(self.memory_groups),
             "open_panels": list(self.open_panels),
+            "detached_panels": list(self.detached_panels),
+            "panel_geometry": dict(self.panel_geometry),
             "show_band_plan": self.show_band_plan,
             "show_memory_names": self.show_memory_names,
             "replay_seconds": self.replay_seconds,

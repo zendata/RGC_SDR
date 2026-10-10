@@ -2848,6 +2848,60 @@ def test_open_tabs_are_remembered(qapp, tmp_path):
     assert Settings.load(tmp_path / "s.json").open_panels == ["memory"]
 
 
+def test_a_panel_can_live_in_a_window_of_its_own(qapp, tmp_path):
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps()), fft_size=1024, settings=settings)
+    _OPEN_WINDOWS.append(win)
+    win.show()
+    win.set_panel_detached("decode", True)
+    window = win._panel_windows["decode"]
+    assert win.decoder_panel.window() is window
+    assert win._panel_splitter.indexOf(win.decoder_panel) == -1
+    win._tabs["decode"].setChecked(True)                  # the tab opens the window
+    assert window.isVisible() and not win.decoder_panel.isHidden()
+    window.setGeometry(100, 80, 640, 300)   # inside the test screen's 800 px
+    window.close()                                        # its own close button
+    assert not win._tabs["decode"].isChecked()
+    win._tabs["decode"].setChecked(True)
+    assert window.isVisible()
+    win.close()
+    assert not window.isVisible()            # closes with the main window
+    saved = Settings.load(tmp_path / "s.json")
+    assert saved.detached_panels == ["decode"] and "decode" in saved.panel_geometry
+
+    again = MainWindow(StubSource(_caps()), fft_size=1024, settings=saved)
+    _OPEN_WINDOWS.append(again)
+    again.show()
+    window = again._panel_windows["decode"]               # remembered: own window, open
+    assert window.isVisible() and window.size() == QtCore.QSize(640, 300)
+    again.set_panel_detached("decode", False)             # and back above the spectrum
+    assert again._panel_splitter.indexOf(again.decoder_panel) == 1   # after Settings
+    assert not again.decoder_panel.isHidden() and again.settings.detached_panels == []
+    again.close()
+
+
+def test_the_tab_menu_puts_a_panel_in_its_own_window(qapp, monkeypatch):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    win.show()
+    monkeypatch.setattr(QtWidgets.QMenu, "exec",
+                        lambda menu, *a: menu.actions()[0].setChecked(True))
+    win._tab_menu("map")
+    assert win.panel_detached("map") and win._tabs["map"].isChecked()
+    assert win._panel_windows["map"].isVisible()
+    win.close()
+
+
+def test_settings_lines_are_no_taller_than_their_controls(qapp):
+    win = window_for(StubSource(_caps()), fft_size=1024)
+    assert win._audio_row.maximumHeight() == MainWindow.SETTINGS_ROW_HEIGHT
+    assert win._controls_layout.spacing() == 0
+    # The labels the buttons and boxes had cut off.
+    for spin in (win._nb_spin, win._nr_spin):
+        assert spin.minimumWidth() >= spin.fontMetrics().horizontalAdvance("Off") + 40
+    button = win._mute_button
+    assert button.width() >= button.fontMetrics().horizontalAdvance("Muted") + 16
+
+
 def test_memory_keeps_bandwidth_snap_zoom_rate_step_and_squelch(qapp, tmp_path):
     settings = Settings(tmp_path / "s.json")
     src = StubSource(_caps(sample_rates=(768e3, 192e3)))

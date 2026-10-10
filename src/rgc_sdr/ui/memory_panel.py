@@ -110,6 +110,11 @@ class MemoryPanel(QtWidgets.QWidget):
         buttons.addStretch(1)
         self.hint = QtWidgets.QLabel(self.HINT)
         self.hint.setStyleSheet("color: #888;")
+        # It gives way when the panel is narrow (in a window of its own, say) rather than
+        # holding the panel a thousand pixels wide; the whole of it is in its tooltip.
+        self.hint.setToolTip(self.HINT)
+        self.hint.setSizePolicy(QtWidgets.QSizePolicy.Policy.Ignored,
+                                QtWidgets.QSizePolicy.Policy.Preferred)
         buttons.addWidget(self.hint)
         outer.addLayout(buttons)
         self.tree = MemoryTree()

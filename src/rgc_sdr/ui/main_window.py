@@ -40,6 +40,7 @@ from .scanner_panel import ScannerPanel
 from ..decoding import DecodeWorker
 from .decoder_panel import DecoderPanel
 from .map_window import MapWindow
+from .panel_window import PanelWindow
 from ..targets import TargetStore
 from .freq_display import FrequencyDisplay
 from .function_panel import FunctionPanel
@@ -638,8 +639,8 @@ class MainWindow(QtWidgets.QMainWindow):
             widget.setVisible(not sdr)
         self._sync_dsp_row()
         if hasattr(self, "_panels"):
-            for key in ("classify", "map"):
-                self._panels[key].setVisible(self._panel_open(key))
+            for key in self._panels:
+                self._sync_panel(key)
             self._layout_panels()
         # The radio has its own S meter on the display panel; the SDR one is not needed.
         # Nor are the listening offset and recording: both work on the app's own IQ and
@@ -1723,10 +1724,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panels = {"settings": self._settings_panel, "decode": self.decoder_panel,
                         "classify": self._classify_panel, "memory": self.memory_panel,
                         "map": self.map_window, "scan": self._scanner_dock}
+        #: Panels in a window of their own (VK3RQ, 2026-10-10), by key.
+        self._panel_windows: dict[str, PanelWindow] = {}
         for key, *_ in self.TABS:
             self._panel_splitter.addWidget(self._panels[key])
             self._panels[key].hide()
-            self._tabs[key].toggled.connect(lambda on, k=key: self._show_panel(k, on))
+            tab = self._tabs[key]
+            tab.toggled.connect(lambda on, k=key: self._show_panel(k, on))
+            tab.setToolTip(tab.toolTip() + "\nRight-click: in a window of its own, or back")
+            tab.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+            tab.customContextMenuRequested.connect(lambda _pos, k=key: self._tab_menu(k))
+        for key in self.settings.detached_panels:
+            if key in self._tabs:
+                self.set_panel_detached(key, True)
         for key in self.settings.open_panels:
             if key in self._tabs:
                 self._tabs[key].setChecked(True)
@@ -1738,9 +1748,81 @@ class MainWindow(QtWidgets.QMainWindow):
         tab = self._tabs[key]
         return tab.isChecked() and not tab.isHidden()
 
+    def panel_detached(self, key: str) -> bool:
+        return key in self._panel_windows
+
+    def set_panel_detached(self, key: str, detached: bool) -> None:
+        """Panel `key` in a window of its own, or back above the spectrum. The window
+        opens where it last was."""
+        if detached == self.panel_detached(key):
+            return
+        panel = self._panels[key]
+        if detached:
+            title = next(label for k, label, *_ in self.TABS if k == key)
+            window = PanelWindow(f"{APP_TITLE} \u2014 {title}", self)
+            window.closed.connect(lambda k=key: self._tabs[k].setChecked(False))
+            window.moved.connect(lambda k=key: self._remember_panel_window(k))
+            window.hold(panel)
+            saved = self.settings.panel_geometry.get(key, "")
+            if not (saved and window.restoreGeometry(
+                    QtCore.QByteArray.fromBase64(saved.encode("ascii")))):
+                window.resize(max(640, self.width() // 2),
+                              self._panel_want(key) + 40)
+            self._panel_windows[key] = window
+        else:
+            self._remember_panel_window(key)
+            window = self._panel_windows.pop(key)
+            window.release(panel)
+            self._panel_splitter.insertWidget(self._splitter_index(key), panel)
+            window.hide()
+            window.deleteLater()
+        self.settings.detached_panels = [k for k, *_ in self.TABS if k in self._panel_windows]
+        self._sync_panel(key)
+        self._layout_panels()
+        self._schedule_save()
+
+    def _tab_menu(self, key: str) -> None:
+        menu = QtWidgets.QMenu(self)
+        action = menu.addAction("In a window of its own")
+        action.setCheckable(True)
+        action.setChecked(self.panel_detached(key))
+        action.toggled.connect(lambda on, k=key: self._detach_and_open(k, on))
+        menu.exec(QtGui.QCursor.pos())
+
+    def _detach_and_open(self, key: str, detached: bool) -> None:
+        self.set_panel_detached(key, detached)
+        self._tabs[key].setChecked(True)          # it was asked for: show it, wherever
+        self._sync_panel(key)
+
+    def _splitter_index(self, key: str) -> int:
+        """Where a docked panel goes: after the docked panels before it in the tab row."""
+        order = [k for k, *_ in self.TABS]
+        return sum(1 for k in order[:order.index(key)] if k not in self._panel_windows)
+
+    def _remember_panel_window(self, key: str) -> None:
+        window = self._panel_windows.get(key)
+        if window is None or not window.isVisible():
+            return
+        self.settings.panel_geometry[key] = bytes(window.saveGeometry().toBase64()).decode("ascii")
+        self._schedule_save()
+
+    def _sync_panel(self, key: str) -> None:
+        """Show or hide panel `key` (and its window) as its tab says."""
+        on = self._panel_open(key)
+        self._panels[key].setVisible(on)
+        window = self._panel_windows.get(key)
+        if window is None:
+            return
+        if on and not window.isVisible():
+            window.show()
+            window.raise_()
+        elif not on and window.isVisible():
+            self._remember_panel_window(key)
+            window.hide()
+
     def _show_panel(self, key: str, on: bool) -> None:
         on = on and self._panel_open(key)
-        self._panels[key].setVisible(on)
+        self._sync_panel(key)
         if on and key == "map":
             self.map_window.refresh()
         if on and key == "memory":
@@ -1757,17 +1839,22 @@ class MainWindow(QtWidgets.QMainWindow):
     def _layout_panels(self) -> None:
         """Share the height: the open panels what they ask (at most two thirds of the
         window), the spectrum a third of the rest, the waterfall the remainder."""
-        shown = [k for k, *_ in self.TABS if self._panel_open(k)]
+        shown = [k for k, *_ in self.TABS
+                 if self._panel_open(k) and k not in self._panel_windows]
         self._panel_splitter.setVisible(bool(shown))
-        want = {k: (self._settings_panel.sizeHint().height() if k == "settings"
-                    else self.PANEL_HEIGHTS[k]) for k in shown}
+        want = {k: self._panel_want(k) for k in shown}
         total = max(400, (self._main_splitter.height() or self.height()) - 10)
         top = min(sum(want.values()), int(total * 2 / 3)) if shown else 0
         rest = total - top
         self._main_splitter.setSizes([top, rest // 3, rest - rest // 3])
         if shown:
             scale = top / max(1, sum(want.values()))
-            self._panel_splitter.setSizes([int(want.get(k, 0) * scale) for k, *_ in self.TABS])
+            docked = [k for k, *_ in self.TABS if k not in self._panel_windows]
+            self._panel_splitter.setSizes([int(want.get(k, 0) * scale) for k in docked])
+
+    def _panel_want(self, key: str) -> int:
+        return (self._settings_panel.sizeHint().height() if key == "settings"
+                else self.PANEL_HEIGHTS[key])
 
     def _apply_decoder(self, key: str) -> None:
         """Choose decoder `key` ("" for none), as a recalled memory asks, showing the
@@ -2061,9 +2148,10 @@ class MainWindow(QtWidgets.QMainWindow):
         bar = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(bar)
         outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(4)
+        outer.setSpacing(0)
         self._controls_layout = outer
-        outer.addWidget(self._build_tuning_row())
+        self._tuning_row_box = self._build_tuning_row()
+        outer.addWidget(self._tuning_row_box)
         outer.addWidget(self._build_radio_row())
         self._display_row = self._build_display_row()
         outer.addWidget(self._display_row)
@@ -2080,7 +2168,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._overview.seekRequested.connect(self.seek_playback)
         self._overview.hide()
         outer.addWidget(self._overview)
+        # Each line only as tall as its controls (VK3RQ, 2026-10-10: room for the
+        # waterfall). macOS lays a line of buttons out at 38 px for controls drawn 32
+        # high; lower than 32 and it swaps its rounded buttons for square ones.
+        for row in (self._tuning_row_box, self._radio_row, self._display_row,
+                    self._audio_row, self._dsp_row, self._fm_row, self._memory_row):
+            row.setMaximumHeight(self.SETTINGS_ROW_HEIGHT)
         return bar
+
+    #: The most a settings line may take (see _build_controls).
+    SETTINGS_ROW_HEIGHT = 32
 
     def _compact_rows(self, compact: bool) -> None:
         """For a transceiver, fold five control lines into three: the display settings
@@ -2093,11 +2190,9 @@ class MainWindow(QtWidgets.QMainWindow):
             # Before each row's closing stretch.
             radio.insertWidget(radio.count() - 1, self._display_row)
             audio.insertWidget(audio.count() - 1, self._memory_row)
-            outer.setSpacing(2)
         else:
             outer.insertWidget(outer.indexOf(self._radio_row) + 1, self._display_row)
             outer.addWidget(self._memory_row)
-            outer.setSpacing(4)
 
     #: Manual notches closer than this to a Cmd-click are removed by it.
     NOTCH_CLICK_HZ = 60.0
@@ -2120,6 +2215,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 w.setSuffix(suffix)
             if special:
                 w.setSpecialValueText(special)
+                # Qt sizes the box for its numbers; "Off" was cut off on macOS.
+                w.setMinimumWidth(w.fontMetrics().horizontalAdvance(special) + 40)
             w.setToolTip(tip)
             w.valueChanged.connect(self._on_dsp_changed)
             return w
@@ -2669,7 +2766,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._mute_button = QtWidgets.QPushButton("Mute")
         self._mute_button.setMinimumWidth(0)
         self._mute_button.setCheckable(True)
-        self._mute_button.setFixedWidth(50)
+        # Wide enough for "Muted" as the macOS button draws it (50 px clipped "Mute").
+        self._mute_button.setText("Muted")
+        self._mute_button.setFixedWidth(self._mute_button.sizeHint().width())
+        self._mute_button.setText("Mute")
         self._mute_button.setToolTip("Silence the output without losing the volume setting")
         self._mute_button.toggled.connect(self._on_mute_toggled)
         row.addWidget(self._mute_button)
@@ -4795,6 +4895,11 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.instance().removeEventFilter(self._space_filter)
         self._timer.stop()
         self._zerobeat_timer.stop()
+        # Panel windows: where they are, then hidden -- one left showing would keep the
+        # application running with the main window gone.
+        for key, window in self._panel_windows.items():
+            self._remember_panel_window(key)
+            window.hide()
         self._save_timer.stop()
         self._save_state()   # immediately, not debounced: there is no later
         if self.scanner is not None:
