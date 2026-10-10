@@ -5216,3 +5216,27 @@ def test_the_survey_steps_across_the_range_and_fills_its_table(qapp, tmp_path, m
     assert any(m.name.startswith("DMR ") and m.snapshot.decoder == "dmr"
                for m in settings.memories)
     win.close()
+
+
+def test_names_that_would_overlap_go_a_line_down():
+    from src.rgc_sdr.ui.spectrum_view import stack_rows
+
+    # Three overlapping in turn, then one clear of them all: rows 0, 1, 0 ... and back.
+    assert stack_rows([(0, 10), (5, 15), (11, 20), (30, 40)], 3) == [0, 1, 0, 0]
+    assert stack_rows([(0, 10), (1, 10), (2, 10), (3, 10)], 3) == [0, 1, 2, None]
+
+
+def test_memory_names_close_together_are_on_different_lines(qapp):
+    win = window_for(StubSource(_caps(), center=7.1e6), fft_size=1024)
+    win.resize(1200, 800)
+    win.show()
+    qapp.processEvents()
+    win.spectrum.set_memories([(7.100e6, "DMR 463.9125 CC1 voice"),
+                               (7.101e6, "DMR 466.250 CC4 voice"),
+                               (7.250e6, "far away")])
+    labels = [i for i in win.spectrum._memory_items if hasattr(i, "textItem")]
+    assert len(labels) == 3
+    ys = {i.textItem.toPlainText(): i.pos().y() for i in labels}
+    assert ys["DMR 463.9125 CC1 voice"] != ys["DMR 466.250 CC4 voice"]
+    assert ys["far away"] == ys["DMR 463.9125 CC1 voice"]          # back on the top line
+    win.close()

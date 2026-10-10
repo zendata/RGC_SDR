@@ -18,6 +18,20 @@ from .gestures import (
 PAN_TO_UNITS = 40.0
 
 
+def stack_rows(spans: list[tuple[float, float]], rows: int) -> list[int | None]:
+    """A row for each (start, end) span, in order: the first row where it overlaps
+    nothing already placed, or None when all `rows` are taken there. Names that would
+    write over each other go a line down instead (VK3RQ, 2026-10-10)."""
+    ends: list[float] = [float("-inf")] * rows
+    placed: list[int | None] = []
+    for start, end in spans:
+        row = next((r for r in range(rows) if start > ends[r]), None)
+        if row is not None:
+            ends[row] = end
+        placed.append(row)
+    return placed
+
+
 class SpectrumView(pg.PlotWidget):
     """Instantaneous spectrum, lightly smoothed, with a decaying peak-hold trace.
 
@@ -208,7 +222,17 @@ class SpectrumView(pg.PlotWidget):
         self._band_items, self._memory_items = [], []
         (lo, hi), (bottom, top) = self.getViewBox().viewRange()
         hz_per_px = self._hz_per_pixel()
+        # A line of text in the view's units, and a name's width in Hz as drawn (the
+        # TextItem's own margin included): a guess at 7 px a letter let names overlap.
+        probe = pg.TextItem()                      # held: its text item dies with it
+        metrics = QtGui.QFontMetrics(probe.textItem.font())
+        line = (metrics.height() + 2) * (top - bottom) / max(1.0, self.getViewBox().height())
+
+        def width_hz(text: str) -> float:
+            return (metrics.horizontalAdvance(text) + 8) * hz_per_px
+
         if self._show_bands:
+            named = []
             for band in bands_in(lo, hi):
                 colour = QtGui.QColor(KIND_COLOURS.get(band.kind, "#9e9e9e"))
                 fill = QtGui.QColor(colour)
@@ -221,25 +245,30 @@ class SpectrumView(pg.PlotWidget):
                 self.addItem(region, ignoreBounds=True)
                 self._band_items.append(region)
                 visible = min(hi, band.high_hz) - max(lo, band.low_hz)
-                if visible / hz_per_px > 8 * len(band.name):         # room for the name
-                    label = pg.TextItem(band.name, color=colour, anchor=(0, 1))
-                    label.setPos(max(lo, band.low_hz), bottom + 0.035 * (top - bottom))
-                    self.addItem(label, ignoreBounds=True)
-                    self._band_items.append(label)
-        shown = [(f, n) for f, n in self._memories if lo <= f <= hi]
+                if visible > width_hz(band.name):                    # room for the name
+                    named.append((max(lo, band.low_hz), band.name, colour))
+            named.sort(key=lambda n: n[0])
+            rows = stack_rows([(x, x + width_hz(name)) for x, name, _ in named], 2)
+            for (x, name, colour), row in zip(named, rows):
+                if row is None:
+                    continue
+                label = pg.TextItem(name, color=colour, anchor=(0, 1))
+                label.setPos(x, bottom + 0.035 * (top - bottom) + row * line)
+                self.addItem(label, ignoreBounds=True)
+                self._band_items.append(label)
+        shown = sorted((f, n) for f, n in self._memories if lo <= f <= hi)
         if len(shown) <= 40:                 # a crowd of names is no help
-            last_x = None
-            for hz, name in sorted(shown):
+            rows = stack_rows([(hz, hz + width_hz(name)) for hz, name in shown], 3)
+            for (hz, name), row in zip(shown, rows):
                 tick = pg.InfiniteLine(pos=hz, angle=90, movable=False, span=(0.93, 1.0),
                                        pen=pg.mkPen("#ce93d8", width=2))
                 self.addItem(tick, ignoreBounds=True)
                 self._memory_items.append(tick)
-                if last_x is None or (hz - last_x) / hz_per_px > 7 * len(name):
+                if row is not None:           # three lines full there: the tick only
                     label = pg.TextItem(name, color="#ce93d8", anchor=(0, 0))
-                    label.setPos(hz, top)
+                    label.setPos(hz, top - row * line)
                     self.addItem(label, ignoreBounds=True)
                     self._memory_items.append(label)
-                    last_x = hz
 
     def _on_passband_dragged(self) -> None:
         if self._setting_passband or not self._passband_editable:
