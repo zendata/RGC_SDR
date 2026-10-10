@@ -350,6 +350,9 @@ class Settings:
         self.cat_enabled = False
         self.cat_port = 4532
         self.second_output = ""
+        #: P25 trunk following, and the talkgroups locked out of it ("NAC:TG 501").
+        self.p25_follow = False
+        self.p25_lockouts: list[str] = []
         #: The radio last used, by profile key.
         self.device: str | None = None
         #: The radio last chosen from the list: first choice wherever it reaches.
@@ -397,6 +400,11 @@ class Settings:
             settings.cat_port = port
         if isinstance(raw.get("second_output"), str):
             settings.second_output = raw["second_output"]
+        if isinstance(raw.get("p25_follow"), bool):
+            settings.p25_follow = raw["p25_follow"]
+        lockouts = raw.get("p25_lockouts")
+        if isinstance(lockouts, list):
+            settings.p25_lockouts = [str(k) for k in lockouts]
         replay = raw.get("replay_seconds")
         if isinstance(replay, (int, float)) and not isinstance(replay, bool) and replay >= 0:
             settings.replay_seconds = float(replay)
@@ -464,6 +472,8 @@ class Settings:
             "cat_enabled": self.cat_enabled,
             "cat_port": self.cat_port,
             "second_output": self.second_output,
+            "p25_follow": self.p25_follow,
+            "p25_lockouts": list(self.p25_lockouts),
             "found": [c.to_dict() for c in self.found],
             "lockout": sorted(self.lockout),
             "scan": self.scan.to_dict(),

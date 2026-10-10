@@ -22,6 +22,7 @@ Pure NumPy; no Qt, no device access.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -311,7 +312,25 @@ class P25Decoder:
         self.bad_frames = 0
         self.bad_blocks = 0
         self._repeats = RepeatFilter()
+        #: For trunk following (VK3RQ, 2026-10-10): every voice grant decoded, as
+        #: (monotonic time, NAC, call), unfiltered -- the messages repeat-filter
+        #: identical grants for 30 s, and a follower needs each one. Taken with
+        #: `take_grants`; bounded, so nobody taking them costs nothing.
+        self.grants: deque = deque(maxlen=64)
+        #: When voice (LDU1, LDU2, header) and a call's end (terminator) were last
+        #: heard, monotonic seconds; 0 for never.
+        self.last_voice = 0.0
+        self.last_terminator = 0.0
         self.reset()
+
+    def take_grants(self) -> list[tuple[float, int, dict]]:
+        out = []
+        while self.grants:
+            try:
+                out.append(self.grants.popleft())
+            except IndexError:
+                break
+        return out
 
     def reset(self) -> None:
         self._finder.reset()
@@ -328,6 +347,10 @@ class P25Decoder:
                 continue
             self.frames += 1
             nac, duid = value >> 4, value & 0xF
+            if duid in (0x0, 0x5, 0xA):
+                self.last_voice = time.monotonic()
+            elif duid in (0x3, 0xF):
+                self.last_terminator = time.monotonic()
             payload = np.array([dibits[i] for i in range(57, dibits.size) if i % 36 != 35])
             if duid == 0x7:
                 messages = self._tsdu(nac, payload)
@@ -360,6 +383,8 @@ class P25Decoder:
             message = self._tsbk(nac, bits)
             if message is not None:
                 out.append(message)
+                for call in message.fields.get("calls", ()):
+                    self.grants.append((time.monotonic(), nac, call))
             if bits[0]:                                 # last block
                 break
         return out

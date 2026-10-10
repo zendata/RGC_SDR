@@ -222,6 +222,14 @@ encrypted, and **Hearable**: yes for a clear Phase 1 call, otherwise why not (Ph
 and encrypted calls cannot be played). Double-click a call to listen on its frequency
 in P25 mode; tune back to the control channel to see the grants again.
 
+**Follow calls** (P25 only) does that by itself: tuned to a control channel, each call
+the app can play is followed to its voice channel and back when it ends (a terminator,
+or 1.5 s without voice). A voice channel inside the span is reached by the listening
+offset, so the radio is not retuned; on a network radio the IQ window moves. Right-click
+a talkgroup in Voice calls to lock it out of following, or let it back in. One call at
+a time: grants made while a call is followed are missed. Tuning elsewhere by hand stops
+following. Both the switch and the lockouts are remembered.
+
 Decoders run on their own thread with their own demodulator, so they keep decoding
 whatever the audio mode, and through mute and squelch. AIS listens on both of its
 channels wherever the radio is tuned, provided they are in view. How each protocol is

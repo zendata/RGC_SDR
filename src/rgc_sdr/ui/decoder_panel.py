@@ -24,6 +24,10 @@ class DecoderPanel(QtWidgets.QWidget):
     mapRequested = QtCore.pyqtSignal()
     #: A voice call double-clicked: (frequency Hz) to listen there in P25 mode.
     callTuneRequested = QtCore.pyqtSignal(float)
+    #: Trunk following switched on or off.
+    followToggled = QtCore.pyqtSignal(bool)
+    #: A call's talkgroup locked out of following, or let back in: its key.
+    lockoutToggled = QtCore.pyqtSignal(str)
 
     #: Voice calls kept in the table, most recent first.
     CALLS_KEPT = 60
@@ -54,6 +58,13 @@ class DecoderPanel(QtWidgets.QWidget):
         self.map_button.setToolTip("Show what has been located on a map")
         self.map_button.clicked.connect(self.mapRequested)
         top.addWidget(self.map_button)
+        self.follow_check = QtWidgets.QCheckBox("Follow calls")
+        self.follow_check.setToolTip(
+            "P25 trunk following: when the control channel grants a call the app can\n"
+            "play (Phase 1, not encrypted), listen on its channel until it ends, then\n"
+            "come back. Right-click a talkgroup in Voice calls to lock it out.")
+        self.follow_check.toggled.connect(self.followToggled)
+        top.addWidget(self.follow_check)
         self.clear_button = QtWidgets.QPushButton("Clear")
         self.clear_button.clicked.connect(self.clear)
         top.addWidget(self.clear_button)
@@ -85,7 +96,11 @@ class DecoderPanel(QtWidgets.QWidget):
             "encrypted -- double-click one to listen on its frequency. Phase 2 (TDMA)\n"
             "and encrypted calls cannot be played.")
         self.calls.itemDoubleClicked.connect(self._on_call_double_clicked)
+        self.calls.setContextMenuPolicy(QtCore.Qt.ContextMenuPolicy.CustomContextMenu)
+        self.calls.customContextMenuRequested.connect(self._on_calls_menu)
         self._call_items: dict = {}
+        #: Keys of locked-out talkgroups ("NAC:TG 501"), shown greyed.
+        self.lockouts: set[str] = set()
         split = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
         split.addWidget(self.log)
         split.addWidget(self.calls)
@@ -109,6 +124,7 @@ class DecoderPanel(QtWidgets.QWidget):
         private = bool(spec and spec.private)
         self.show_text.setVisible(private)
         self.calls.setVisible(self.decoder == "p25")
+        self.follow_check.setVisible(self.decoder == "p25")
 
     def add(self, messages: list) -> None:
         if not messages:
@@ -148,6 +164,7 @@ class DecoderPanel(QtWidgets.QWidget):
         who = (f"TG {call['group']}" if call.get("group") is not None
                else f"to {call.get('target', '?')}")
         key = (nac, who)
+        lock_key = f"{nac:03X}:{who}"
         item = self._call_items.get(key)
         if item is None:
             item = QtWidgets.QTreeWidgetItem()
@@ -170,7 +187,10 @@ class DecoderPanel(QtWidgets.QWidget):
         for column, text in enumerate(values):
             item.setText(column, text)
         item.setData(0, QtCore.Qt.ItemDataRole.UserRole, freq)
-        playable = values[-1].startswith("yes")
+        item.setData(1, QtCore.Qt.ItemDataRole.UserRole, lock_key)
+        if lock_key in self.lockouts:
+            item.setText(6, "locked out")
+        playable = item.text(6).startswith("yes")
         colour = QtGui.QColor("#a5d6a7" if playable else "#9e9e9e")
         for column in range(len(values)):
             item.setForeground(column, colour)
@@ -178,6 +198,30 @@ class DecoderPanel(QtWidgets.QWidget):
         while self.calls.topLevelItemCount() > self.CALLS_KEPT:
             old = self.calls.takeTopLevelItem(self.calls.topLevelItemCount() - 1)
             self._call_items = {k: v for k, v in self._call_items.items() if v is not old}
+
+    def _on_calls_menu(self, pos) -> None:
+        item = self.calls.itemAt(pos)
+        if item is None:
+            return
+        key = item.data(1, QtCore.Qt.ItemDataRole.UserRole)
+        menu = QtWidgets.QMenu(self.calls)
+        locked = key in self.lockouts
+        action = menu.addAction(f"{'Let back in' if locked else 'Lock out'} {item.text(1)}")
+        if menu.exec(self.calls.viewport().mapToGlobal(pos)) is action:
+            self.toggle_lockout(key)
+
+    def toggle_lockout(self, key: str) -> None:
+        if key in self.lockouts:
+            self.lockouts.discard(key)
+        else:
+            self.lockouts.add(key)
+        for item in self._call_items.values():
+            if item.data(1, QtCore.Qt.ItemDataRole.UserRole) == key:
+                item.setText(6, "locked out" if key in self.lockouts else "?")
+                grey = QtGui.QColor("#9e9e9e")
+                for column in range(len(self.CALL_COLUMNS)):
+                    item.setForeground(column, grey)
+        self.lockoutToggled.emit(key)
 
     def _on_call_double_clicked(self, item, _column) -> None:
         freq = item.data(0, QtCore.Qt.ItemDataRole.UserRole)

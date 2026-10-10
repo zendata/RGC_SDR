@@ -1388,8 +1388,97 @@ class MainWindow(QtWidgets.QMainWindow):
         self.decoder_panel.decoderChanged.connect(self._on_decoder_changed)
         self.decoder_panel.mapRequested.connect(self.show_map)
         self.decoder_panel.callTuneRequested.connect(self._listen_to_call)
+        from ..trunking import TrunkFollower
+
+        self._follower = TrunkFollower(self.settings.p25_lockouts)
+        self._follow_home: tuple[float, float] | None = None     # (centre Hz, offset kHz)
+        self._follow_expect: tuple[float, float] | None = None
+        self.decoder_panel.lockouts = set(self.settings.p25_lockouts)
+        self.decoder_panel.followToggled.connect(self._on_follow_toggled)
+        self.decoder_panel.lockoutToggled.connect(self._on_lockout_toggled)
+        self.decoder_panel.follow_check.setChecked(self.settings.p25_follow)
         # The Decode tab's panel, full width: ACARS and ADS-B lines are long.
         self._decoder_dock = self.decoder_panel
+
+    # -- P25 trunk following -------------------------------------------------------
+
+    def _on_follow_toggled(self, on: bool) -> None:
+        self._follower.enabled = bool(on)
+        self.settings.p25_follow = bool(on)
+        if not on and self._follower.following is not None:
+            self._follower.abandon()
+            self._follow_return()
+        self._schedule_save()
+
+    def _on_lockout_toggled(self, key: str) -> None:
+        self._follower.toggle_lockout(key)
+        self.settings.p25_lockouts = sorted(self._follower.lockouts)
+        self._schedule_save()
+
+    def _follow_reach(self, freq_hz: float) -> str | None:
+        """How a voice channel can be heard now: "offset" (inside the span, by the
+        listening offset), "retune" (a network radio's IQ window, inside its span), or
+        None (out of reach)."""
+        centre = self.source.center_freq
+        margin = 12.5e3
+        if abs(freq_hz - centre) <= self.effective_rate * 0.45 - margin:
+            return "offset"
+        if self._wide and abs(freq_hz - self.source.display_center_freq) <= \
+                self.display_span * 0.45 - margin:
+            return "retune"
+        return None
+
+    def _service_trunking(self) -> None:
+        """Follow P25 voice grants (trunking.py): called with each frame's decodes."""
+        worker = self.decode_worker
+        decoder = worker.decoder if worker is not None and worker.name == "p25" else None
+        follower = self._follower
+        if decoder is None:
+            if follower.following is not None:
+                follower.abandon()
+                self._follow_return()
+            return
+        if follower.following is not None and self._follow_expect is not None:
+            now_at = (self.source.center_freq, self._offset_spin.value())
+            if abs(now_at[0] - self._follow_expect[0]) > 1.0 or \
+                    abs(now_at[1] - self._follow_expect[1]) > 1e-3:
+                follower.abandon()                     # tuned elsewhere: stay there
+                self._follow_home = self._follow_expect = None
+                return
+        action = follower.step(time.monotonic(), decoder.take_grants(), decoder.last_voice,
+                               decoder.last_terminator,
+                               lambda hz: self._follow_reach(hz) is not None)
+        if action and action[0] == "follow":
+            self._follow_go(action[1].freq_hz)
+            self.decoder_panel.set_status(
+                f"following {action[1].key.split(':', 1)[1]} on {action[1].freq_hz / 1e6:.5f} MHz")
+        elif action and action[0] == "return":
+            self._follow_return()
+            self._update_decoder_status()
+        elif follower.note and follower.following is None and follower.enabled:
+            self.decoder_panel.set_status(f"control channel  ({follower.note})")
+
+    def _follow_go(self, freq_hz: float) -> None:
+        how = self._follow_reach(freq_hz)
+        self._follow_home = (self.source.center_freq, self._offset_spin.value())
+        if how == "offset":
+            self._offset_spin.setValue((freq_hz - self.source.center_freq) / 1e3)
+        else:
+            self._offset_spin.setValue(0.0)
+            self._retune(freq_hz, allow_snap=False)
+        index = self._mode_combo.findData("p25")
+        if index >= 0 and self._mode_combo.currentIndex() != index:
+            self._mode_combo.setCurrentIndex(index)
+        self._follow_expect = (self.source.center_freq, self._offset_spin.value())
+
+    def _follow_return(self) -> None:
+        home, self._follow_home, self._follow_expect = self._follow_home, None, None
+        if home is None:
+            return
+        centre, offset_khz = home
+        if abs(self.source.center_freq - centre) > 1.0:
+            self._retune(centre, allow_snap=False)
+        self._offset_spin.setValue(offset_khz)
 
     def _listen_to_call(self, freq_hz: float) -> None:
         """A P25 voice call double-clicked: listen on its channel in P25 mode, with the
@@ -1845,6 +1934,7 @@ class MainWindow(QtWidgets.QMainWindow):
             messages = worker.take()
             self.decoder_panel.add(messages)
             self.targets.update(messages)
+            self._service_trunking()
         if self._map_button.isChecked():                 # the Map tab is open
             self.map_window.refresh()
 

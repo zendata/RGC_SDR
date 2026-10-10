@@ -5077,3 +5077,39 @@ def test_memory_groups_start_closed_and_close_when_the_tab_opens(qapp, tmp_path)
     win._tabs["memory"].setChecked(True)                     # reopening the tab closes all
     assert not any(tree.topLevelItem(i).isExpanded() for i in range(tree.topLevelItemCount()))
     win.close()
+
+
+def test_trunk_following_listens_by_the_offset_and_comes_back(qapp, tmp_path, monkeypatch):
+    import time as _time
+    from types import SimpleNamespace
+
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps(sample_rates=(768e3,), freq_ranges=(FreqRange(24e6, 1.7e9),)),
+                                rate=768e3, center=420.0e6), fft_size=1024, settings=settings)
+    grants = []
+    decoder = SimpleNamespace(take_grants=lambda: [grants.pop()] if grants else [],
+                              last_voice=0.0, last_terminator=0.0)
+    win.decode_worker = SimpleNamespace(name="p25", decoder=decoder, take=lambda: [],
+                                        stop=lambda: None, set_offset=lambda hz: None,
+                                        reset=lambda: None, follow_tuning=lambda: None,
+                                        spec=SimpleNamespace(bandwidth_hz=12.5e3),
+                                        fixed_channels=False, channels_in_view=lambda: [],
+                                        problem="")
+    monkeypatch.setattr(win, "_update_decoder_status", lambda: None)
+    win.decoder_panel.follow_check.setChecked(True)
+    assert settings.p25_follow
+    call = {"group": 501, "freq_hz": 420.1e6, "phase": "1", "encrypted": False}
+    grants.append((_time.monotonic(), 0x123, call))
+    win._service_trunking()
+    assert win._offset_spin.value() == pytest.approx(100.0)           # 100 kHz up
+    assert win.source.center_freq == 420.0e6 and win.mode == "p25"
+    decoder.last_terminator = _time.monotonic() + 1                   # the call ends
+    win._service_trunking()
+    assert win._offset_spin.value() == pytest.approx(0.0)             # back home
+    win.decoder_panel.toggle_lockout("123:TG 501")
+    assert settings.p25_lockouts == ["123:TG 501"]
+    grants.append((_time.monotonic(), 0x123, call))
+    win._service_trunking()
+    assert win._offset_spin.value() == pytest.approx(0.0)             # locked out
+    win.decode_worker = None
+    win.close()

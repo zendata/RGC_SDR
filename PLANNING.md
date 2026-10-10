@@ -189,6 +189,13 @@ headless-testable and lets modules be swapped independently.
   following the listening frequency ✅ (verified 2026-10-07 over Tailscale: 25 lines a
   second of the RTL-SDR's 2.048 MHz span, the 256 kS/s window with nothing lost, tuning
   within the span leaving the radio and the waterfall where they were).
+- **P25 trunk following (VK3RQ, 2026-10-10).** `trunking.py` decides, the window acts:
+  a grant the app can play (Phase 1, clear, frequency known, not locked out, inside the
+  span) is followed by the listening offset (a network radio: its IQ window), back on a
+  terminator or 1.5 s without voice (2.5 s grace for the first). The decoder keeps every
+  grant for it, unfiltered, and when voice and terminators were last heard. One call at
+  a time until P14 gives a second receiver. Not yet followed on air: clear Phase 1
+  calls are rare here.
 - **DMR voice and P25 voice calls (VK3RQ, 2026-10-08: "go with these first two").**
   The Decode panel's Voice calls table lists each P25 grant with its frequency, phase
   (Phase 2 TDMA plans cannot be played) and encryption, and a double-click listens
