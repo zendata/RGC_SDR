@@ -96,6 +96,40 @@ def test_viterbi_corrects_a_noisy_codeword():
     assert (D.viterbi(D.depuncture(soft, D.FIC_PATTERN))[0] == bits).all()
 
 
+def _reference_viterbi(soft: np.ndarray) -> np.ndarray:
+    """The textbook decoder, one state at a time: what the vectorised one must equal."""
+    steps = soft.size // 4
+    metric = np.full(64, -1e9)
+    metric[0] = 0.0
+    back = np.zeros((steps, 64), dtype=np.int64)
+    for t in range(steps):
+        new = np.full(64, -np.inf)
+        for s in range(64):
+            for b in range(2):
+                n = D._NEXT[s, b]
+                m = metric[s] + np.dot(soft[4 * t:4 * t + 4], 1 - 2.0 * D._OUT[s, b])
+                if m > new[n]:                      # a tie keeps the lower state
+                    new[n], back[t, n] = m, s
+        metric = new
+    state, bits = 0, np.zeros(steps, dtype=np.uint8)
+    for t in range(steps - 1, -1, -1):
+        bits[t] = state >> 5
+        state = back[t, state]
+    return bits[: steps - 6]
+
+
+def test_viterbi_decodes_as_the_textbook_algorithm_does_even_wrongly():
+    # At this noise some bits come out wrong: the fast decoder must make the same choices.
+    rng = np.random.default_rng(5)
+    bits = rng.integers(0, 2, (3, 120)).astype(np.uint8)
+    soft = np.stack([1 - 2.0 * D.convolve(b) for b in bits]) + 1.6 * rng.standard_normal((3, 504))
+    soft[:, ::5] = 0.0                                               # punctured
+    fast = D.viterbi(soft)
+    assert (fast != bits).any()
+    for row, out in zip(soft, fast):
+        assert (out == _reference_viterbi(row)).all()
+
+
 def test_the_receiver_reads_the_ensemble_and_its_services():
     rx = D.DabReceiver(D.RATE)
     found = []
