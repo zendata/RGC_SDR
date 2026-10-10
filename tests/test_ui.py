@@ -139,6 +139,12 @@ def _destroy_windows(qapp):
     Leaked widgets also made failures depend on test order.
     """
     yield
+    # And the windows tests built with MainWindow(...) directly: left to the garbage
+    # collector, they were freed at a moment of its choosing, and once the Scan tab
+    # grew a survey panel that moment crashed the run (2026-10-10).
+    for widget in QtWidgets.QApplication.topLevelWidgets():
+        if isinstance(widget, MainWindow) and widget not in _OPEN_WINDOWS:
+            _OPEN_WINDOWS.append(widget)
     while _OPEN_WINDOWS:
         win = _OPEN_WINDOWS.pop()
         try:
@@ -5112,4 +5118,47 @@ def test_trunk_following_listens_by_the_offset_and_comes_back(qapp, tmp_path, mo
     win._service_trunking()
     assert win._offset_spin.value() == pytest.approx(0.0)             # locked out
     win.decode_worker = None
+    win.close()
+
+
+def test_the_survey_steps_across_the_range_and_fills_its_table(qapp, tmp_path, monkeypatch):
+    import src.rgc_sdr.survey as survey_module
+
+    started = []
+
+    class FakeJob:
+        def __init__(self, source, centre, lo, hi, seconds):
+            started.append(centre)
+            self.done, self.error = True, ""
+            self.reports = [{"freq_hz": round(centre / 6250) * 6250 + 12500.0,
+                             "protocol": "DMR", "colour_codes": [1], "nacs": [],
+                             "voice": 3 if len(started) == 1 else 0, "voice_slots": [1],
+                             "encrypted": False, "snr_db": 30.0}]
+
+        def cancel(self):
+            pass
+
+    monkeypatch.setattr(survey_module, "SurveyJob", FakeJob)
+    settings = Settings(tmp_path / "s.json")
+    win = MainWindow(StubSource(_caps(sample_rates=(768e3,), freq_ranges=(FreqRange(24e6, 1.7e9),)),
+                                rate=768e3, center=463e6), fft_size=1024, settings=settings)
+    win.scanner_panel.apply_config(462e6, 464e6, 12.5e3, 10.0, True, 2)
+    assert win.start_survey()
+    for _ in range(20):
+        win._survey["wait_until"] = 1.0                    # no settling in the test
+        win._survey_step()
+    assert len(set(started)) == len(win._survey["windows"]) >= 3
+    panel = win.survey_panel
+    assert panel.table.topLevelItemCount() == len(set(started))
+    assert "with voice" in panel.status.text()
+    panel.voice_only.setChecked(True)
+    shown = [panel.table.topLevelItem(i) for i in range(panel.table.topLevelItemCount())
+             if not panel.table.topLevelItem(i).isHidden()]
+    assert len(shown) == 1 and shown[0].text(1) == "DMR" and shown[0].text(2) == "CC 1"
+    win.stop_survey()
+    assert not panel.start_button.isChecked()
+    panel.table.setCurrentItem(shown[0])
+    panel._save()
+    assert any(m.name.startswith("DMR ") and m.snapshot.decoder == "dmr"
+               for m in settings.memories)
     win.close()
