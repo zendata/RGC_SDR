@@ -250,6 +250,10 @@ class RadioSession:
                 "services": {str(k): v for k, v in e.services.items()},
                 "dab_plus": {str(k): bool(v) for k, v in e.dab_plus.items()},
                 "service": rx.service, "clipped": float(rx.clipped),
+                # How the receiver is doing: frames synchronised, FIC blocks passing CRC.
+                "frames": rx.frames, "good_fibs": rx.good_fibs, "bad_fibs": rx.bad_fibs,
+                "offset_hz": round(float(rx.offset_hz), 1),
+                "rate": float(self.source.sample_rate),
                 "audio": None if audio is None else {
                     "bitrate": audio.bitrate, "superframes": audio.superframes,
                     "bad_aus": audio.bad_aus}}

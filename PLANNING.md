@@ -208,7 +208,14 @@ headless-testable and lets modules be swapped independently.
   rather than 65 Mbit/s of IQ) and the ensemble, station list and audio quality as a
   JSON event once a second. The app's `RemoteDabChain` plays it paced by the IQ window,
   as local DAB is played. The server needs `dsp/dab.py`, `dsp/dabplus.py` and FAAD2
-  (`libfaad2`).
+  (`libfaad2`). *Measured on the Pi 5, 2026-10-10:* the receiver first took 9.9 s to
+  decode 6 s of 9A, three quarters of it the Viterbi decoder's per-step NumPy calls, so
+  a station got a fifth of its audio. The branch metrics now come from one matrix
+  product, the trellis is walked by reshapes rather than index gathers, the frame's
+  derotation is a symbol's ramp times a phase per symbol, and while a station plays the
+  FIC is read every fourth frame: 3.1 s for the 6 s, the same bits. *On air over
+  Tailscale:* DAB+ Melbourne 1, 34 stations, 29 s of audio in a 30 s run, no bad audio
+  units, every FIB passing its CRC.
 - **P25 trunk following (VK3RQ, 2026-10-10).** `trunking.py` decides, the window acts:
   a grant the app can play (Phase 1, clear, frequency known, not locked out, inside the
   span) is followed by the listening offset (a network radio: its IQ window), back on a

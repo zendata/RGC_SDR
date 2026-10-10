@@ -404,6 +404,7 @@ class FakeDab:
         self.ensemble = SimpleNamespace(label="Test ensemble", services={0x1234: "Station"},
                                         dab_plus={0x1234: True})
         self.service, self.audio, self.clipped = None, None, 0.0
+        self.frames, self.good_fibs, self.bad_fibs, self.offset_hz = 0, 0, 0, 0.0
         self._ns = SimpleNamespace
 
     def process(self, iq):

@@ -31,6 +31,8 @@ SYMBOLS = 76                       # phase reference + 75 data symbols
 FRAME = NULL + SYMBOLS * SYMBOL    # 196608 samples, 96 ms
 K = 1536                           # carriers
 FIC_SYMBOLS = 3
+#: While a station plays, the FIC is read every this many frames (about 0.4 s).
+FIC_EVERY = 4
 FIC_BLOCK_BITS = 2304
 FIB_BITS = 256
 
@@ -84,36 +86,50 @@ def convolve(bits: np.ndarray) -> np.ndarray:
     return np.array(out, dtype=np.uint8)
 
 
-def viterbi(soft: np.ndarray) -> np.ndarray:
-    """Decode a batch of codewords at once: soft is [batch, 4 * (n + 6)], +1 for a
-    likely 0 and -1 for a likely 1, 0 for a punctured (unknown) bit. -> [batch, n]."""
-    soft = np.atleast_2d(soft)
-    batch, steps = soft.shape[0], soft.shape[1] // 4
-    symbols = soft.reshape(batch, steps, 4)
-    expect = 1.0 - 2.0 * _OUT.astype(np.float64)                        # [64, 2, 4]
-    # Predecessors of each state: the two states whose shift leads here.
+def _trellis() -> tuple[np.ndarray, np.ndarray]:
+    """Predecessors of each state -- the two states whose shift leads here -- and the
+    input bit that led there."""
     prev = np.zeros((64, 2), dtype=np.int64)
     prev_bit = np.zeros(64, dtype=np.int64)
     for s in range(64):
         for b in range(2):
             prev[_NEXT[s, b]][s & 1] = s
             prev_bit[_NEXT[s, b]] = b
-    metric = np.full((batch, 64), -1e9)
-    metric[:, 0] = 0.0
-    decisions = np.zeros((steps, batch, 64), dtype=np.int8)
+    return prev, prev_bit
+
+
+_PREV, _PREV_BIT = _trellis()
+_EXPECT = (1.0 - 2.0 * _OUT.astype(np.float64)).reshape(128, 4).T          # [4, 128]
+
+
+def viterbi(soft: np.ndarray) -> np.ndarray:
+    """Decode a batch of codewords at once: soft is [batch, 4 * (n + 6)], +1 for a
+    likely 0 and -1 for a likely 1, 0 for a punctured (unknown) bit. -> [batch, n].
+
+    State n = 32 b + j is reached from states 2j and 2j + 1 with input b, so with the
+    metrics viewed as [32, 2] both candidates for every state come from one broadcast
+    add, and every branch metric from one matrix product before the trellis is walked.
+    The step loop's NumPy call overhead had been most of the cost, and made DAB+ too slow
+    for a Raspberry Pi 5 (measured 2026-10-10: 9.9 s to decode 6 s of an ensemble)."""
+    soft = np.atleast_2d(soft)
+    batch, steps = soft.shape[0], soft.shape[1] // 4
+    gain = soft[:, : steps * 4].reshape(batch, steps, 4).astype(np.float64) @ _EXPECT
+    # Columns are [state s = 2j + k, input b]; -> [step, batch, b, j, k].
+    gain = np.ascontiguousarray(gain.reshape(batch, steps, 32, 2, 2).transpose(1, 0, 4, 2, 3))
+    metric = np.full((batch, 1, 32, 2), -1e9)
+    metric[:, 0, 0, 0] = 0.0
+    decisions = np.zeros((steps, batch, 2, 32), dtype=bool)
     for t in range(steps):
-        gain = np.einsum("bk,sik->bsi", symbols[:, t, :], expect)       # [batch, 64, 2]
-        cand = np.stack([metric[:, prev[:, 0]] + gain[:, prev[:, 0], prev_bit],
-                         metric[:, prev[:, 1]] + gain[:, prev[:, 1], prev_bit]], axis=2)
-        choice = np.argmax(cand, axis=2)
-        decisions[t] = choice
-        metric = np.take_along_axis(cand, choice[..., None], axis=2)[..., 0]
+        cand = metric + gain[t]                                          # [batch, 2, 32, 2]
+        decisions[t] = cand[..., 1] > cand[..., 0]   # a tie keeps state 2j, as argmax did
+        metric = cand.max(axis=3).reshape(batch, 1, 32, 2)
+    decisions = decisions.reshape(steps, batch, 64)
     state = np.zeros(batch, dtype=np.int64)                              # tail ends at 0
     bits = np.zeros((batch, steps), dtype=np.uint8)
     rows = np.arange(batch)
     for t in range(steps - 1, -1, -1):
-        bits[:, t] = prev_bit[state]
-        state = prev[state, decisions[t, rows, state]]
+        bits[:, t] = state >> 5
+        state = 2 * (state & 31) + decisions[t, rows, state]
     return bits[:, : steps - 6]
 
 
@@ -431,7 +447,6 @@ class DabReceiver:
         # the whole frame.
         count = SYMBOLS
         starts = NULL + np.arange(count) * SYMBOL + GUARD - backoff
-        n = np.arange(frame.size)
         # The whole-carrier offset, from eight symbols' power across the frame and held
         # unless a new value repeats: *measured*, one symbol's power put single frames 6
         # or 12 carriers out (and lost them) while the true offset never moved.
@@ -446,8 +461,13 @@ class DabReceiver:
         # The whole offset comes out in time, not by moving bins: an offset also turns
         # each carrier's phase from one symbol to the next (2552 samples is not a whole
         # number of its cycles), which would wreck the differential QPSK.
-        frame = frame * np.exp(-2j * np.pi * (frac + offset) * n / TU)
-        spectra = np.fft.fft(np.stack([frame[s:s + TU] for s in starts]), axis=1)
+        # exp(-j w (s + m)) = exp(-j w s) exp(-j w m): one symbol's ramp and a phase per
+        # symbol, not an exponential across the whole frame (a fifth of a Pi 5's time).
+        w = 2 * np.pi * (frac + offset) / TU
+        ramp = np.exp(-1j * w * np.arange(TU)).astype(np.complex64)
+        phase = np.exp(-1j * w * starts).astype(np.complex64)[:, None]
+        windows = frame[starts[:, None] + np.arange(TU)] * ramp * phase
+        spectra = np.fft.fft(windows, axis=1)
         cells = spectra[:, _BINS]                                   # [symbol, n]
         z = cells[1:] * np.conj(cells[:-1])                         # differential
         # Channel-state weighting: each carrier by how well its points sit on the QPSK
@@ -462,7 +482,11 @@ class DabReceiver:
         soft = np.concatenate([weighted.real, weighted.imag], axis=1)   # [symbols, 3072]
         self.frames += 1
         self.offset_hz = (offset + frac) * RATE / TU
-        messages = self._fic(soft[:FIC_SYMBOLS].ravel())
+        # The FIC every frame until a station plays, then every FIC_EVERY: the station's
+        # place in the multiplex is already known, and the FIC's Viterbi decoding is half
+        # the work (too much for a Raspberry Pi 5 every frame, measured 2026-10-10).
+        messages = (self._fic(soft[:FIC_SYMBOLS].ravel())
+                    if self._audio is None or self.frames % FIC_EVERY == 1 else [])
         if self._audio is not None:
             # The MSC: 72 symbols, four 24 ms CIFs of 55296 bits; the station's
             # sub-channel is its CUs (64 bits each) in every CIF.
