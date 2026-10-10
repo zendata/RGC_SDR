@@ -140,3 +140,19 @@ def test_dmr_mode_plays_through_the_chain(monkeypatch):
     assert chain.audio_rate == 48_000.0 and chain.dmr_voice.slot == 1
     chain.set_options(ReceiverOptions(dmr_slot=2))
     assert chain.dmr_voice.slot == 2
+
+
+def test_a_call_that_starts_quietly_does_not_start_loud():
+    # A first superframe of near silence (a late entry, a slow start), then speech:
+    # levelled a superframe at a time, the quiet one set a high gain that took 185 ms of
+    # the speech to come down, and the call opened with a blast (VK3RQ, 2026-10-10).
+    from src.rgc_sdr.dsp.demod import DemodChain
+
+    chain = DemodChain(48_000.0, "dmr", volume=1.0)
+    rate = chain.audio_rate
+    tone = np.sin(2 * np.pi * 400 * np.arange(int(0.36 * rate)) / rate)
+    chain._level_voice(0.003 * tone)
+    out = chain._level_voice(0.3 * tone)
+    steady = np.sqrt(np.mean(out[-int(0.1 * rate):] ** 2))
+    assert np.max(np.abs(out)) < 1.2 * steady * np.sqrt(2)          # no blast at all
+    assert steady == pytest.approx(chain._agc.target_rms, rel=0.1)

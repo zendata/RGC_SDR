@@ -432,8 +432,13 @@ class AudioAgc:
         max_gain: float = 20000.0,
         floor_rms: float = 1e-7,
         hang_samples: int = 0,
+        ramp_attack: bool = True,
     ) -> None:
         self.target_rms = float(target_rms)
+        #: Ease a cut in gain across the block (no click), or make it at once: decoded
+        #: digital voice is levelled per codec frame, and a frame louder than the last
+        #: wants its gain from its first sample.
+        self.ramp_attack = bool(ramp_attack)
         self.attack = float(attack)
         self.decay = float(decay)
         self.max_gain = float(max_gain)
@@ -446,6 +451,10 @@ class AudioAgc:
     @property
     def gain(self) -> float:
         return self._gain
+
+    @property
+    def primed(self) -> bool:
+        return self._primed
 
     def reset(self) -> None:
         self._gain = 1.0
@@ -478,7 +487,7 @@ class AudioAgc:
             self._hang -= len(audio)
         else:
             self._gain += self.decay * (wanted - self._gain)
-        if self._gain == previous:
+        if self._gain == previous or (self._gain < previous and not self.ramp_attack):
             return audio * self._gain
         ramp = np.linspace(previous, self._gain, len(audio), endpoint=True)
         if audio.ndim == 2:
@@ -747,6 +756,24 @@ class DemodChain:
         return passband_for(self.mode, self.bandwidth_hz, self.options.if_shift_hz,
                             self.options.sam_sideband)
 
+    #: Digital voice is levelled a codec frame at a time.
+    VOICE_FRAME_S = 0.02
+
+    def _level_voice(self, audio: np.ndarray) -> np.ndarray:
+        """The AGC over decoded P25 or DMR voice, which arrives a superframe at a time
+        (DMR: 18 codec frames, 360 ms). Levelled whole, a call starting quietly set a high
+        gain that the loud speech after it ramped down over the next 360 ms: the start of
+        every call blasted (VK3RQ, 2026-10-10). Levelled per 20 ms frame, first set by
+        the loudest frame, and cut at a frame's start when it is louder, it does not."""
+        agc = self._agc
+        if agc is None or audio.size == 0:
+            return audio
+        n = max(1, int(self.VOICE_FRAME_S * self.audio_rate))
+        frames = [audio[i:i + n] for i in range(0, audio.size, n)]
+        if not agc.primed:
+            agc.process(max(frames, key=lambda f: float(np.mean(np.square(f)))))
+        return np.concatenate([agc.process(f) for f in frames])
+
     def _build_agc(self) -> None:
         """AM and SAM are levelled by their carrier, which is steady whatever the
         programme does: the audio becomes the modulation depth, so a pause cannot wind
@@ -764,7 +791,8 @@ class DemodChain:
         self._agc = None
         if on and not self._carrier_agc:
             hang_s, decay = AGC_PRESETS[mode]
-            self._agc = AudioAgc(decay=decay, hang_samples=int(hang_s * self.audio_rate))
+            self._agc = AudioAgc(decay=decay, hang_samples=int(hang_s * self.audio_rate),
+                                 ramp_attack=self.mode not in ("p25", "dmr"))
 
     def _notch_audio_hz(self) -> list[float]:
         """Manual notches (RF offsets from the listening frequency) as audio frequencies:
@@ -1016,9 +1044,7 @@ class DemodChain:
             self.last_detected = self._detector.process(channel)
             voice = self._dmr.process(self.last_detected)
             if voice.size:
-                audio = self._dmr_up.process(voice.astype(np.float64))
-                if self._agc is not None:
-                    audio = self._agc.process(audio)
+                audio = self._level_voice(self._dmr_up.process(voice.astype(np.float64)))
                 self._pacer.push(audio.astype(np.float32))
             audio = self._pacer.pull(channel.size / self.if_rate * self.audio_rate)
             return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
@@ -1028,8 +1054,8 @@ class DemodChain:
             voice = self._p25.process(self.last_detected)
             if voice.size:
                 audio = self._p25_up.process(voice.astype(np.float64))
-                if self._agc is not None and not self._p25.encrypted:
-                    audio = self._agc.process(audio)
+                if not self._p25.encrypted:
+                    audio = self._level_voice(audio)
                 self._pacer.push(audio.astype(np.float32))
             audio = self._pacer.pull(channel.size / self.if_rate * self.audio_rate)
             return np.clip(audio * self.volume, -1.0, 1.0).astype(np.float32)
