@@ -156,3 +156,19 @@ def test_a_call_that_starts_quietly_does_not_start_loud():
     steady = np.sqrt(np.mean(out[-int(0.1 * rate):] ** 2))
     assert np.max(np.abs(out)) < 1.2 * steady * np.sqrt(2)          # no blast at all
     assert steady == pytest.approx(chain._agc.target_rms, rel=0.1)
+
+
+def test_speech_with_gaps_comes_out_at_the_usual_level():
+    # Syllables and gaps within a superframe: levelled per 20 ms frame, the gain followed
+    # the loudest syllable and speech came out 12 dB down -- heard as no audio at all.
+    from src.rgc_sdr.dsp.demod import DemodChain
+
+    chain = DemodChain(48_000.0, "dmr", volume=1.0)
+    rate = chain.audio_rate
+    t = np.arange(int(0.36 * rate)) / rate
+    syllables = np.sin(2 * np.pi * 300 * t) * (np.sin(2 * np.pi * 4 * t) > 0.3) \
+        * (0.2 + 0.3 * np.abs(np.sin(2 * np.pi * 1.3 * t)))
+    for _ in range(3):
+        out = chain._level_voice(syllables)
+    level = np.sqrt(np.mean(out ** 2))
+    assert level == pytest.approx(chain._agc.target_rms, rel=0.25)

@@ -436,8 +436,8 @@ class AudioAgc:
     ) -> None:
         self.target_rms = float(target_rms)
         #: Ease a cut in gain across the block (no click), or make it at once: decoded
-        #: digital voice is levelled per codec frame, and a frame louder than the last
-        #: wants its gain from its first sample.
+        #: digital voice comes a superframe at a time, wholly decoded, so one louder than
+        #: the last can have its lower gain from its first sample.
         self.ramp_attack = bool(ramp_attack)
         self.attack = float(attack)
         self.decay = float(decay)
@@ -451,10 +451,6 @@ class AudioAgc:
     @property
     def gain(self) -> float:
         return self._gain
-
-    @property
-    def primed(self) -> bool:
-        return self._primed
 
     def reset(self) -> None:
         self._gain = 1.0
@@ -756,23 +752,15 @@ class DemodChain:
         return passband_for(self.mode, self.bandwidth_hz, self.options.if_shift_hz,
                             self.options.sam_sideband)
 
-    #: Digital voice is levelled a codec frame at a time.
-    VOICE_FRAME_S = 0.02
-
     def _level_voice(self, audio: np.ndarray) -> np.ndarray:
         """The AGC over decoded P25 or DMR voice, which arrives a superframe at a time
-        (DMR: 18 codec frames, 360 ms). Levelled whole, a call starting quietly set a high
-        gain that the loud speech after it ramped down over the next 360 ms: the start of
-        every call blasted (VK3RQ, 2026-10-10). Levelled per 20 ms frame, first set by
-        the loudest frame, and cut at a frame's start when it is louder, it does not."""
-        agc = self._agc
-        if agc is None or audio.size == 0:
-            return audio
-        n = max(1, int(self.VOICE_FRAME_S * self.audio_rate))
-        frames = [audio[i:i + n] for i in range(0, audio.size, n)]
-        if not agc.primed:
-            agc.process(max(frames, key=lambda f: float(np.mean(np.square(f)))))
-        return np.concatenate([agc.process(f) for f in frames])
+        (DMR: 360 ms of it), all of it decoded before any is played. A cut in gain is
+        made at the superframe's start, not ramped across it: ramped, a quiet first
+        superframe's high gain took 185 ms of the loud speech after it to come down, and
+        calls opened with a blast (VK3RQ, 2026-10-10). Levelled per 20 ms codec frame
+        instead, the gain followed the loudest syllable and speech came out 12 dB down --
+        silent, as heard -- so the level is still the superframe's."""
+        return audio if self._agc is None else self._agc.process(audio)
 
     def _build_agc(self) -> None:
         """AM and SAM are levelled by their carrier, which is steady whatever the
