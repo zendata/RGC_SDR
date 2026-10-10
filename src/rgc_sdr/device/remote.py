@@ -317,6 +317,8 @@ class RemoteIQSource(IQSource):
             profile.default_rate if profile else 0.0)
         self._freq = float(center_freq)
         self._state: dict = {}
+        #: Settings sent but not yet confirmed: path -> (value, request id).
+        self._pending: dict[tuple, tuple] = {}
         self._lines: deque[SpectrumLine] = deque(maxlen=SPECTRUM_QUEUE)
         self._latest_line: SpectrumLine | None = None
         #: (fft size, lines a second, zoom) asked of the server.
@@ -386,9 +388,33 @@ class RemoteIQSource(IQSource):
                 raise
             return {}
 
+    def _set_locally(self, path: tuple, value) -> int:
+        """Record a setting made here before the server confirms it: a reply to an
+        earlier request carries the old value and must not put it back. Returns the id
+        the request will carry."""
+        conn = self._conn
+        ident = conn.next_id if conn is not None else 0
+        with self._lock:
+            self._pending[path] = (value, ident)
+            target = self._state
+            for key in path[:-1]:
+                target = target.setdefault(key, {})
+            target[path[-1]] = value
+        return ident
+
     def _on_state(self, ident, state: dict) -> None:
         with self._lock:
-            self._state = dict(state)
+            state = dict(state)
+            for path, (value, sent) in list(self._pending.items()):
+                if ident is not None and ident >= sent:
+                    del self._pending[path]            # the server has it now
+                    continue
+                target = state
+                for key in path[:-1]:
+                    target[key] = dict(target.get(key, {}))
+                    target = target[key]
+                target[path[-1]] = value
+            self._state = state
             # A reply to an older tune would put the dial back: only the latest counts.
             if ident is not None and ident >= self._last_tune_id:
                 self._freq = float(state.get("freq", self._freq))
@@ -516,8 +542,23 @@ class RemoteIQSource(IQSource):
         self._latest_line = None
         return self.span_rate
 
+    def survey(self, centre_hz: float, seconds: float, lo_hz: float, hi_hz: float) -> list:
+        """A DMR/P25 survey run by the server over the radio's whole span about
+        `centre_hz` (survey.py): the reports. Blocks for the capture and decoding. The
+        radio is moved there, so the IQ window is too."""
+        with self._lock:
+            self._generation += 1
+            self._ring.clear()
+        reply = self._send("survey", wait=True, timeout=float(seconds) * 4 + 30,
+                           centre_hz=float(centre_hz), seconds=float(seconds),
+                           lo_hz=float(lo_hz), hi_hz=float(hi_hz),
+                           generation=self._generation)
+        self._state = dict(reply.get("state", self._state))
+        self._freq = float(self._state.get("freq", self._freq))
+        return list(reply.get("reports", []))
+
     def set_gain(self, name: str, db: float) -> None:
-        self._state.setdefault("gains", {})[name] = float(db)
+        self._set_locally(("gains", name), float(db))
         self._send("gain", name=name, db=float(db))
 
     def get_gain(self, name: str) -> float:
@@ -525,7 +566,7 @@ class RemoteIQSource(IQSource):
 
     def set_agc(self, enabled: bool) -> None:
         if self._caps.has_agc:
-            self._state["agc"] = bool(enabled)
+            self._set_locally(("agc",), bool(enabled))
             self._send("agc", on=bool(enabled))
 
     def get_agc(self) -> bool:
@@ -537,7 +578,7 @@ class RemoteIQSource(IQSource):
 
     def set_bandwidth(self, hz: float) -> float:
         if self._caps.bandwidths:
-            self._state["bandwidth"] = float(hz)
+            self._set_locally(("bandwidth",), float(hz))
             self._send("bandwidth", hz=float(hz))
         return self.bandwidth
 
@@ -545,7 +586,7 @@ class RemoteIQSource(IQSource):
         return bool(self._state.get("settings", {}).get(key, False))
 
     def write_setting(self, key: str, enabled: bool) -> None:
-        self._state.setdefault("settings", {})[key] = bool(enabled)
+        self._set_locally(("settings", key), bool(enabled))
         self._send("setting", key=key, on=bool(enabled))
 
     @property
@@ -553,7 +594,7 @@ class RemoteIQSource(IQSource):
         return float(self._state.get("ppm", 0.0))
 
     def set_ppm(self, ppm: float) -> None:
-        self._state["ppm"] = float(ppm)
+        self._set_locally(("ppm",), float(ppm))
         self._send("ppm", ppm=float(ppm))
 
     @property
