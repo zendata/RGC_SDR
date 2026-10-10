@@ -166,6 +166,37 @@ class RadioSession:
             if zoom:
                 self.zoom = max(1, int(zoom))
 
+    def survey(self, centre_hz: float, seconds: float, lo_hz: float, hi_hz: float,
+               generation: int | None = None) -> list:
+        """A DMR/P25 survey (survey.py) of the radio's whole span about `centre_hz`: the
+        radio moved there, `seconds` of its full-rate IQ captured, every channel in it
+        decoded. Done here because the client has only the IQ window; the reports are
+        a few hundred bytes."""
+        from .survey import survey_iq
+
+        seconds = min(max(float(seconds), 0.5), 10.0)
+        self.tune(float(centre_hz), True,
+                  self.generation + 1 if generation is None else int(generation))
+        time.sleep(0.25)                                  # the front end settles
+        reader = self.source.sequential_reader()
+        wanted = int(seconds * self.source.sample_rate)
+        chunks, have = [], 0
+        deadline = time.monotonic() + seconds * 3 + 2
+        while have < wanted and time.monotonic() < deadline:
+            n = reader.available()
+            if n == 0:
+                time.sleep(0.02)
+                continue
+            piece = reader.read(min(n, wanted - have))
+            chunks.append(piece)
+            have += piece.size
+        if not chunks:
+            return []
+        iq = np.concatenate(chunks)
+        src = self.source
+        return survey_iq(iq, src.sample_rate, src.center_freq, float(lo_hz), float(hi_hz),
+                         src.dc_spike_offset_hz)
+
     def apply(self, op: str, message: dict) -> None:
         """The simple setters: gain, AGC, IF bandwidth, a driver switch, ppm."""
         src = self.source
@@ -352,6 +383,12 @@ class ClientHandler:
         elif op == "rate":
             session.set_rate(float(request["radio_rate"]),
                              int(request.get("generation", session.generation)))
+        elif op == "survey":
+            reports = session.survey(request["centre_hz"], request.get("seconds", 3.0),
+                                     request.get("lo_hz", 0.0), request.get("hi_hz", 1e12),
+                                     request.get("generation"))
+            self.reply(request, reports=reports, state=session.state())
+            return
         elif op == "display":
             session.set_display(request.get("fft_size"), request.get("fps"),
                                 request.get("zoom"))

@@ -355,3 +355,27 @@ def test_listing_does_not_disturb_the_radio_in_use_but_opening_replaces_it(serve
     finally:
         first._closed = True                                # do not reconnect
         first.close()
+
+
+def test_a_survey_runs_on_the_server(server, monkeypatch):
+    calls = []
+
+    def fake_survey(iq, rate, centre, lo, hi, spike):
+        calls.append((iq.size, rate, centre, lo, hi))
+        return [{"freq_hz": centre + 20e3, "protocol": "DMR", "colour_codes": [1],
+                 "nacs": [], "voice": 4, "voice_slots": [1], "encrypted": False,
+                 "snr_db": 30.0}]
+
+    import src.rgc_sdr.survey as survey_module
+    monkeypatch.setattr(survey_module, "survey_iq", fake_survey)
+    src = RemoteIQSource(server, "rtlsdr", sample_rate=2e6, center_freq=145e6)
+    try:
+        src.start()
+        reports = src.survey(146e6, 0.5, 145.1e6, 146.9e6)
+        assert reports[0]["protocol"] == "DMR"
+        size, rate, centre, lo, hi = calls[0]
+        assert rate == 2e6 and centre == 146e6 and size >= 0.5 * 2e6
+        assert src.center_freq == 146e6
+        assert _wait(lambda: src.stats["samples"] > 0)        # the IQ carries on after
+    finally:
+        src.close()

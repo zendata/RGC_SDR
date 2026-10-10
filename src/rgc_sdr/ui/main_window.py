@@ -1213,8 +1213,127 @@ class MainWindow(QtWidgets.QMainWindow):
         self.scanner_panel.saveFoundRequested.connect(self._save_found_to_memory)
         self.scanner_panel.configChanged.connect(self._on_scan_config_changed)
 
-        # The Scan tab's panel.
-        self._scanner_dock = self.scanner_panel
+        # The Scan tab's panel: the scanner, and the DMR/P25 survey beside it.
+        from .survey_panel import SurveyPanel
+
+        self.survey_panel = SurveyPanel()
+        self.survey_panel.startRequested.connect(self.start_survey)
+        self.survey_panel.stopRequested.connect(self.stop_survey)
+        self.survey_panel.tuneRequested.connect(self._tune_to_surveyed)
+        self.survey_panel.saveRequested.connect(self._save_surveyed)
+        scan_box = QtWidgets.QSplitter(QtCore.Qt.Orientation.Horizontal)
+        scan_box.addWidget(self.scanner_panel)
+        scan_box.addWidget(self.survey_panel)
+        scan_box.setSizes([420, 700])
+        self._scanner_dock = scan_box
+        self._survey: dict | None = None
+        self._survey_timer = QtCore.QTimer(self)
+        self._survey_timer.setInterval(200)
+        self._survey_timer.timeout.connect(self._survey_step)
+
+    # -- DMR/P25 survey (survey.py) ----------------------------------------------------
+
+    #: Seconds captured per span.
+    SURVEY_SECONDS = 3.0
+
+    def start_survey(self) -> bool:
+        from ..survey import plan_windows
+
+        if self.is_transceiver or self.playing_back:
+            self.survey_panel.set_running(False)
+            self.survey_panel.set_status("needs an SDR (not the IC-705 or a recording)")
+            return False
+        if self.scanner is not None:
+            self.stop_scan()
+        lo, hi = self.scanner_panel.start_hz, self.scanner_panel.end_hz
+        span = self._rate_setting() if self._wide else self.source.sample_rate
+        windows = [c for c in plan_windows(lo, hi, span) if self.source.caps.covers(c)]
+        if not windows:
+            self.survey_panel.set_running(False)
+            self.survey_panel.set_status("set From and To (the scanner's range) first")
+            return False
+        self._survey = {"windows": windows, "index": 0, "pass": 1, "job": None,
+                        "table": getattr(self, "_survey_table", {}), "wait_until": 0.0,
+                        "lo": lo, "hi": hi}
+        self._survey_table = self._survey["table"]
+        self.survey_panel.set_running(True)
+        self._survey_timer.start()
+        return True
+
+    def stop_survey(self) -> None:
+        survey, self._survey = self._survey, None
+        self._survey_timer.stop()
+        if survey is not None and survey["job"] is not None:
+            survey["job"].cancel()
+        self.survey_panel.set_running(False)
+        self.survey_panel.set_status("stopped")
+
+    def _survey_step(self) -> None:
+        from ..survey import SurveyJob, merge
+
+        survey = self._survey
+        if survey is None:
+            return
+        job = survey["job"]
+        windows = survey["windows"]
+        centre = windows[survey["index"]]
+        if job is None:
+            remote = hasattr(self.source, "survey")
+            if not remote and survey["wait_until"] == 0.0:
+                self._offset_spin.setValue(0.0)
+                self._retune(centre, allow_snap=False)
+                survey["wait_until"] = time.monotonic() + 0.4   # the front end settles
+                return
+            if not remote and time.monotonic() < survey["wait_until"]:
+                return
+            survey["job"] = SurveyJob(self.source, centre, survey["lo"], survey["hi"],
+                                      self.SURVEY_SECONDS)
+            self._survey_status(f"surveying {centre / 1e6:.3f} MHz")
+            return
+        if not job.done:
+            return
+        if job.error:
+            self._survey_status(f"{centre / 1e6:.3f} MHz: {job.error}")
+        merge(survey["table"], job.reports, time.time())
+        self.survey_panel.show_table(survey["table"])
+        survey["job"], survey["wait_until"] = None, 0.0
+        survey["index"] += 1
+        if survey["index"] >= len(windows):
+            survey["index"] = 0
+            survey["pass"] += 1
+        if hasattr(self.source, "survey"):
+            # A network radio was moved by its server: the display follows.
+            self._freq_spin.blockSignals(True)
+            self._freq_spin.setValue(self.source.center_freq / 1e6)
+            self._freq_spin.blockSignals(False)
+            self.spectrum.set_center_marker(self.source.center_freq)
+        self._survey_status("")
+
+    def _survey_status(self, doing: str) -> None:
+        survey = self._survey
+        if survey is None:
+            return
+        rows = [r for r in survey["table"].values() if r["protocol"]]
+        voice = sum(1 for r in rows if r["voice"])
+        text = (f"pass {survey['pass']}, span {survey['index'] + 1}/{len(survey['windows'])}"
+                f"  |  {len(rows)} DMR/P25 channels, {voice} with voice")
+        self.survey_panel.set_status(f"{text}  |  {doing}" if doing else text)
+
+    def _tune_to_surveyed(self, freq_hz: float, protocol: str) -> None:
+        if self._survey is not None:
+            self.stop_survey()
+        self._offset_spin.setValue(0.0)
+        self._retune(freq_hz, allow_snap=False, auto_radio=True)
+        key = {"DMR": "dmr", "P25": "p25"}.get(protocol, "")
+        if key:
+            combo = self.decoder_panel.combo
+            combo.setCurrentIndex(max(0, combo.findData(key)))   # and its listening mode
+
+    def _save_surveyed(self, freq_hz: float, protocol: str, codes: str) -> None:
+        self._tune_to_surveyed(freq_hz, protocol)
+        name = f"{protocol} {freq_hz / 1e6:.4f} {codes.split(',')[0]}".strip()
+        self.save_memory(name)
+        self.survey_panel.set_status(f"saved {name}")
 
     def _scan_config(self) -> ScanConfig:
         panel = self.scanner_panel
@@ -1603,7 +1722,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _install_panels(self) -> None:
         self._panels = {"settings": self._settings_panel, "decode": self.decoder_panel,
                         "classify": self._classify_panel, "memory": self.memory_panel,
-                        "map": self.map_window, "scan": self.scanner_panel}
+                        "map": self.map_window, "scan": self._scanner_dock}
         for key, *_ in self.TABS:
             self._panel_splitter.addWidget(self._panels[key])
             self._panels[key].hide()

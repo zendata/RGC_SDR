@@ -189,6 +189,17 @@ headless-testable and lets modules be swapped independently.
   following the listening frequency ✅ (verified 2026-10-07 over Tailscale: 25 lines a
   second of the RTL-SDR's 2.048 MHz span, the 256 kS/s window with nothing lost, tuning
   within the span leaving the radio and the waterfall where they were).
+- **DMR/P25 survey (VK3RQ, 2026-10-10: "faster DMR scanning").** `survey.py`: one
+  capture per span, every active channel found from its spectrum, split out by one FFT
+  and run through the DMR and P25 decoders at once, whose new counters (voice bursts and
+  slots, colour codes, NACs, encryption) give the report. The spectrum places a channel
+  only to about a grid step (a TDMA signal's power is lumpy: 463.900 reported for a
+  463.9125 MHz repeater), so unless the first position decodes 20 valid frames its
+  6.25 kHz neighbours are decoded too, and the best wins. On a network radio the server
+  surveys (a `survey` request), having the whole span the client lacks. *On air,
+  2026-10-10, the Pi's RTL-SDR over Tailscale from away:* 460-468 MHz in 51 s a pass,
+  22 DMR/P25 channels, voice on two -- against about 3.5 s a channel listening one by
+  one.
 - **P25 trunk following (VK3RQ, 2026-10-10).** `trunking.py` decides, the window acts:
   a grant the app can play (Phase 1, clear, frequency known, not locked out, inside the
   span) is followed by the listening offset (a network radio: its IQ window), back on a
@@ -205,7 +216,9 @@ headless-testable and lets modules be swapped independently.
   repeater every one of 1296 voice frames decoded with at most one codec correction, and
   the 438.825 MHz amateur repeater (CC 1) 98% -- so the burst timing and DSD's interleave
   are right; the audio had speech's syllable swings (330-1450x energy, 90th/10th
-  percentile), neither flag encrypted. The codec's error count proved the better test:
+  percentile), and the EMB privacy indicator was clear. (The call headers' encryption
+  flag was also read as clear, but that check looked for a field `parse_lc` did not
+  then set, so it proved nothing; the field was added 2026-10-10.) The codec's error count proved the better test:
   a weak cluster near 472 MHz gave a median of 3 corrections a frame -- its symbols were
   10% wrong (error rms 0.75-1.1 against levels 2 apart), not the unpacking (swapping or
   reversing the bits changed nothing). Its voice syncs also came every 1152 symbols a

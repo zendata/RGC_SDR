@@ -280,7 +280,7 @@ def parse_csbk(bits: np.ndarray) -> tuple[str, dict]:
 def parse_lc(bits: np.ndarray) -> tuple[str, dict]:
     flco, fid = _field(bits, 2, 6), _field(bits, 8, 8)
     options = _field(bits, 16, 8)
-    f = {"flco": flco, "fid": fid, "options": options,
+    f = {"flco": flco, "fid": fid, "options": options, "encrypted": bool(options & 0x40),
          "target": _field(bits, 24, 24), "source": _field(bits, 48, 24)}
     secret = "  encrypted" if options & 0x40 else ""
     if fid == 0 and flco == 0:
@@ -303,6 +303,12 @@ class DmrDecoder:
                                   upright=False)
         self.bursts = 0
         self.bad_bursts = 0
+        #: Counts the repeat filter cannot hide, for surveys: voice bursts (by slot),
+        #: colour codes seen, and whether a call header said it was encrypted.
+        self.voice_bursts = 0
+        self.voice_slots: set[int] = set()
+        self.colour_codes: set[int] = set()
+        self.encrypted_seen = False
         self._repeats = RepeatFilter()
         #: Packets being assembled, by timeslot.
         self._packets: dict = {}
@@ -337,6 +343,9 @@ class DmrDecoder:
         slot = self._slot(source, bits)
         if sign < 0:
             self.bursts += 1
+            self.voice_bursts += 1
+            if slot:
+                self.voice_slots.add(slot)
             return DmrMessage(None, slot, "voice", "voice")
         value, errors = golay20_decode(_field(bits, 122, 10) << 10 | _field(bits, 180, 10))
         if errors > SLOT_TYPE_MAX_ERRORS:
@@ -344,6 +353,7 @@ class DmrDecoder:
             return None
         self.bursts += 1
         cc, dtype = value >> 4, value & 0xF
+        self.colour_codes.add(cc)
         name = DATA_TYPES.get(dtype, f"data type {dtype}")
         if dtype == 9:
             return None                                   # idle: nothing to say
@@ -366,6 +376,8 @@ class DmrDecoder:
                 self.bad_bursts += 1
                 return None
             text, f = parse_lc(payload)
+            if f.get("encrypted"):
+                self.encrypted_seen = True
             return DmrMessage(cc, slot, name, f"{name}  {text}", f)
         return DmrMessage(cc, slot, name, name, {"data_type": dtype})
 

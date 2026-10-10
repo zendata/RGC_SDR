@@ -321,6 +321,10 @@ class P25Decoder:
         #: heard, monotonic seconds; 0 for never.
         self.last_voice = 0.0
         self.last_terminator = 0.0
+        #: For surveys: voice frames, NACs seen, an encrypted call seen.
+        self.voice_frames = 0
+        self.nacs: set[int] = set()
+        self.encrypted_seen = False
         self.reset()
 
     def take_grants(self) -> list[tuple[float, int, dict]]:
@@ -347,8 +351,10 @@ class P25Decoder:
                 continue
             self.frames += 1
             nac, duid = value >> 4, value & 0xF
+            self.nacs.add(nac)
             if duid in (0x0, 0x5, 0xA):
                 self.last_voice = time.monotonic()
+                self.voice_frames += 1
             elif duid in (0x3, 0xF):
                 self.last_terminator = time.monotonic()
             payload = np.array([dibits[i] for i in range(57, dibits.size) if i % 36 != 35])
@@ -401,6 +407,8 @@ class P25Decoder:
         lcf, options, dest, source = lc
         private = lcf & 0x3F == 0x03
         secret = "  encrypted" if options & 0x40 else ""
+        if options & 0x40:
+            self.encrypted_seen = True
         text = (f"voice  {'to' if private else 'TG'} {dest}  from {source}{secret}")
         return [P25Message(nac, "voice", text, {"duid": 0x5, "talkgroup": dest,
                                                 "source": source, "private": private,

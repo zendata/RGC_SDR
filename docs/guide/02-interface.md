@@ -307,6 +307,19 @@ window at a time and finds every active channel in each window with one FFT.
 | **Found** | Channels found, separate from memories. **Tune**, **Lock**, **To memory**, **Clear**. Double-click to tune. |
 | **Locked out** | Frequencies never stopped on. Double-click or **Unlock selected** to release. |
 
+### DMR / P25 survey
+
+Beside the scanner: finds the DMR and P25 channels between the scanner's **From** and
+**To**, and which carry voice. Each span is captured once and every active channel in
+it decoded at the same time (`survey.py`), so a pass over 8 MHz takes under a minute
+where listening channel by channel took many. It runs pass after pass until stopped,
+so intermittent voice shows up over time. On a radio on a network server the survey
+runs on the server, which has the radio's whole span. The table gives frequency,
+protocol, colour codes or NACs, voice heard (and on which slots) and when last,
+encryption, and how many passes have seen it. **Voice only** hides the rest.
+Double-click or **Tune** listens there with the right decoder; **To memory** saves it.
+Only counts are kept, never IDs or talkgroups.
+
 ## The status line
 
 For an SDR: frequency, sample rate (for a network radio, its rate and the IQ window's),
